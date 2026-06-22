@@ -1,0 +1,377 @@
+Project EcommercePlatform {
+  database_type: 'PostgreSQL'
+  Note: 'E-commerce platform database schema'
+}
+
+Enum user_status {
+  active
+  inactive
+  suspended
+  pending_verification
+}
+
+Enum order_status {
+  pending
+  awaiting_payment
+  paid
+  processing
+  shipped
+  delivered
+  cancelled
+  refunded
+}
+
+Enum payment_status {
+  pending
+  processing
+  successful
+  failed
+  cancelled
+  refunded
+}
+
+Enum notification_type {
+  sms
+  email
+  push
+  system
+}
+
+Table users {
+  id uuid [pk]
+  first_name varchar(100)
+  last_name varchar(100)
+  email varchar(255) [unique]
+  phone varchar(30) [unique]
+  password_hash text
+  status user_status
+  is_verified boolean
+  last_login_at timestamptz
+  created_at timestamptz
+  updated_at timestamptz
+}
+
+Table roles {
+  id uuid [pk]
+  name varchar(50) [unique]
+  description text
+  created_at timestamptz
+}
+
+Table user_roles {
+  user_id uuid
+  role_id uuid
+
+  indexes {
+    (user_id, role_id) [pk]
+  }
+}
+
+Table sessions {
+  id uuid [pk]
+  user_id uuid
+  refresh_token text
+  expires_at timestamptz
+  created_at timestamptz
+}
+
+Table otp_requests {
+  id uuid [pk]
+  user_id uuid
+  phone varchar(30)
+  otp_code varchar(10)
+  expires_at timestamptz
+  verified boolean
+  created_at timestamptz
+}
+
+Table addresses {
+  id uuid [pk]
+  user_id uuid
+  country varchar(100)
+  region varchar(100)
+  city varchar(100)
+  street text
+  postal_code varchar(50)
+  is_default boolean
+  created_at timestamptz
+}
+
+Table categories {
+  id uuid [pk]
+  parent_id uuid
+  name varchar(150)
+  slug varchar(150) [unique]
+  created_at timestamptz
+}
+
+Table brands {
+  id uuid [pk]
+  name varchar(150)
+  slug varchar(150)
+  created_at timestamptz
+}
+
+Table products {
+  id uuid [pk]
+  category_id uuid
+  brand_id uuid
+  sku varchar(100) [unique]
+  name varchar(255)
+  slug varchar(255) [unique]
+  description text
+  price decimal(18,2)
+  sale_price decimal(18,2)
+  weight decimal(10,2)
+  is_active boolean
+  created_at timestamptz
+  updated_at timestamptz
+}
+
+Table product_images {
+  id uuid [pk]
+  product_id uuid
+  image_url text
+  is_primary boolean
+  created_at timestamptz
+}
+
+Table product_variants {
+  id uuid [pk]
+  product_id uuid
+  variant_name varchar(100)
+  sku varchar(100) [unique]
+  price decimal(18,2)
+  created_at timestamptz
+}
+
+Table warehouses {
+  id uuid [pk]
+  name varchar(150)
+  location text
+  created_at timestamptz
+}
+
+Table inventory {
+  id uuid [pk]
+  warehouse_id uuid
+  product_id uuid
+  quantity int
+  reserved_quantity int
+  updated_at timestamptz
+}
+
+Table carts {
+  id uuid [pk]
+  user_id uuid
+  created_at timestamptz
+}
+
+Table cart_items {
+  id uuid [pk]
+  cart_id uuid
+  product_id uuid
+  quantity int
+  created_at timestamptz
+}
+
+Table coupons {
+  id uuid [pk]
+  code varchar(50) [unique]
+  discount_type varchar(20)
+  discount_value decimal(18,2)
+  starts_at timestamptz
+  expires_at timestamptz
+  active boolean
+}
+
+Table orders {
+  id uuid [pk]
+  user_id uuid
+  address_id uuid
+  order_number varchar(100) [unique]
+  status order_status
+  subtotal decimal(18,2)
+  tax_amount decimal(18,2)
+  shipping_amount decimal(18,2)
+  discount_amount decimal(18,2)
+  total_amount decimal(18,2)
+  created_at timestamptz
+  updated_at timestamptz
+}
+
+Table order_items {
+  id uuid [pk]
+  order_id uuid
+  product_id uuid
+  quantity int
+  unit_price decimal(18,2)
+  total_price decimal(18,2)
+}
+
+Table order_status_history {
+  id uuid [pk]
+  order_id uuid
+  status order_status
+  remarks text
+  created_at timestamptz
+}
+
+Table payment_methods {
+  id uuid [pk]
+  name varchar(100)
+  provider varchar(100)
+  active boolean
+}
+
+Table payments {
+  id uuid [pk]
+  order_id uuid
+  payment_method_id uuid
+  amount decimal(18,2)
+  provider_reference varchar(255)
+  status payment_status
+  paid_at timestamptz
+  created_at timestamptz
+}
+
+Table payment_transactions {
+  id uuid [pk]
+  payment_id uuid
+  transaction_reference varchar(255)
+  provider varchar(100)
+  amount decimal(18,2)
+  status payment_status
+  payload json
+  created_at timestamptz
+}
+
+Table payment_callbacks {
+  id uuid [pk]
+  payment_id uuid
+  payload json
+  received_at timestamptz
+}
+
+Table refunds {
+  id uuid [pk]
+  payment_id uuid
+  amount decimal(18,2)
+  reason text
+  created_at timestamptz
+}
+
+Table sms_messages {
+  id uuid [pk]
+  user_id uuid
+  phone varchar(30)
+  message text
+  provider varchar(100)
+  provider_reference varchar(255)
+  status varchar(50)
+  created_at timestamptz
+}
+
+Table email_messages {
+  id uuid [pk]
+  user_id uuid
+  email varchar(255)
+  subject varchar(255)
+  body text
+  status varchar(50)
+  created_at timestamptz
+}
+
+Table notifications {
+  id uuid [pk]
+  user_id uuid
+  type notification_type
+  title varchar(255)
+  body text
+  is_read boolean
+  created_at timestamptz
+}
+
+Table reviews {
+  id uuid [pk]
+  user_id uuid
+  product_id uuid
+  rating int
+  comment text
+  created_at timestamptz
+}
+
+Table audit_logs {
+  id uuid [pk]
+  user_id uuid
+  action varchar(255)
+  entity varchar(255)
+  entity_id uuid
+  old_data json
+  new_data json
+  created_at timestamptz
+}
+
+Table system_events {
+  id uuid [pk]
+  event_name varchar(255)
+  payload json
+  status varchar(50)
+  created_at timestamptz
+}
+
+Table jobs {
+  id uuid [pk]
+  queue_name varchar(100)
+  payload json
+  status varchar(50)
+  attempts int
+  created_at timestamptz
+}
+
+Ref: user_roles.user_id > users.id
+Ref: user_roles.role_id > roles.id
+
+Ref: sessions.user_id > users.id
+Ref: otp_requests.user_id > users.id
+
+Ref: addresses.user_id > users.id
+
+Ref: categories.parent_id > categories.id
+
+Ref: products.category_id > categories.id
+Ref: products.brand_id > brands.id
+
+Ref: product_images.product_id > products.id
+Ref: product_variants.product_id > products.id
+
+Ref: inventory.product_id > products.id
+Ref: inventory.warehouse_id > warehouses.id
+
+Ref: carts.user_id > users.id
+Ref: cart_items.cart_id > carts.id
+Ref: cart_items.product_id > products.id
+
+Ref: orders.user_id > users.id
+Ref: orders.address_id > addresses.id
+
+Ref: order_items.order_id > orders.id
+Ref: order_items.product_id > products.id
+
+Ref: order_status_history.order_id > orders.id
+
+Ref: payments.order_id > orders.id
+Ref: payments.payment_method_id > payment_methods.id
+
+Ref: payment_transactions.payment_id > payments.id
+Ref: payment_callbacks.payment_id > payments.id
+Ref: refunds.payment_id > payments.id
+
+Ref: sms_messages.user_id > users.id
+Ref: email_messages.user_id > users.id
+Ref: notifications.user_id > users.id
+
+Ref: reviews.user_id > users.id
+Ref: reviews.product_id > products.id
+
+Ref: audit_logs.user_id > users.id
