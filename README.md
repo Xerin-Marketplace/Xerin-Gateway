@@ -1,5 +1,5 @@
 ecommerce_backend/
-├── app/
+├── api/
 │   ├── main.py
 │   ├── config.py
 │   ├── database.py
