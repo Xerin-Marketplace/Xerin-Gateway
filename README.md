@@ -167,3 +167,24 @@ ADAM KAtani
 NAFIDH MOLA
 
 ```
+
+# 1 USER AUTHENTICATION FLOW 
+
+```
+New User:
+Register
+↓
+Verify OTP
+↓
+Get Tokens
+↓
+Use App
+
+Returning User:
+Login
+↓
+Get Tokens
+↓
+Use App
+```
+
