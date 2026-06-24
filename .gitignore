@@ -1,3 +1,7 @@
 .env
 BACKEND/.env
 BACKEND/.env/*
+.venv
+.venv/*
+BACKEND/.venv
+BACKEND/.venv/*
