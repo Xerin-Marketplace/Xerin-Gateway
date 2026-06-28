@@ -1,10 +1,13 @@
 import uuid
 import enum
+
 from sqlalchemy import Column, String, Boolean, DateTime, ForeignKey, Enum, Text
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.sql import func
 from sqlalchemy.orm import relationship
-
+import datetime
+from sqlalchemy import Numeric, Integer
+from sqlalchemy.dialects.postgresql import JSONB
 from api.database import Base
 
 
@@ -13,6 +16,14 @@ class UserStatus(str, enum.Enum):
     inactive = "inactive"
     suspended = "suspended"
     pending_verification = "pending_verification"
+
+
+class SellerStatus(str, enum.Enum):
+    pending = "pending"
+    under_review = "under_review"
+    approved = "approved"
+    rejected = "rejected"
+    suspended = "suspended"
 
 
 class User(Base):
@@ -31,6 +42,7 @@ class User(Base):
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
 
     addresses = relationship("Address", back_populates="user")
+    seller_profile = relationship("Seller", back_populates="user", uselist=False)
 
 
 class Session(Base):
@@ -69,3 +81,169 @@ class Address(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     user = relationship("User", back_populates="addresses")
+
+
+class Seller(Base):
+    __tablename__ = "sellers"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id"),
+        unique=True,
+        nullable=False
+    )
+
+    business_name = Column(String(255), nullable=False)
+    business_category = Column(String(150))
+    contact_email = Column(String(255))
+    contact_phone = Column(String(30))
+
+    status = Column(Enum(SellerStatus), default=SellerStatus.pending)
+    agreement_accepted = Column(Boolean, default=False)
+
+    approved_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+    user = relationship("User", back_populates="seller_profile")
+    kyc_documents = relationship(
+        "SellerKYCDocument",
+        back_populates="seller",
+        cascade="all, delete-orphan"
+    )
+    payout_accounts = relationship(
+        "SellerPayoutAccount",
+        back_populates="seller",
+        cascade="all, delete-orphan"
+    )
+
+
+class SellerKYCDocument(Base):
+    __tablename__ = "seller_kyc_documents"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    seller_id = Column(UUID(as_uuid=True), ForeignKey("sellers.id"), nullable=False)
+
+    document_type = Column(String(100), nullable=False)
+    document_url = Column(Text, nullable=False)
+    status = Column(String(50), default="pending")
+    rejection_reason = Column(Text, nullable=True)
+
+    uploaded_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    seller = relationship("Seller", back_populates="kyc_documents")
+
+
+class SellerPayoutAccount(Base):
+    __tablename__ = "seller_payout_accounts"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    seller_id = Column(UUID(as_uuid=True), ForeignKey("sellers.id"), nullable=False)
+
+    account_type = Column(String(50), nullable=False)
+    provider = Column(String(100), nullable=False)
+    account_name = Column(String(255), nullable=False)
+    account_number = Column(String(255), nullable=False)
+    currency = Column(String(10), default="TZS")
+    is_default = Column(Boolean, default=False)
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    seller = relationship("Seller", back_populates="payout_accounts")
+
+
+class ProductStatus(str, enum.Enum):
+    draft = "draft"
+    pending_review = "pending_review"
+    approved = "approved"
+    rejected = "rejected"
+    inactive = "inactive"
+
+
+class Category(Base):
+    __tablename__ = "categories"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    parent_id = Column(UUID(as_uuid=True), ForeignKey("categories.id"), nullable=True)
+    name = Column(String(150), nullable=False)
+    slug = Column(String(150), unique=True, index=True, nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class Brand(Base):
+    __tablename__ = "brands"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    name = Column(String(150), nullable=False)
+    slug = Column(String(150), unique=True, index=True, nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class Product(Base):
+    __tablename__ = "products"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    seller_id = Column(UUID(as_uuid=True), ForeignKey("sellers.id"), nullable=False)
+    category_id = Column(UUID(as_uuid=True), ForeignKey("categories.id"), nullable=False)
+    brand_id = Column(UUID(as_uuid=True), ForeignKey("brands.id"), nullable=True)
+
+    sku = Column(String(100), unique=True, index=True, nullable=False)
+    name = Column(String(255), nullable=False)
+    slug = Column(String(255), unique=True, index=True, nullable=False)
+    description = Column(Text)
+
+    price = Column(Numeric(18, 2), nullable=False)
+    sale_price = Column(Numeric(18, 2), nullable=True)
+    currency = Column(String(10), default="TZS")
+    weight = Column(Numeric(10, 2), nullable=True)
+
+    status = Column(Enum(ProductStatus), default=ProductStatus.pending_review)
+    rejection_reason = Column(Text, nullable=True)
+    is_active = Column(Boolean, default=True)
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+    seller = relationship("Seller")
+    category = relationship("Category")
+    brand = relationship("Brand")
+    images = relationship("ProductImage", back_populates="product", cascade="all, delete-orphan")
+    variants = relationship("ProductVariant", back_populates="product", cascade="all, delete-orphan")
+    tags = relationship("ProductTag", back_populates="product", cascade="all, delete-orphan")
+
+
+class ProductImage(Base):
+    __tablename__ = "product_images"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    product_id = Column(UUID(as_uuid=True), ForeignKey("products.id"), nullable=False)
+    image_url = Column(Text, nullable=False)
+    is_primary = Column(Boolean, default=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    product = relationship("Product", back_populates="images")
+
+
+class ProductVariant(Base):
+    __tablename__ = "product_variants"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    product_id = Column(UUID(as_uuid=True), ForeignKey("products.id"), nullable=False)
+    variant_name = Column(String(100), nullable=False)
+    sku = Column(String(100), unique=True, index=True, nullable=False)
+    price = Column(Numeric(18, 2), nullable=True)
+    attributes = Column(JSONB, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    product = relationship("Product", back_populates="variants")
+
+
+class ProductTag(Base):
+    __tablename__ = "product_tags"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    product_id = Column(UUID(as_uuid=True), ForeignKey("products.id"), nullable=False)
+    tag = Column(String(100), index=True, nullable=False)
+
+    product = relationship("Product", back_populates="tags")

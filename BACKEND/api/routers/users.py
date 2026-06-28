@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from uuid import UUID
 
@@ -6,21 +6,54 @@ from api.deps import get_db, get_current_user
 from api.models import User, Address
 from api.schemas import UserResponse, UpdateUserRequest, AddressCreate, AddressResponse
 
+
 router = APIRouter(tags=["Users"])
 
 
+# =========================
+# USER PROFILE
+# =========================
+
 @router.get("/users/me", response_model=UserResponse)
-def get_me(current_user: User = Depends(get_current_user)):
+def get_my_profile(
+    current_user: User = Depends(get_current_user)
+):
     return current_user
 
 
 @router.patch("/users/me", response_model=UserResponse)
-def update_me(
+def update_my_profile(
     data: UpdateUserRequest,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(get_current_user)
 ):
-    for key, value in data.model_dump(exclude_unset=True).items():
+    update_data = data.model_dump(exclude_unset=True)
+
+    if "email" in update_data:
+        existing_email = db.query(User).filter(
+            User.email == update_data["email"],
+            User.id != current_user.id
+        ).first()
+
+        if existing_email:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Email already exists"
+            )
+
+    if "phone" in update_data:
+        existing_phone = db.query(User).filter(
+            User.phone == update_data["phone"],
+            User.id != current_user.id
+        ).first()
+
+        if existing_phone:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Phone already exists"
+            )
+
+    for key, value in update_data.items():
         setattr(current_user, key, value)
 
     db.commit()
@@ -29,18 +62,34 @@ def update_me(
     return current_user
 
 
-@router.post("/addresses", response_model=AddressResponse)
+# =========================
+# ADDRESSES
+# =========================
+
+@router.post(
+    "/addresses",
+    response_model=AddressResponse,
+    status_code=status.HTTP_201_CREATED
+)
 def create_address(
     data: AddressCreate,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(get_current_user)
 ):
     if data.is_default:
-        db.query(Address).filter(Address.user_id == current_user.id).update(
-            {"is_default": False}
-        )
+        db.query(Address).filter(
+            Address.user_id == current_user.id
+        ).update({"is_default": False})
 
-    address = Address(user_id=current_user.id, **data.model_dump())
+    address = Address(
+        user_id=current_user.id,
+        country=data.country,
+        region=data.region,
+        city=data.city,
+        street=data.street,
+        postal_code=data.postal_code,
+        is_default=data.is_default,
+    )
 
     db.add(address)
     db.commit()
@@ -50,10 +99,15 @@ def create_address(
 
 
 @router.get("/addresses", response_model=list[AddressResponse])
-def get_addresses(
-    db: Session = Depends(get_db), current_user: User = Depends(get_current_user)
+def get_my_addresses(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
 ):
-    return db.query(Address).filter(Address.user_id == current_user.id).all()
+    addresses = db.query(Address).filter(
+        Address.user_id == current_user.id
+    ).order_by(Address.created_at.desc()).all()
+
+    return addresses
 
 
 @router.patch("/addresses/{address_id}", response_model=AddressResponse)
@@ -61,24 +115,31 @@ def update_address(
     address_id: UUID,
     data: AddressCreate,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(get_current_user)
 ):
-    address = (
-        db.query(Address)
-        .filter(Address.id == address_id, Address.user_id == current_user.id)
-        .first()
-    )
+    address = db.query(Address).filter(
+        Address.id == address_id,
+        Address.user_id == current_user.id
+    ).first()
 
     if not address:
-        raise HTTPException(status_code=404, detail="Address not found")
-
-    if data.is_default:
-        db.query(Address).filter(Address.user_id == current_user.id).update(
-            {"is_default": False}
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Address not found"
         )
 
-    for key, value in data.model_dump().items():
-        setattr(address, key, value)
+    if data.is_default:
+        db.query(Address).filter(
+            Address.user_id == current_user.id,
+            Address.id != address.id
+        ).update({"is_default": False})
+
+    address.country = data.country
+    address.region = data.region
+    address.city = data.city
+    address.street = data.street
+    address.postal_code = data.postal_code
+    address.is_default = data.is_default
 
     db.commit()
     db.refresh(address)
@@ -90,18 +151,22 @@ def update_address(
 def delete_address(
     address_id: UUID,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(get_current_user)
 ):
-    address = (
-        db.query(Address)
-        .filter(Address.id == address_id, Address.user_id == current_user.id)
-        .first()
-    )
+    address = db.query(Address).filter(
+        Address.id == address_id,
+        Address.user_id == current_user.id
+    ).first()
 
     if not address:
-        raise HTTPException(status_code=404, detail="Address not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Address not found"
+        )
 
     db.delete(address)
     db.commit()
 
-    return {"message": "Address deleted successfully"}
+    return {
+        "message": "Address deleted successfully"
+    }
