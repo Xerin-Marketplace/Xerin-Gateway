@@ -291,3 +291,16 @@ class ProductTagResponse(BaseModel):
 
     class Config:
         from_attributes = True
+        
+class SellerRegisterRequest(BaseModel):
+    first_name: str
+    last_name: str
+    email: EmailStr
+    phone: str
+    password: str
+
+    business_name: str
+    business_category: str | None = None
+    contact_email: EmailStr | None = None
+    contact_phone: str | None = None
+    agreement_accepted: bool = True

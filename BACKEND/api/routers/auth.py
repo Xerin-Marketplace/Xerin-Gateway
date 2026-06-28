@@ -6,7 +6,14 @@ import logging
 
 from api.database import SessionLocal
 from api.deps import get_db, get_current_user
-from api.models import User, Session as UserSession, OTPRequest, UserStatus
+from api.models import (
+    User,
+    Session as UserSession,
+    OTPRequest,
+    UserStatus,
+    Seller,
+    SellerStatus,
+)
 from api.schemas import *
 from api.security import (
     hash_password,
@@ -94,6 +101,85 @@ def register(data: RegisterRequest, db: Session = Depends(get_db)):
 
     # In development you may want to return dev_otp; production should not expose it.
     return user
+
+
+@router.post("/register-seller", response_model=SellerResponse)
+def register_seller(data: SellerRegisterRequest, db: Session = Depends(get_db)):
+    email = data.email.strip().lower()
+    phone = data.phone.strip()
+
+    existing_user = (
+        db.query(User)
+        .filter((User.email == email) | (User.phone == phone))
+        .first()
+    )
+
+    if existing_user:
+        raise HTTPException(status_code=400, detail="Email or phone already exists")
+
+    if not data.agreement_accepted:
+        raise HTTPException(
+            status_code=400,
+            detail="Seller agreement must be accepted"
+        )
+
+    user = User(
+        first_name=data.first_name,
+        last_name=data.last_name,
+        email=email,
+        phone=phone,
+        password_hash=hash_password(data.password),
+        status=UserStatus.pending_verification,
+        is_verified=False,
+    )
+
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+
+    seller = Seller(
+        user_id=user.id,
+        business_name=data.business_name,
+        business_category=data.business_category,
+        contact_email=data.contact_email or email,
+        contact_phone=data.contact_phone or phone,
+        agreement_accepted=data.agreement_accepted,
+        status=SellerStatus.pending,
+    )
+
+    db.add(seller)
+
+    otp = generate_otp()
+    otp_request = OTPRequest(
+        user_id=user.id,
+        phone=phone,
+        otp_code=otp,
+        expires_at=datetime.now(timezone.utc) + timedelta(minutes=5),
+        verified=False,
+    )
+
+    db.add(otp_request)
+    db.commit()
+    db.refresh(seller)
+
+    try:
+        send_email(
+            to=email,
+            subject="Verify your seller account",
+            body=f"Your seller verification code is: {otp}",
+        )
+    except Exception as e:
+        logger.exception("send_email failed for %s: %s", email, e)
+
+    try:
+        send_sms(
+            to=phone,
+            message=f"Use this OTP to verify your Xerin Market seller account: {otp}",
+        )
+    except Exception as e:
+        logger.exception("send_sms failed for %s: %s", phone, e)
+
+    return seller
 
 
 @router.post("/login", response_model=TokenResponse)
