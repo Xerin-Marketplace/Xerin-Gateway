@@ -2,6 +2,7 @@ from datetime import datetime, timedelta, timezone
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from jose import jwt, JWTError
+import logging
 
 from api.database import SessionLocal
 from api.deps import get_db, get_current_user
@@ -16,15 +17,30 @@ from api.security import (
     ALGORITHM,
 )
 from api.config import settings
+# from api.utils import send_email, send_sms
+from api.routers.email import send_email as _send_email
+from api.routers.sms import send_sms as _send_sms
+
+def send_email(to: str, subject: str, body: str, html: str | None = None) -> None:
+    return _send_email(to=to, subject=subject, body=body, html=html)
+
+def send_sms(to: str, message: str) -> None:
+    return _send_sms(to=to, message=message)
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/auth", tags=["Auth"])
 
 
 @router.post("/register", response_model=UserResponse)
 def register(data: RegisterRequest, db: Session = Depends(get_db)):
+    # normalize inputs
+    email = data.email.strip().lower()
+    phone = data.phone.strip()
+
     existing_user = (
         db.query(User)
-        .filter((User.email == data.email) | (User.phone == data.phone))
+        .filter((User.email == email) | (User.phone == phone))
         .first()
     )
 
@@ -34,8 +50,8 @@ def register(data: RegisterRequest, db: Session = Depends(get_db)):
     user = User(
         first_name=data.first_name,
         last_name=data.last_name,
-        email=data.email,
-        phone=data.phone,
+        email=email,
+        phone=phone,
         password_hash=hash_password(data.password),
         status=UserStatus.pending_verification,
         is_verified=False,
@@ -45,18 +61,55 @@ def register(data: RegisterRequest, db: Session = Depends(get_db)):
     db.commit()
     db.refresh(user)
 
+    # generate OTP and persist
+    otp = generate_otp()
+    otp_request = OTPRequest(
+        user_id=user.id,
+        phone=phone,
+        otp_code=otp,
+        expires_at=datetime.now(timezone.utc) + timedelta(minutes=5),
+        verified=False,
+    )
+
+    db.add(otp_request)
+    db.commit()
+
+    # send OTP via email and SMS (best-effort; failures do not block registration)
+    try:
+        send_email(
+            to=email,
+            subject="Verify your account",
+            body=f"Your verification code is: {otp}",
+        )
+    except Exception as e:
+        logger.exception("send_email failed for %s: %s", email, e)
+
+    try:
+        send_sms(
+            to=phone,
+            message=f"Use this OTP for verification in Exerim market Place and Your verification code is: {otp}",
+        )
+    except Exception as e:
+        logger.exception("send_sms failed for %s: %s", phone, e)
+
+    # In development you may want to return dev_otp; production should not expose it.
     return user
 
 
 @router.post("/login", response_model=TokenResponse)
 def login(data: LoginRequest, db: Session = Depends(get_db)):
-    user = db.query(User).filter(User.email == data.email).first()
+    email = data.email.strip().lower()
+    user = db.query(User).filter(User.email == email).first()
 
     if not user or not verify_password(data.password, user.password_hash):
         raise HTTPException(status_code=401, detail="Invalid email or password")
 
     if user.status == UserStatus.suspended:
         raise HTTPException(status_code=403, detail="Account suspended")
+
+    # Enforce verification before allowing login
+    if not user.is_verified:
+        raise HTTPException(status_code=403, detail="Account not verified")
 
     access_token = create_access_token({"sub": str(user.id)})
     refresh_token = create_refresh_token({"sub": str(user.id)})
@@ -152,8 +205,25 @@ def send_otp(data: SendOTPRequest, db: Session = Depends(get_db)):
     db.add(otp_request)
     db.commit()
 
-    # Later connect this with your SMS gateway
-    return {"message": "OTP sent successfully", "dev_otp": otp}
+    # send via SMS (and email if a user exists with that phone)
+    try:
+        send_sms(to=data.phone, message=f"Your verification code is: {otp}")
+    except Exception as e:
+        logger.exception("send_sms failed for %s: %s", data.phone, e)
+
+    # try find user by phone to send email if available
+    user = db.query(User).filter(User.phone == data.phone).first()
+    if user:
+        try:
+            send_email(
+                to=user.email,
+                subject="Your verification code",
+                body=f"Your verification code is: {otp}",
+            )
+        except Exception as e:
+            logger.exception("send_email failed for %s: %s", user.email, e)
+
+    return {"message": "OTP sent successfully", "dev_otp": otp if settings.DEBUG else None}
 
 
 @router.post("/verify-otp")
@@ -189,7 +259,7 @@ def verify_otp(data: VerifyOTPRequest, db: Session = Depends(get_db)):
 
 @router.post("/forgot-password")
 def forgot_password(data: ForgotPasswordRequest, db: Session = Depends(get_db)):
-    user = db.query(User).filter(User.email == data.email).first()
+    user = db.query(User).filter(User.email == data.email.strip().lower()).first()
 
     if not user:
         return {"message": "If email exists, OTP has been sent"}
@@ -207,12 +277,30 @@ def forgot_password(data: ForgotPasswordRequest, db: Session = Depends(get_db)):
     db.add(otp_request)
     db.commit()
 
-    return {"message": "Password reset OTP sent", "dev_otp": otp}
+    # send password-reset OTP via email and SMS
+    try:
+        send_email(
+            to=user.email,
+            subject="Password reset code",
+            body=f"Your password reset code is: {otp}",
+        )
+    except Exception as e:
+        logger.exception("send_email failed for %s: %s", user.email, e)
+
+    try:
+        send_sms(
+            to=user.phone,
+            message=f"Your password reset code is: {otp}",
+        )
+    except Exception as e:
+        logger.exception("send_sms failed for %s: %s", user.phone, e)
+
+    return {"message": "Password reset OTP sent", "dev_otp": otp if settings.DEBUG else None}
 
 
 @router.post("/reset-password")
 def reset_password(data: ResetPasswordRequest, db: Session = Depends(get_db)):
-    user = db.query(User).filter(User.email == data.email).first()
+    user = db.query(User).filter(User.email == data.email.strip().lower()).first()
 
     if not user:
         raise HTTPException(status_code=404, detail="User not found")

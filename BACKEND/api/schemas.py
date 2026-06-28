@@ -9,6 +9,7 @@ class RegisterRequest(BaseModel):
     email: EmailStr
     phone: Optional[str] = None
     password: str
+    # password_confirmation: str
 
 
 class LoginRequest(BaseModel):
