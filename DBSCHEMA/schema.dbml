@@ -44,8 +44,12 @@ Table users {
   email varchar(255) [unique]
   phone varchar(30) [unique]
   password_hash text
+  profile_photo_url text
   status user_status
   is_verified boolean
+  two_factor_enabled boolean
+  preferred_language varchar(20)
+  preferred_currency varchar(10)
   last_login_at timestamptz
   created_at timestamptz
   updated_at timestamptz
@@ -105,6 +109,23 @@ Table categories {
   created_at timestamptz
 }
 
+Table oauth_accounts {
+  id uuid [pk]
+  user_id uuid
+  provider oauth_provider
+  provider_user_id varchar(255)
+  email varchar(255)
+  created_at timestamptz
+}
+
+Table two_factor_secrets {
+  id uuid [pk]
+  user_id uuid
+  secret text
+  enabled boolean
+  created_at timestamptz
+}
+
 Table brands {
   id uuid [pk]
   name varchar(150)
@@ -112,8 +133,65 @@ Table brands {
   created_at timestamptz
 }
 
+Table sellers {
+  id uuid [pk]
+  user_id uuid
+  business_name varchar(255)
+  business_category varchar(150)
+  contact_email varchar(255)
+  contact_phone varchar(30)
+  status seller_status
+  agreement_accepted boolean
+  approved_at timestamptz
+  created_at timestamptz
+  updated_at timestamptz
+}
+
+Table seller_kyc_documents {
+  id uuid [pk]
+  seller_id uuid
+  document_type varchar(100)
+  document_url text
+  status varchar(50)
+  rejection_reason text
+  uploaded_at timestamptz
+}
+
+Table seller_reviews {
+  id uuid [pk]
+  user_id uuid
+  seller_id uuid
+  order_id uuid
+  communication_rating int
+  packing_rating int
+  speed_rating int
+  comment text
+  created_at timestamptz
+}
+
+Table review_votes {
+  id uuid [pk]
+  review_id uuid
+  user_id uuid
+  is_helpful boolean
+  created_at timestamptz
+}
+
+Table seller_payout_accounts {
+  id uuid [pk]
+  seller_id uuid
+  account_type varchar(50)
+  provider varchar(100)
+  account_name varchar(255)
+  account_number varchar(255)
+  currency varchar(10)
+  is_default boolean
+  created_at timestamptz
+}
+
 Table products {
   id uuid [pk]
+  seller_id uuid
   category_id uuid
   brand_id uuid
   sku varchar(100) [unique]
@@ -122,10 +200,28 @@ Table products {
   description text
   price decimal(18,2)
   sale_price decimal(18,2)
+  currency varchar(10)
   weight decimal(10,2)
+  status product_status
+  rejection_reason text
   is_active boolean
   created_at timestamptz
   updated_at timestamptz
+}
+
+Table product_tags {
+  id uuid [pk]
+  product_id uuid
+  tag varchar(100)
+}
+
+Table product_moderation_logs {
+  id uuid [pk]
+  product_id uuid
+  admin_id uuid
+  status product_status
+  remarks text
+  created_at timestamptz
 }
 
 Table product_images {
@@ -164,6 +260,89 @@ Table inventory {
 Table carts {
   id uuid [pk]
   user_id uuid
+  session_id varchar(255)
+  currency varchar(10)
+  created_at timestamptz
+  updated_at timestamptz
+}
+
+Table wishlists {
+  id uuid [pk]
+  user_id uuid
+  product_id uuid
+  created_at timestamptz
+}
+
+Table shipping_methods {
+  id uuid [pk]
+  name varchar(100)
+  code varchar(50)
+  active boolean
+  created_at timestamptz
+}
+
+Table shipments {
+  id uuid [pk]
+  order_id uuid
+  logistics_partner_id uuid
+  shipping_method_id uuid
+  tracking_number varchar(255)
+  carrier varchar(100)
+  status shipment_status
+  shipping_cost decimal(18,2)
+  dispatched_at timestamptz
+  delivered_at timestamptz
+  created_at timestamptz
+}
+
+Table shipment_tracking_events {
+  id uuid [pk]
+  shipment_id uuid
+  status shipment_status
+  location varchar(255)
+  remarks text
+  event_time timestamptz
+}
+
+Table returns {
+  id uuid [pk]
+  order_id uuid
+  user_id uuid
+  reason text
+  status return_status
+  created_at timestamptz
+  updated_at timestamptz
+}
+
+Table disputes {
+  id uuid [pk]
+  order_id uuid
+  opened_by uuid
+  reason text
+  status dispute_status
+  resolution text
+  created_at timestamptz
+  updated_at timestamptz
+}
+
+Table commissions {
+  id uuid [pk]
+  seller_id uuid
+  order_id uuid
+  commission_rate decimal(5,2)
+  commission_amount decimal(18,2)
+  created_at timestamptz
+}
+
+Table payouts {
+  id uuid [pk]
+  seller_id uuid
+  amount decimal(18,2)
+  currency varchar(10)
+  status payout_status
+  payout_reference varchar(255)
+  scheduled_at timestamptz
+  paid_at timestamptz
   created_at timestamptz
 }
 
@@ -375,3 +554,38 @@ Ref: reviews.user_id > users.id
 Ref: reviews.product_id > products.id
 
 Ref: audit_logs.user_id > users.id
+
+Ref: oauth_accounts.user_id > users.id
+Ref: two_factor_secrets.user_id > users.id
+
+Ref: sellers.user_id > users.id
+Ref: seller_kyc_documents.seller_id > sellers.id
+Ref: seller_payout_accounts.seller_id > sellers.id
+
+Ref: products.seller_id > sellers.id
+Ref: product_tags.product_id > products.id
+Ref: product_moderation_logs.product_id > products.id
+Ref: product_moderation_logs.admin_id > users.id
+
+Ref: shipments.order_id > orders.id
+Ref: shipments.logistics_partner_id > users.id
+Ref: shipments.shipping_method_id > shipping_methods.id
+Ref: shipment_tracking_events.shipment_id > shipments.id
+
+Ref: returns.order_id > orders.id
+Ref: returns.user_id > users.id
+
+Ref: disputes.order_id > orders.id
+Ref: disputes.opened_by > users.id
+
+Ref: commissions.seller_id > sellers.id
+Ref: commissions.order_id > orders.id
+
+Ref: payouts.seller_id > sellers.id
+
+Ref: seller_reviews.user_id > users.id
+Ref: seller_reviews.seller_id > sellers.id
+Ref: seller_reviews.order_id > orders.id
+
+Ref: review_votes.review_id > reviews.id
+Ref: review_votes.user_id > users.id

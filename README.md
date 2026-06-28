@@ -188,3 +188,16 @@ Get Tokens
 Use App
 ```
 
+
+# SERVICES 
+
+Auth Service
+User Service
+Seller Service
+Product Service
+Order Service
+Payment Service
+Logistics Service
+Notification Service
+Admin Service
+
