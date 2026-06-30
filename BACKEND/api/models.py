@@ -112,15 +112,6 @@ class Seller(Base):
         unique=True,
         nullable=False
     )
-    business_description = Column(Text, nullable=True)
-    business_location = Column(Text, nullable=True)
-    business_country = Column(String(100), nullable=True)
-    business_region = Column(String(100), nullable=True)
-    business_city = Column(String(100), nullable=True)
-    business_address = Column(Text, nullable=True)
-    product_description = Column(Text, nullable=True)
-    years_in_business = Column(String(50), nullable=True)
-    website_url = Column(Text, nullable=True)
     business_name = Column(String(255), nullable=False)
     contact_email = Column(String(255))
     contact_phone = Column(String(30))
