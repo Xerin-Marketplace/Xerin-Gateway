@@ -1,5 +1,4 @@
 from pydantic import BaseModel, EmailStr
-from typing import Optional
 from uuid import UUID
 from datetime import datetime
 from decimal import Decimal
@@ -102,6 +101,15 @@ class SellerCreate(BaseModel):
 class SellerUpdate(BaseModel):
     business_name: str | None = None
     business_category_ids: list[UUID] | None = None
+    business_description: str | None = None
+    business_location: str | None = None
+    business_country: str | None = None
+    business_region: str | None = None
+    business_city: str | None = None
+    business_address: str | None = None
+    product_description: str | None = None
+    years_in_business: str | None = None
+    website_url: str | None = None
     contact_email: EmailStr | None = None
     contact_phone: str | None = None
 
@@ -110,6 +118,15 @@ class SellerResponse(BaseModel):
     id: UUID
     user_id: UUID
     business_name: str
+    business_description: str | None
+    business_location: str | None
+    business_country: str | None
+    business_region: str | None
+    business_city: str | None
+    business_address: str | None
+    product_description: str | None
+    years_in_business: str | None
+    website_url: str | None
     contact_email: str | None
     contact_phone: str | None
     status: str
@@ -129,6 +146,15 @@ class SellerRegisterRequest(BaseModel):
 
     business_name: str
     business_category_ids: list[UUID]
+    business_description: str | None = None
+    business_location: str | None = None
+    business_country: str | None = None
+    business_region: str | None = None
+    business_city: str | None = None
+    business_address: str | None = None
+    product_description: str | None = None
+    years_in_business: str | None = None
+    website_url: str | None = None
     contact_email: EmailStr | None = None
     contact_phone: str | None = None
     agreement_accepted: bool = True
@@ -146,6 +172,9 @@ class SellerKYCResponse(BaseModel):
     status: str
     rejection_reason: str | None
     uploaded_at: datetime
+    
+    class Config:
+        from_attributes = True
 
 class SellerKYCStatusResponse(BaseModel):
     seller_status: str
@@ -154,7 +183,7 @@ class SellerKYCStatusResponse(BaseModel):
     missing_documents: list[str]
     can_submit_for_review: bool
 
-class Config:
+    class Config:
         from_attributes = True
 
 
@@ -183,7 +212,50 @@ class SellerPayoutResponse(BaseModel):
         
         
         from decimal import Decimal
-from typing import Optional, List, Dict, Any
+
+
+class UserMeResponse(BaseModel):
+    id: UUID
+    first_name: str
+    last_name: str
+    email: EmailStr
+    phone: str | None
+    is_verified: bool
+    status: str | None
+    is_seller: bool
+    seller_status: str | None
+    account_type: str
+
+    class Config:
+        from_attributes = True
+
+
+class PaginatedAddressResponse(BaseModel):
+    total: int
+    page: int
+    page_size: int
+    results: list[AddressResponse]
+
+
+class PaginatedSellerResponse(BaseModel):
+    total: int
+    page: int
+    page_size: int
+    results: list[SellerResponse]
+
+
+class PaginatedKYCResponse(BaseModel):
+    total: int
+    page: int
+    page_size: int
+    results: list[SellerKYCResponse]
+
+
+class PaginatedPayoutResponse(BaseModel):
+    total: int
+    page: int
+    page_size: int
+    results: list[SellerPayoutResponse]
 
 
 class CategoryCreate(BaseModel):
@@ -314,20 +386,6 @@ class ProductTagResponse(BaseModel):
 
     class Config:
         from_attributes = True
-        
-class SellerRegisterRequest(BaseModel):
-    first_name: str
-    last_name: str
-    email: EmailStr
-    phone: str
-    password: str
-
-    business_name: str
-    business_category: str | None = None
-    contact_email: EmailStr | None = None
-    contact_phone: str | None = None
-    agreement_accepted: bool = True
-    
     
 class BusinessCategoryCreate(BaseModel):
     name: str

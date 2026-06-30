@@ -149,11 +149,20 @@ def register_seller(data: SellerRegisterRequest, db: Session = Depends(get_db)):
     seller = Seller(
         user_id=user.id,
         business_name=data.business_name,
+        business_description=data.business_description,
+        business_location=data.business_location,
+        business_country=data.business_country,
+        business_region=data.business_region,
+        business_city=data.business_city,
+        business_address=data.business_address,
+        product_description=data.product_description,
+        years_in_business=data.years_in_business,
+        website_url=data.website_url,
         contact_email=data.contact_email or email,
         contact_phone=data.contact_phone or phone,
         agreement_accepted=data.agreement_accepted,
         status=SellerStatus.pending,
-    )
+)
 
     db.add(seller)
     db.commit()

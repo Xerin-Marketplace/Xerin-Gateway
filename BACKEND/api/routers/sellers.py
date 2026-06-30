@@ -5,12 +5,16 @@ from sqlalchemy.orm import Session
 
 from api.deps import get_db, get_current_user
 from api.models import User, Seller, SellerKYCDocument, SellerPayoutAccount, SellerStatus
+from fastapi import Query
 from api.schemas import (
     SellerResponse,
     SellerUpdate,
     SellerKYCResponse,
     SellerPayoutCreate,
     SellerPayoutResponse,
+    PaginatedKYCResponse,
+    PaginatedPayoutResponse,
+    PaginatedSellerResponse,
 )
 
 router = APIRouter(prefix="/sellers", tags=["Sellers"])
@@ -139,17 +143,111 @@ async def upload_kyc_document(
     return document
 
 
-@router.get("/kyc-documents", response_model=list[SellerKYCResponse])
+@router.get("/kyc-documents", response_model=PaginatedKYCResponse)
 def get_my_kyc_documents(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(10, ge=1, le=100),
+    document_type: str | None = None,
+    status_filter: str | None = None,
+):
+    seller = get_my_seller(db, current_user)
+
+    query = db.query(SellerKYCDocument).filter(
+        SellerKYCDocument.seller_id == seller.id
+    )
+
+    if document_type:
+        query = query.filter(SellerKYCDocument.document_type == document_type)
+
+    if status_filter:
+        query = query.filter(SellerKYCDocument.status == status_filter)
+
+    total = query.count()
+
+    documents = query.order_by(SellerKYCDocument.uploaded_at.desc()) \
+        .offset((page - 1) * page_size) \
+        .limit(page_size) \
+        .all()
+
+    return {
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+        "results": documents,
+    }
+    
+    
+@router.post(
+    "/kyc-documents/bulk",
+    response_model=list[SellerKYCResponse],
+    status_code=status.HTTP_201_CREATED
+)
+async def upload_bulk_kyc_documents(
+    tin_file: UploadFile = File(...),
+    business_profile_file: UploadFile = File(...),
+    business_registration_file: UploadFile = File(...),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
     seller = get_my_seller(db, current_user)
 
-    return db.query(SellerKYCDocument).filter(
-        SellerKYCDocument.seller_id == seller.id
-    ).order_by(SellerKYCDocument.uploaded_at.desc()).all()
+    files_map = {
+        "tin": tin_file,
+        "business_profile": business_profile_file,
+        "business_registration": business_registration_file,
+    }
 
+    allowed_extensions = [".pdf", ".jpg", ".jpeg", ".png"]
+    uploaded_documents = []
+
+    for document_type, file in files_map.items():
+        file_extension = Path(file.filename).suffix.lower()
+
+        if file_extension not in allowed_extensions:
+            raise HTTPException(
+                status_code=400,
+                detail=f"{document_type} must be PDF, JPG, JPEG, or PNG",
+            )
+
+        file_name = f"{seller.id}_{document_type}{file_extension}"
+        file_path = UPLOAD_DIR / file_name
+
+        content = await file.read()
+        file_path.write_bytes(content)
+
+        document_url = str(file_path)
+
+        existing_doc = db.query(SellerKYCDocument).filter(
+            SellerKYCDocument.seller_id == seller.id,
+            SellerKYCDocument.document_type == document_type,
+        ).first()
+
+        if existing_doc:
+            existing_doc.document_url = document_url
+            existing_doc.status = "pending"
+            existing_doc.rejection_reason = None
+            document = existing_doc
+        else:
+            document = SellerKYCDocument(
+                seller_id=seller.id,
+                document_type=document_type,
+                document_url=document_url,
+                status="pending",
+            )
+            db.add(document)
+
+        uploaded_documents.append(document)
+
+    seller.status = SellerStatus.under_review
+
+    db.commit()
+
+    for document in uploaded_documents:
+        db.refresh(document)
+
+    return uploaded_documents
 
 @router.get("/kyc-status")
 def get_my_kyc_status(
@@ -206,16 +304,32 @@ def create_payout_account(
     return payout
 
 
-@router.get("/payout-accounts", response_model=list[SellerPayoutResponse])
+@router.get("/payout-accounts", response_model=PaginatedPayoutResponse)
 def get_my_payout_accounts(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(10, ge=1, le=100),
 ):
     seller = get_my_seller(db, current_user)
 
-    return db.query(SellerPayoutAccount).filter(
+    query = db.query(SellerPayoutAccount).filter(
         SellerPayoutAccount.seller_id == seller.id
-    ).all()
+    )
+
+    total = query.count()
+
+    accounts = query.order_by(SellerPayoutAccount.created_at.desc()) \
+        .offset((page - 1) * page_size) \
+        .limit(page_size) \
+        .all()
+
+    return {
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+        "results": accounts,
+    }
 
 
 @router.delete("/payout-accounts/{account_id}")
@@ -244,16 +358,32 @@ def delete_payout_account(
 # ADMIN KYC VERIFICATION
 # =========================
 
-@router.get("/admin/pending", response_model=list[SellerResponse])
+@router.get("/admin/pending", response_model=PaginatedSellerResponse)
 def admin_get_pending_sellers(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(10, ge=1, le=100),
 ):
     require_admin(current_user)
 
-    return db.query(Seller).filter(
+    query = db.query(Seller).filter(
         Seller.status == SellerStatus.under_review
-    ).all()
+    )
+
+    total = query.count()
+
+    sellers = query.order_by(Seller.created_at.desc()) \
+        .offset((page - 1) * page_size) \
+        .limit(page_size) \
+        .all()
+
+    return {
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+        "results": sellers,
+    }
 
 
 @router.get("/admin/{seller_id}/documents", response_model=list[SellerKYCResponse])

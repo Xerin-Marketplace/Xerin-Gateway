@@ -93,19 +93,23 @@ class Seller(Base):
         unique=True,
         nullable=False
     )
-
+    business_description = Column(Text, nullable=True)
+    business_location = Column(Text, nullable=True)
+    business_country = Column(String(100), nullable=True)
+    business_region = Column(String(100), nullable=True)
+    business_city = Column(String(100), nullable=True)
+    business_address = Column(Text, nullable=True)
+    product_description = Column(Text, nullable=True)
+    years_in_business = Column(String(50), nullable=True)
+    website_url = Column(Text, nullable=True)
     business_name = Column(String(255), nullable=False)
-    
     contact_email = Column(String(255))
     contact_phone = Column(String(30))
-
     status = Column(Enum(SellerStatus), default=SellerStatus.pending)
     agreement_accepted = Column(Boolean, default=False)
-
     approved_at = Column(DateTime(timezone=True), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
-
     user = relationship("User", back_populates="seller_profile")
     business_categories = relationship(
     "SellerBusinessCategory",

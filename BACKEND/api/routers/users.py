@@ -1,10 +1,11 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from uuid import UUID
+from fastapi import Query
 
 from api.deps import get_db, get_current_user
 from api.models import User, Address, Seller
-from api.schemas import UserResponse, UpdateUserRequest, AddressCreate, AddressResponse
+from api.schemas import UserResponse, UpdateUserRequest, AddressCreate, AddressResponse, UserMeResponse, PaginatedAddressResponse
 
 
 router = APIRouter(tags=["Users"])
@@ -14,7 +15,7 @@ router = APIRouter(tags=["Users"])
 # USER PROFILE
 # =========================
 
-@router.get("/users/me")
+@router.get("/users/me", response_model=UserMeResponse)
 def get_my_profile(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
@@ -115,16 +116,28 @@ def create_address(
     return address
 
 
-@router.get("/addresses", response_model=list[AddressResponse])
+@router.get("/addresses", response_model=PaginatedAddressResponse)
 def get_my_addresses(
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(get_current_user),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(10, ge=1, le=100),
 ):
-    addresses = db.query(Address).filter(
-        Address.user_id == current_user.id
-    ).order_by(Address.created_at.desc()).all()
+    query = db.query(Address).filter(Address.user_id == current_user.id)
 
-    return addresses
+    total = query.count()
+
+    addresses = query.order_by(Address.created_at.desc()) \
+        .offset((page - 1) * page_size) \
+        .limit(page_size) \
+        .all()
+
+    return {
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+        "results": addresses,
+    }
 
 
 @router.patch("/addresses/{address_id}", response_model=AddressResponse)
