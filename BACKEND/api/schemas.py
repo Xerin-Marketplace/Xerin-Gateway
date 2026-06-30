@@ -54,9 +54,13 @@ class UserResponse(BaseModel):
     first_name: str
     last_name: str
     email: EmailStr
-    phone: Optional[str]
+    phone: str | None
     is_verified: bool
     status: str
+
+    is_seller: bool = False
+    seller_status: str | None = None
+    account_type: str = "customer"
 
     class Config:
         from_attributes = True

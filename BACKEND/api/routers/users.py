@@ -3,7 +3,7 @@ from sqlalchemy.orm import Session
 from uuid import UUID
 
 from api.deps import get_db, get_current_user
-from api.models import User, Address
+from api.models import User, Address, Seller
 from api.schemas import UserResponse, UpdateUserRequest, AddressCreate, AddressResponse
 
 
@@ -14,11 +14,28 @@ router = APIRouter(tags=["Users"])
 # USER PROFILE
 # =========================
 
-@router.get("/users/me", response_model=UserResponse)
+@router.get("/users/me")
 def get_my_profile(
+    db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    return current_user
+    seller = db.query(Seller).filter(
+        Seller.user_id == current_user.id
+    ).first()
+
+    return {
+        "id": current_user.id,
+        "first_name": current_user.first_name,
+        "last_name": current_user.last_name,
+        "email": current_user.email,
+        "phone": current_user.phone,
+        "is_verified": current_user.is_verified,
+        "status": current_user.status.value if current_user.status else None,
+
+        "is_seller": seller is not None,
+        "seller_status": seller.status.value if seller else None,
+        "account_type": "seller" if seller else "customer",
+    }
 
 
 @router.patch("/users/me", response_model=UserResponse)

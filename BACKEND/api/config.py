@@ -1,6 +1,4 @@
 from pydantic_settings import BaseSettings, SettingsConfigDict
-
-
 class Settings(BaseSettings):
     # existing auth/db settings
     DATABASE_URL: str
@@ -21,6 +19,7 @@ class Settings(BaseSettings):
     # sms settings (Africa's Talking)
     AT_USERNAME: str | None = None
     AT_API_KEY: str | None = None
+    AT_SENDER_ID: str | None = None  
     SMS_API_URL: str | None = None
 
     model_config = SettingsConfigDict(

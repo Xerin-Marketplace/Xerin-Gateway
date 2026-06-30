@@ -18,37 +18,6 @@ from api.schemas import (
 router = APIRouter(prefix="/sellers", tags=["Sellers"])
 
 
-@router.post("/register", response_model=SellerResponse, status_code=status.HTTP_201_CREATED)
-def register_seller(
-    data: SellerCreate,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    existing = db.query(Seller).filter(Seller.user_id == current_user.id).first()
-
-    if existing:
-        raise HTTPException(
-            status_code=400,
-            detail="You already have a seller account"
-        )
-
-    seller = Seller(
-        user_id=current_user.id,
-        business_name=data.business_name,
-        business_category=data.business_category,
-        contact_email=data.contact_email,
-        contact_phone=data.contact_phone,
-        agreement_accepted=data.agreement_accepted,
-        status="pending",
-    )
-
-    db.add(seller)
-    db.commit()
-    db.refresh(seller)
-
-    return seller
-
-
 @router.get("/me", response_model=SellerResponse)
 def get_my_seller_profile(
     db: Session = Depends(get_db),
