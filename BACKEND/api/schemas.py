@@ -212,6 +212,33 @@ class SellerPayoutResponse(BaseModel):
         
         
         from decimal import Decimal
+        
+class SellerProfileUpdate(BaseModel):
+    business_description: str | None = None
+    business_country: str | None = None
+    business_region: str | None = None
+    business_city: str | None = None
+    business_address: str | None = None
+    product_description: str | None = None
+    years_in_business: str | None = None
+    website_url: str | None = None
+
+
+class SellerProfileResponse(BaseModel):
+    id: UUID
+    seller_id: UUID
+    business_description: str | None
+    business_country: str | None
+    business_region: str | None
+    business_city: str | None
+    business_address: str | None
+    product_description: str | None
+    years_in_business: str | None
+    website_url: str | None
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
 
 
 class UserMeResponse(BaseModel):
@@ -411,3 +438,43 @@ class BusinessCategoryResponse(BaseModel):
 
     class Config:
         from_attributes = True
+        
+class AdminUserCreate(BaseModel):
+    first_name: str
+    last_name: str
+    email: EmailStr
+    phone: str | None = None
+    password: str
+    status: str = "active"
+    is_verified: bool = True
+
+
+class AdminUserUpdate(BaseModel):
+    first_name: str | None = None
+    last_name: str | None = None
+    email: EmailStr | None = None
+    phone: str | None = None
+    status: str | None = None
+    is_verified: bool | None = None
+    password: str | None = None
+
+
+class AdminUserResponse(BaseModel):
+    id: UUID
+    first_name: str | None
+    last_name: str | None
+    email: EmailStr
+    phone: str | None
+    status: str
+    is_verified: bool
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class PaginatedAdminUserResponse(BaseModel):
+    total: int
+    page: int
+    page_size: int
+    results: list[AdminUserResponse]        

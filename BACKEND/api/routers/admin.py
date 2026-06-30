@@ -1,6 +1,8 @@
 from uuid import UUID
 from datetime import datetime, timezone
-
+from fastapi import Query
+from sqlalchemy import or_
+from api.security import hash_password
 from fastapi import APIRouter, Depends, HTTPException, status, Form
 from sqlalchemy.orm import Session
 
@@ -27,7 +29,11 @@ from api.schemas import (
     SellerResponse,
     SellerKYCResponse,
     ProductResponse,
-)
+    AdminUserCreate,
+    AdminUserUpdate,
+    AdminUserResponse,
+    PaginatedAdminUserResponse,
+    )
 
 router = APIRouter(prefix="/admin", tags=["Admin"])
 
@@ -40,6 +46,180 @@ def require_admin(current_user: User):
             detail="Admin access required"
         )
 
+# =========================
+# USER MANAGEMENT
+# =========================
+
+@router.get("/users", response_model=PaginatedAdminUserResponse)
+def admin_get_users(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(10, ge=1, le=100),
+    search: str | None = Query(None),
+    status_filter: str | None = Query(None),
+):
+    require_admin(current_user)
+
+    query = db.query(User)
+
+    if search:
+        query = query.filter(
+            or_(
+                User.first_name.ilike(f"%{search}%"),
+                User.last_name.ilike(f"%{search}%"),
+                User.email.ilike(f"%{search}%"),
+                User.phone.ilike(f"%{search}%"),
+            )
+        )
+
+    if status_filter:
+        query = query.filter(User.status == status_filter)
+
+    total = query.count()
+
+    users = query.order_by(User.created_at.desc()) \
+        .offset((page - 1) * page_size) \
+        .limit(page_size) \
+        .all()
+
+    return {
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+        "results": users,
+    }
+
+
+@router.post("/users", response_model=AdminUserResponse, status_code=status.HTTP_201_CREATED)
+def admin_create_user(
+    data: AdminUserCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    require_admin(current_user)
+
+    email = data.email.strip().lower()
+    phone = data.phone.strip() if data.phone else None
+
+    existing = db.query(User).filter(
+        (User.email == email) | (User.phone == phone)
+    ).first()
+
+    if existing:
+        raise HTTPException(status_code=400, detail="Email or phone already exists")
+
+    user = User(
+        first_name=data.first_name,
+        last_name=data.last_name,
+        email=email,
+        phone=phone,
+        password_hash=hash_password(data.password),
+        status=data.status,
+        is_verified=data.is_verified,
+    )
+
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+
+    return user
+
+
+@router.get("/users/{user_id}", response_model=AdminUserResponse)
+def admin_get_user_detail(
+    user_id: UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    require_admin(current_user)
+
+    user = db.query(User).filter(User.id == user_id).first()
+
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    return user
+
+
+@router.patch("/users/{user_id}", response_model=AdminUserResponse)
+def admin_update_user(
+    user_id: UUID,
+    data: AdminUserUpdate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    require_admin(current_user)
+
+    user = db.query(User).filter(User.id == user_id).first()
+
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    update_data = data.model_dump(exclude_unset=True)
+
+    if "email" in update_data:
+        email = update_data["email"].strip().lower()
+        existing = db.query(User).filter(
+            User.email == email,
+            User.id != user.id
+        ).first()
+
+        if existing:
+            raise HTTPException(status_code=400, detail="Email already exists")
+
+        user.email = email
+        update_data.pop("email")
+
+    if "phone" in update_data and update_data["phone"]:
+        phone = update_data["phone"].strip()
+        existing = db.query(User).filter(
+            User.phone == phone,
+            User.id != user.id
+        ).first()
+
+        if existing:
+            raise HTTPException(status_code=400, detail="Phone already exists")
+
+        user.phone = phone
+        update_data.pop("phone")
+
+    if "password" in update_data:
+        user.password_hash = hash_password(update_data["password"])
+        update_data.pop("password")
+
+    for key, value in update_data.items():
+        setattr(user, key, value)
+
+    db.commit()
+    db.refresh(user)
+
+    return user
+
+
+@router.delete("/users/{user_id}")
+def admin_delete_user(
+    user_id: UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    require_admin(current_user)
+
+    if user_id == current_user.id:
+        raise HTTPException(
+            status_code=400,
+            detail="You cannot delete your own account"
+        )
+
+    user = db.query(User).filter(User.id == user_id).first()
+
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    db.delete(user)
+    db.commit()
+
+    return {"message": "User deleted successfully"}
 
 # =========================
 # BUSINESS CATEGORIES

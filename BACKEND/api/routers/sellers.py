@@ -2,9 +2,9 @@ from uuid import UUID
 from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, Form
 from sqlalchemy.orm import Session
-
+from api.schemas import SellerProfileUpdate, SellerProfileResponse
 from api.deps import get_db, get_current_user
-from api.models import User, Seller, SellerKYCDocument, SellerPayoutAccount, SellerStatus
+from api.models import User, Seller, SellerProfile, SellerKYCDocument, SellerPayoutAccount, SellerStatus
 from fastapi import Query
 from api.schemas import (
     SellerResponse,
@@ -70,6 +70,54 @@ def update_my_seller_profile(
     db.refresh(seller)
 
     return seller
+
+@router.get("/profile", response_model=SellerProfileResponse)
+def get_my_seller_business_profile(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    seller = get_my_seller(db, current_user)
+
+    profile = db.query(SellerProfile).filter(
+        SellerProfile.seller_id == seller.id
+    ).first()
+
+    if not profile:
+        profile = SellerProfile(seller_id=seller.id)
+        db.add(profile)
+        db.commit()
+        db.refresh(profile)
+
+    return profile
+
+
+@router.patch("/profile", response_model=SellerProfileResponse)
+def update_my_seller_business_profile(
+    data: SellerProfileUpdate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    seller = get_my_seller(db, current_user)
+
+    profile = db.query(SellerProfile).filter(
+        SellerProfile.seller_id == seller.id
+    ).first()
+
+    if not profile:
+        profile = SellerProfile(seller_id=seller.id)
+        db.add(profile)
+        db.commit()
+        db.refresh(profile)
+
+    update_data = data.model_dump(exclude_unset=True)
+
+    for key, value in update_data.items():
+        setattr(profile, key, value)
+
+    db.commit()
+    db.refresh(profile)
+
+    return profile
 
 
 @router.post("/kyc-documents", response_model=SellerKYCResponse, status_code=status.HTTP_201_CREATED)

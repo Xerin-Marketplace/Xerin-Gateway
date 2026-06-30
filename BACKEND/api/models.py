@@ -126,6 +126,32 @@ class Seller(Base):
         back_populates="seller",
         cascade="all, delete-orphan"
     )
+    profile = relationship(
+    "SellerProfile",
+    back_populates="seller",
+    uselist=False,
+    cascade="all, delete-orphan"
+)
+    
+class SellerProfile(Base):
+    __tablename__ = "seller_profiles"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    seller_id = Column(UUID(as_uuid=True), ForeignKey("sellers.id"), unique=True, nullable=False)
+
+    business_description = Column(Text, nullable=True)
+    business_country = Column(String(100), nullable=True)
+    business_region = Column(String(100), nullable=True)
+    business_city = Column(String(100), nullable=True)
+    business_address = Column(Text, nullable=True)
+    product_description = Column(Text, nullable=True)
+    years_in_business = Column(String(50), nullable=True)
+    website_url = Column(Text, nullable=True)
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+    seller = relationship("Seller", back_populates="profile")
 
 
 class SellerKYCDocument(Base):
