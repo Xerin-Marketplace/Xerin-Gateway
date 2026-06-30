@@ -4,7 +4,7 @@ from uuid import UUID
 from fastapi import Query
 
 from api.deps import get_db, get_current_user
-from api.models import User, Address, Seller
+from api.models import User, Address, Seller, UserRole, Role
 from api.schemas import UserResponse, UpdateUserRequest, AddressCreate, AddressResponse, UserMeResponse, PaginatedAddressResponse
 
 
@@ -15,7 +15,7 @@ router = APIRouter(tags=["Users"])
 # USER PROFILE
 # =========================
 
-@router.get("/users/me", response_model=UserMeResponse)
+@router.get("/users/me")
 def get_my_profile(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
@@ -23,6 +23,21 @@ def get_my_profile(
     seller = db.query(Seller).filter(
         Seller.user_id == current_user.id
     ).first()
+
+    user_roles = db.query(UserRole).filter(
+        UserRole.user_id == current_user.id
+    ).all()
+
+    roles = [user_role.role.name for user_role in user_roles]
+
+    if "super_admin" in roles:
+        account_type = "super_admin"
+    elif "admin" in roles:
+        account_type = "admin"
+    elif seller:
+        account_type = "seller"
+    else:
+        account_type = "customer"
 
     return {
         "id": current_user.id,
@@ -35,9 +50,9 @@ def get_my_profile(
 
         "is_seller": seller is not None,
         "seller_status": seller.status.value if seller else None,
-        "account_type": "seller" if seller else "customer",
+        "account_type": account_type,
+        "roles": roles,
     }
-
 
 @router.patch("/users/me", response_model=UserResponse)
 def update_my_profile(
