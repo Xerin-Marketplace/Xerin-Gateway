@@ -477,4 +477,20 @@ class PaginatedAdminUserResponse(BaseModel):
     total: int
     page: int
     page_size: int
-    results: list[AdminUserResponse]        
+    results: list[AdminUserResponse]   
+    
+class AdminCreateAdminRequest(BaseModel):
+    first_name: str
+    last_name: str
+    email: EmailStr
+    phone: str | None = None
+    password: str
+
+
+class RoleResponse(BaseModel):
+    id: UUID
+    name: str
+    description: str | None
+
+    class Config:
+        from_attributes = True         

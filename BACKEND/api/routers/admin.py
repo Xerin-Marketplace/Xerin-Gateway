@@ -5,6 +5,8 @@ from sqlalchemy import or_
 from api.security import hash_password
 from fastapi import APIRouter, Depends, HTTPException, status, Form
 from sqlalchemy.orm import Session
+from api.models import Role, UserRole, UserStatus
+
 
 from api.deps import get_db, get_current_user
 from api.models import (
@@ -37,10 +39,28 @@ from api.schemas import (
 
 router = APIRouter(prefix="/admin", tags=["Admin"])
 
+def get_or_create_role(db: Session, name: str, description: str | None = None):
+    role = db.query(Role).filter(Role.name == name).first()
+
+    if role:
+        return role
+
+    role = Role(name=name, description=description)
+    db.add(role)
+    db.commit()
+    db.refresh(role)
+
+    return role
 
 def require_admin(current_user: User):
-    # Temporary admin check. Later replace with roles/RBAC.
-    if current_user.email != "admin@example.com":
+    allowed_roles = ["super_admin", "admin"]
+
+    user_roles = [
+        user_role.role.name
+        for user_role in current_user.roles
+    ]
+
+    if not any(role in allowed_roles for role in user_roles):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Admin access required"
@@ -220,6 +240,56 @@ def admin_delete_user(
     db.commit()
 
     return {"message": "User deleted successfully"}
+
+
+@router.post("/admins", response_model=AdminUserResponse)
+def admin_create_admin(
+    data: AdminUserCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    require_admin(current_user)
+
+    email = data.email.strip().lower()
+    phone = data.phone.strip() if data.phone else None
+
+    existing = db.query(User).filter(
+        (User.email == email) | (User.phone == phone)
+    ).first()
+
+    if existing:
+        raise HTTPException(status_code=400, detail="Email or phone already exists")
+
+    user = User(
+        first_name=data.first_name,
+        last_name=data.last_name,
+        email=email,
+        phone=phone,
+        password_hash=hash_password(data.password),
+        status=UserStatus.active,
+        is_verified=True,
+    )
+
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+
+    admin_role = get_or_create_role(
+        db,
+        name="admin",
+        description="Platform administrator"
+    )
+
+    user_role = UserRole(
+        user_id=user.id,
+        role_id=admin_role.id,
+    )
+
+    db.add(user_role)
+    db.commit()
+    db.refresh(user)
+
+    return user
 
 # =========================
 # BUSINESS CATEGORIES

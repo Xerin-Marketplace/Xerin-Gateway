@@ -39,11 +39,18 @@ def get_my_seller(db: Session, current_user: User) -> Seller:
 
 
 def require_admin(current_user: User):
-    # Temporary admin check.
-    # Later replace this with proper roles/RBAC.
-    if current_user.email != "admin@example.com":
-        raise HTTPException(status_code=403, detail="Admin access required")
+    allowed_roles = ["super_admin", "admin"]
 
+    user_roles = [
+        user_role.role.name
+        for user_role in current_user.roles
+    ]
+
+    if not any(role in allowed_roles for role in user_roles):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Admin access required"
+        )
 
 @router.get("/me", response_model=SellerResponse)
 def get_my_seller_profile(

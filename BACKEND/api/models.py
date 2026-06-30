@@ -11,6 +11,7 @@ from sqlalchemy.dialects.postgresql import JSONB
 from api.database import Base
 
 
+
 class UserStatus(str, enum.Enum):
     active = "active"
     inactive = "inactive"
@@ -43,7 +44,25 @@ class User(Base):
 
     addresses = relationship("Address", back_populates="user")
     seller_profile = relationship("Seller", back_populates="user", uselist=False)
+    roles = relationship("UserRole", back_populates="user")
+    
+class Role(Base):
+    __tablename__ = "roles"
 
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    name = Column(String(50), unique=True, nullable=False)  # admin, customer, seller
+    description = Column(Text, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class UserRole(Base):
+    __tablename__ = "user_roles"
+
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), primary_key=True)
+    role_id = Column(UUID(as_uuid=True), ForeignKey("roles.id"), primary_key=True)
+
+    user = relationship("User", back_populates="roles")
+    role = relationship("Role")
 
 class Session(Base):
     __tablename__ = "sessions"
