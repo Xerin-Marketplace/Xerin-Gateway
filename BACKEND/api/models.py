@@ -95,7 +95,7 @@ class Seller(Base):
     )
 
     business_name = Column(String(255), nullable=False)
-    business_category = Column(String(150))
+    
     contact_email = Column(String(255))
     contact_phone = Column(String(30))
 
@@ -107,6 +107,11 @@ class Seller(Base):
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
 
     user = relationship("User", back_populates="seller_profile")
+    business_categories = relationship(
+    "SellerBusinessCategory",
+    back_populates="seller",
+    cascade="all, delete-orphan"
+    )
     kyc_documents = relationship(
         "SellerKYCDocument",
         back_populates="seller",
@@ -151,6 +156,27 @@ class SellerPayoutAccount(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     seller = relationship("Seller", back_populates="payout_accounts")
+    
+    
+class SellerBusinessCategory(Base):
+    __tablename__ = "seller_business_categories"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+
+    seller_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("sellers.id"),
+        nullable=False
+    )
+
+    business_category_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("business_categories.id"),
+        nullable=False
+    )
+
+    seller = relationship("Seller", back_populates="business_categories")
+    business_category = relationship("BusinessCategory")
 
 
 class ProductStatus(str, enum.Enum):
@@ -159,6 +185,17 @@ class ProductStatus(str, enum.Enum):
     approved = "approved"
     rejected = "rejected"
     inactive = "inactive"
+    
+    
+class BusinessCategory(Base):
+    __tablename__ = "business_categories"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    name = Column(String(150), unique=True, nullable=False)
+    slug = Column(String(150), unique=True, index=True, nullable=False)
+    description = Column(Text, nullable=True)
+    active = Column(Boolean, default=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
 
 
 class Category(Base):

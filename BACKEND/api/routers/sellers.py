@@ -1,15 +1,13 @@
 from uuid import UUID
-from fastapi import APIRouter, Depends, HTTPException, status
+from pathlib import Path
+from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, Form
 from sqlalchemy.orm import Session
 
-from api.deps import get_db
-from api.deps import get_current_user
-from api.models import User, Seller, SellerKYCDocument, SellerPayoutAccount
+from api.deps import get_db, get_current_user
+from api.models import User, Seller, SellerKYCDocument, SellerPayoutAccount, SellerStatus
 from api.schemas import (
-    SellerCreate,
     SellerResponse,
     SellerUpdate,
-    SellerKYCCreate,
     SellerKYCResponse,
     SellerPayoutCreate,
     SellerPayoutResponse,
@@ -17,12 +15,17 @@ from api.schemas import (
 
 router = APIRouter(prefix="/sellers", tags=["Sellers"])
 
+UPLOAD_DIR = Path("uploads/kyc")
+UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
-@router.get("/me", response_model=SellerResponse)
-def get_my_seller_profile(
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
+REQUIRED_KYC_DOCUMENTS = [
+    "tin",
+    "business_profile",
+    "business_registration",
+]
+
+
+def get_my_seller(db: Session, current_user: User) -> Seller:
     seller = db.query(Seller).filter(Seller.user_id == current_user.id).first()
 
     if not seller:
@@ -31,16 +34,28 @@ def get_my_seller_profile(
     return seller
 
 
+def require_admin(current_user: User):
+    # Temporary admin check.
+    # Later replace this with proper roles/RBAC.
+    if current_user.email != "admin@example.com":
+        raise HTTPException(status_code=403, detail="Admin access required")
+
+
+@router.get("/me", response_model=SellerResponse)
+def get_my_seller_profile(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    return get_my_seller(db, current_user)
+
+
 @router.patch("/me", response_model=SellerResponse)
 def update_my_seller_profile(
     data: SellerUpdate,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    seller = db.query(Seller).filter(Seller.user_id == current_user.id).first()
-
-    if not seller:
-        raise HTTPException(status_code=404, detail="Seller profile not found")
+    seller = get_my_seller(db, current_user)
 
     update_data = data.model_dump(exclude_unset=True)
 
@@ -54,26 +69,72 @@ def update_my_seller_profile(
 
 
 @router.post("/kyc-documents", response_model=SellerKYCResponse, status_code=status.HTTP_201_CREATED)
-def upload_kyc_document(
-    data: SellerKYCCreate,
+async def upload_kyc_document(
+    document_type: str = Form(...),
+    file: UploadFile = File(...),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    seller = db.query(Seller).filter(Seller.user_id == current_user.id).first()
+    seller = get_my_seller(db, current_user)
 
-    if not seller:
-        raise HTTPException(status_code=404, detail="Seller profile not found")
+    document_type = document_type.strip().lower()
 
-    document = SellerKYCDocument(
-        seller_id=seller.id,
-        document_type=data.document_type,
-        document_url=data.document_url,
-        status="pending",
-    )
+    if document_type not in REQUIRED_KYC_DOCUMENTS:
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid document type. Use: tin, business_profile, business_registration",
+        )
 
-    db.add(document)
-    db.commit()
-    db.refresh(document)
+    allowed_extensions = [".pdf", ".jpg", ".jpeg", ".png"]
+    file_extension = Path(file.filename).suffix.lower()
+
+    if file_extension not in allowed_extensions:
+        raise HTTPException(
+            status_code=400,
+            detail="Only PDF, JPG, JPEG, and PNG files are allowed",
+        )
+
+    existing_doc = db.query(SellerKYCDocument).filter(
+        SellerKYCDocument.seller_id == seller.id,
+        SellerKYCDocument.document_type == document_type,
+    ).first()
+
+    file_name = f"{seller.id}_{document_type}{file_extension}"
+    file_path = UPLOAD_DIR / file_name
+
+    content = await file.read()
+    file_path.write_bytes(content)
+
+    document_url = str(file_path)
+
+    if existing_doc:
+        existing_doc.document_url = document_url
+        existing_doc.status = "pending"
+        existing_doc.rejection_reason = None
+        db.commit()
+        db.refresh(existing_doc)
+        document = existing_doc
+    else:
+        document = SellerKYCDocument(
+            seller_id=seller.id,
+            document_type=document_type,
+            document_url=document_url,
+            status="pending",
+        )
+        db.add(document)
+        db.commit()
+        db.refresh(document)
+
+    uploaded_types = {
+        doc.document_type
+        for doc in db.query(SellerKYCDocument).filter(
+            SellerKYCDocument.seller_id == seller.id
+        ).all()
+    }
+
+    if all(doc_type in uploaded_types for doc_type in REQUIRED_KYC_DOCUMENTS):
+        seller.status = SellerStatus.under_review
+        db.commit()
 
     return document
 
@@ -83,14 +144,36 @@ def get_my_kyc_documents(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    seller = db.query(Seller).filter(Seller.user_id == current_user.id).first()
-
-    if not seller:
-        raise HTTPException(status_code=404, detail="Seller profile not found")
+    seller = get_my_seller(db, current_user)
 
     return db.query(SellerKYCDocument).filter(
         SellerKYCDocument.seller_id == seller.id
     ).order_by(SellerKYCDocument.uploaded_at.desc()).all()
+
+
+@router.get("/kyc-status")
+def get_my_kyc_status(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    seller = get_my_seller(db, current_user)
+
+    documents = db.query(SellerKYCDocument).filter(
+        SellerKYCDocument.seller_id == seller.id
+    ).all()
+
+    uploaded_documents = [doc.document_type for doc in documents]
+    missing_documents = [
+        doc for doc in REQUIRED_KYC_DOCUMENTS if doc not in uploaded_documents
+    ]
+
+    return {
+        "seller_status": seller.status.value if seller.status else None,
+        "required_documents": REQUIRED_KYC_DOCUMENTS,
+        "uploaded_documents": uploaded_documents,
+        "missing_documents": missing_documents,
+        "can_submit_for_review": len(missing_documents) == 0,
+    }
 
 
 @router.post("/payout-accounts", response_model=SellerPayoutResponse, status_code=status.HTTP_201_CREATED)
@@ -99,10 +182,7 @@ def create_payout_account(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    seller = db.query(Seller).filter(Seller.user_id == current_user.id).first()
-
-    if not seller:
-        raise HTTPException(status_code=404, detail="Seller profile not found")
+    seller = get_my_seller(db, current_user)
 
     if data.is_default:
         db.query(SellerPayoutAccount).filter(
@@ -131,10 +211,7 @@ def get_my_payout_accounts(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    seller = db.query(Seller).filter(Seller.user_id == current_user.id).first()
-
-    if not seller:
-        raise HTTPException(status_code=404, detail="Seller profile not found")
+    seller = get_my_seller(db, current_user)
 
     return db.query(SellerPayoutAccount).filter(
         SellerPayoutAccount.seller_id == seller.id
@@ -147,10 +224,7 @@ def delete_payout_account(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    seller = db.query(Seller).filter(Seller.user_id == current_user.id).first()
-
-    if not seller:
-        raise HTTPException(status_code=404, detail="Seller profile not found")
+    seller = get_my_seller(db, current_user)
 
     payout = db.query(SellerPayoutAccount).filter(
         SellerPayoutAccount.id == account_id,
@@ -164,3 +238,98 @@ def delete_payout_account(
     db.commit()
 
     return {"message": "Payout account deleted successfully"}
+
+
+# =========================
+# ADMIN KYC VERIFICATION
+# =========================
+
+@router.get("/admin/pending", response_model=list[SellerResponse])
+def admin_get_pending_sellers(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    require_admin(current_user)
+
+    return db.query(Seller).filter(
+        Seller.status == SellerStatus.under_review
+    ).all()
+
+
+@router.get("/admin/{seller_id}/documents", response_model=list[SellerKYCResponse])
+def admin_get_seller_documents(
+    seller_id: UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    require_admin(current_user)
+
+    return db.query(SellerKYCDocument).filter(
+        SellerKYCDocument.seller_id == seller_id
+    ).all()
+
+
+@router.post("/admin/{seller_id}/approve", response_model=SellerResponse)
+def admin_approve_seller(
+    seller_id: UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    require_admin(current_user)
+
+    seller = db.query(Seller).filter(Seller.id == seller_id).first()
+
+    if not seller:
+        raise HTTPException(status_code=404, detail="Seller not found")
+
+    documents = db.query(SellerKYCDocument).filter(
+        SellerKYCDocument.seller_id == seller.id
+    ).all()
+
+    uploaded_types = [doc.document_type for doc in documents]
+
+    missing = [
+        doc_type for doc_type in REQUIRED_KYC_DOCUMENTS
+        if doc_type not in uploaded_types
+    ]
+
+    if missing:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Seller is missing documents: {missing}",
+        )
+
+    seller.status = SellerStatus.approved
+    db.commit()
+    db.refresh(seller)
+
+    return seller
+
+
+@router.post("/admin/{seller_id}/reject", response_model=SellerResponse)
+def admin_reject_seller(
+    seller_id: UUID,
+    reason: str = Form(...),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    require_admin(current_user)
+
+    seller = db.query(Seller).filter(Seller.id == seller_id).first()
+
+    if not seller:
+        raise HTTPException(status_code=404, detail="Seller not found")
+
+    seller.status = SellerStatus.rejected
+
+    db.query(SellerKYCDocument).filter(
+        SellerKYCDocument.seller_id == seller.id
+    ).update({
+        "status": "rejected",
+        "rejection_reason": reason,
+    })
+
+    db.commit()
+    db.refresh(seller)
+
+    return seller

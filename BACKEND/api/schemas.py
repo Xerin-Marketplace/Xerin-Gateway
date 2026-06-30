@@ -101,7 +101,7 @@ class SellerCreate(BaseModel):
 
 class SellerUpdate(BaseModel):
     business_name: str | None = None
-    business_category: str | None = None
+    business_category_ids: list[UUID] | None = None
     contact_email: EmailStr | None = None
     contact_phone: str | None = None
 
@@ -110,7 +110,6 @@ class SellerResponse(BaseModel):
     id: UUID
     user_id: UUID
     business_name: str
-    business_category: str | None
     contact_email: str | None
     contact_phone: str | None
     status: str
@@ -120,6 +119,19 @@ class SellerResponse(BaseModel):
     class Config:
         from_attributes = True
 
+
+class SellerRegisterRequest(BaseModel):
+    first_name: str
+    last_name: str
+    email: EmailStr
+    phone: str
+    password: str
+
+    business_name: str
+    business_category_ids: list[UUID]
+    contact_email: EmailStr | None = None
+    contact_phone: str | None = None
+    agreement_accepted: bool = True
 
 class SellerKYCCreate(BaseModel):
     document_type: str
@@ -135,7 +147,14 @@ class SellerKYCResponse(BaseModel):
     rejection_reason: str | None
     uploaded_at: datetime
 
-    class Config:
+class SellerKYCStatusResponse(BaseModel):
+    seller_status: str
+    required_documents: list[str]
+    uploaded_documents: list[str]
+    missing_documents: list[str]
+    can_submit_for_review: bool
+
+class Config:
         from_attributes = True
 
 
@@ -308,3 +327,29 @@ class SellerRegisterRequest(BaseModel):
     contact_email: EmailStr | None = None
     contact_phone: str | None = None
     agreement_accepted: bool = True
+    
+    
+class BusinessCategoryCreate(BaseModel):
+    name: str
+    slug: str
+    description: str | None = None
+    active: bool = True
+
+
+class BusinessCategoryUpdate(BaseModel):
+    name: str | None = None
+    slug: str | None = None
+    description: str | None = None
+    active: bool | None = None
+
+
+class BusinessCategoryResponse(BaseModel):
+    id: UUID
+    name: str
+    slug: str
+    description: str | None
+    active: bool
+    created_at: datetime
+
+    class Config:
+        from_attributes = True

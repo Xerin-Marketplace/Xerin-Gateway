@@ -2,7 +2,7 @@ from itertools import product
 
 from fastapi import FastAPI
 from api.database import Base, engine
-from api.routers import auth, users, sellers, products
+from api.routers import auth, users, sellers, products, admin
 
 api = FastAPI(title="Ecommerce Platform API", version="1.0.0")
 
@@ -10,6 +10,7 @@ api.include_router(auth.router)
 api.include_router(users.router)
 api.include_router(sellers.router)
 api.include_router(products.router)
+api.include_router(admin.router)
 
 @api.on_event("startup")
 def on_startup():

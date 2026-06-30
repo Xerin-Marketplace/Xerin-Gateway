@@ -13,6 +13,8 @@ from api.models import (
     UserStatus,
     Seller,
     SellerStatus,
+    Category,
+    SellerBusinessCategory,
 )
 from api.schemas import *
 from api.security import (
@@ -118,10 +120,17 @@ def register_seller(data: SellerRegisterRequest, db: Session = Depends(get_db)):
         raise HTTPException(status_code=400, detail="Email or phone already exists")
 
     if not data.agreement_accepted:
-        raise HTTPException(
-            status_code=400,
-            detail="Seller agreement must be accepted"
-        )
+        raise HTTPException(status_code=400, detail="Seller agreement must be accepted")
+
+    if not data.business_category_ids:
+        raise HTTPException(status_code=400, detail="At least one business category is required")
+
+    categories = db.query(Category).filter(
+        Category.id.in_(data.business_category_ids)
+    ).all()
+
+    if len(categories) != len(set(data.business_category_ids)):
+        raise HTTPException(status_code=400, detail="One or more business categories are invalid")
 
     user = User(
         first_name=data.first_name,
@@ -140,7 +149,6 @@ def register_seller(data: SellerRegisterRequest, db: Session = Depends(get_db)):
     seller = Seller(
         user_id=user.id,
         business_name=data.business_name,
-        business_category=data.business_category,
         contact_email=data.contact_email or email,
         contact_phone=data.contact_phone or phone,
         agreement_accepted=data.agreement_accepted,
@@ -148,8 +156,19 @@ def register_seller(data: SellerRegisterRequest, db: Session = Depends(get_db)):
     )
 
     db.add(seller)
+    db.commit()
+    db.refresh(seller)
+
+    for category_id in set(data.business_category_ids):
+        db.add(
+            SellerBusinessCategory(
+                seller_id=seller.id,
+                category_id=category_id,
+            )
+        )
 
     otp = generate_otp()
+
     otp_request = OTPRequest(
         user_id=user.id,
         phone=phone,

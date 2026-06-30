@@ -201,3 +201,52 @@ Logistics Service
 Notification Service
 Admin Service
 
+# 1: AUTH FLOW 
+
+
+
+# 3: SELLER FLOW 
+
+```
+1. Seller registers from auth page
+   POST /auth/register-seller
+   seller_status = pending
+
+2. Seller logs in
+   POST /auth/login
+
+3. Frontend checks profile
+   GET /users/me
+   account_type = seller
+   seller_status = pending
+
+4. Frontend shows KYC upload page
+
+5. Seller uploads:
+   POST /sellers/kyc-documents
+   document_type = tin
+
+   POST /sellers/kyc-documents
+   document_type = business_profile
+
+   POST /sellers/kyc-documents
+   document_type = business_registration
+
+6. After all 3 documents are uploaded
+   seller_status = under_review
+
+7. Admin sees pending review sellers
+   GET /sellers/admin/pending
+
+8. Admin views documents
+   GET /sellers/admin/{seller_id}/documents
+
+9. Admin approves
+   POST /sellers/admin/{seller_id}/approve
+
+10. Seller status becomes approved
+
+11. Seller can now create products
+
+```
+
