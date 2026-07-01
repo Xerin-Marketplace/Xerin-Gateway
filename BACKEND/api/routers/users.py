@@ -10,11 +10,6 @@ from api.schemas import UserResponse, UpdateUserRequest, AddressCreate, AddressR
 
 router = APIRouter(tags=["Users"])
 
-
-# =========================
-# USER PROFILE
-# =========================
-
 @router.get("/users/me")
 def get_my_profile(
     db: Session = Depends(get_db),
@@ -93,11 +88,6 @@ def update_my_profile(
     db.refresh(current_user)
 
     return current_user
-
-
-# =========================
-# ADDRESSES
-# =========================
 
 @router.post(
     "/addresses",

@@ -408,11 +408,6 @@ def delete_payout_account(
 
     return {"message": "Payout account deleted successfully"}
 
-
-# =========================
-# ADMIN KYC VERIFICATION
-# =========================
-
 @router.get("/admin/pending", response_model=PaginatedSellerResponse)
 def admin_get_pending_sellers(
     db: Session = Depends(get_db),

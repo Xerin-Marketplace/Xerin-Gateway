@@ -5,3 +5,7 @@ BACKEND/.env/*
 .venv/*
 BACKEND/.venv
 BACKEND/.venv/*
+Frontend
+Frontend/*
+/Frontend/
+
