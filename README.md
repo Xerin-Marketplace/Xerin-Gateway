@@ -250,3 +250,9 @@ Admin Service
 
 ```
 
+# RUN
+```
+uvicorn api.main:api --reload
+
+```
+
