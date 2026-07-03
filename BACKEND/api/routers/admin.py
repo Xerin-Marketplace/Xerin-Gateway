@@ -6,6 +6,7 @@ from api.security import hash_password
 from fastapi import APIRouter, Depends, HTTPException, status, Form
 from sqlalchemy.orm import Session
 from api.models import Role, UserRole, UserStatus
+from api.routers.email import send_email
 
 
 from api.deps import get_db, get_current_user
@@ -237,6 +238,45 @@ def admin_delete_user(
 
     return {"message": "User deleted successfully"}
 
+def send_admin_notification_email(
+    user: User,
+    password: str | None,
+    is_new_user: bool,
+):
+    if is_new_user:
+        body = f"""
+Hello {user.first_name},
+
+You have been created as an Admin on XERIM Marketplace.
+
+Login Details:
+Email: {user.email}
+Password: {password}
+
+Please login and change your password immediately.
+
+Regards,
+XERIM Marketplace Team
+"""
+    else:
+        body = f"""
+Hello {user.first_name},
+
+Your existing XERIM Marketplace account has been upgraded to Admin.
+
+Login Details:
+Email: {user.email}
+Password: Use your existing password.
+
+Regards,
+XERIM Marketplace Team
+"""
+
+    send_email(
+        to=user.email,
+        subject="XERIM Marketplace Admin Access",
+        body=body,
+    )
 
 @router.post("/admins", response_model=AdminUserResponse)
 def admin_create_admin(
@@ -266,21 +306,22 @@ def admin_create_admin(
             UserRole.role_id == admin_role.id
         ).first()
 
-        if existing_admin_role:
-            return user
+        if not existing_admin_role:
+            user.status = UserStatus.active
+            user.is_verified = True
 
-        user.status = UserStatus.active
-        user.is_verified = True
+            db.add(UserRole(user_id=user.id, role_id=admin_role.id))
+            db.commit()
+            db.refresh(user)
 
-        db.add(
-            UserRole(
-                user_id=user.id,
-                role_id=admin_role.id
+        try:
+            send_admin_notification_email(
+                user=user,
+                password=None,
+                is_new_user=False,
             )
-        )
-
-        db.commit()
-        db.refresh(user)
+        except Exception as e:
+            print("Failed to send admin email:", e)
 
         return user
 
@@ -298,15 +339,18 @@ def admin_create_admin(
     db.commit()
     db.refresh(user)
 
-    db.add(
-        UserRole(
-            user_id=user.id,
-            role_id=admin_role.id
-        )
-    )
-
+    db.add(UserRole(user_id=user.id, role_id=admin_role.id))
     db.commit()
     db.refresh(user)
+
+    try:
+        send_admin_notification_email(
+            user=user,
+            password=data.password,
+            is_new_user=True,
+        )
+    except Exception as e:
+        print("Failed to send admin email:", e)
 
     return user
 
