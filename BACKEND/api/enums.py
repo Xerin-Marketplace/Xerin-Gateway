@@ -39,3 +39,4 @@ class PermissionCode(str, enum.Enum):
     can_view_products = "can_view_products"
     can_approve_products = "can_approve_products"
     can_reject_products = "can_reject_products"
+    
