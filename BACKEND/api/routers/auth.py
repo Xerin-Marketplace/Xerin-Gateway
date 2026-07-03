@@ -712,3 +712,30 @@ def reset_password(data: ResetPasswordRequest, db: Session = Depends(get_db)):
     db.commit()
 
     return {"message": "Password reset successfully"}
+
+
+@router.post("/change-password")
+def change_password(
+    data: ChangePasswordRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    user = db.query(User).filter(User.id == current_user.id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    if not verify_password(data.current_password, user.password_hash):
+        raise HTTPException(status_code=400, detail="Current password is incorrect")
+
+    if data.current_password == data.new_password:
+        raise HTTPException(
+            status_code=400, detail="New password must be different from current password"
+        )
+
+    user.password_hash = hash_password(data.new_password)
+
+    # invalidate all refresh sessions after password change
+    db.query(UserSession).filter(UserSession.user_id == user.id).delete()
+
+    db.commit()
+    return {"message": "Password changed successfully. Please log in again."}

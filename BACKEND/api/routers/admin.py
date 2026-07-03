@@ -249,12 +249,40 @@ def admin_create_admin(
     email = data.email.strip().lower()
     phone = data.phone.strip() if data.phone else None
 
-    existing = db.query(User).filter(
-        (User.email == email) | (User.phone == phone)
-    ).first()
+    admin_role = get_or_create_role(
+        db,
+        name="admin",
+        description="Platform administrator"
+    )
 
-    if existing:
-        raise HTTPException(status_code=400, detail="Email or phone already exists")
+    user = db.query(User).filter(User.email == email).first()
+
+    if not user and phone:
+        user = db.query(User).filter(User.phone == phone).first()
+
+    if user:
+        existing_admin_role = db.query(UserRole).filter(
+            UserRole.user_id == user.id,
+            UserRole.role_id == admin_role.id
+        ).first()
+
+        if existing_admin_role:
+            return user
+
+        user.status = UserStatus.active
+        user.is_verified = True
+
+        db.add(
+            UserRole(
+                user_id=user.id,
+                role_id=admin_role.id
+            )
+        )
+
+        db.commit()
+        db.refresh(user)
+
+        return user
 
     user = User(
         first_name=data.first_name,
@@ -270,18 +298,13 @@ def admin_create_admin(
     db.commit()
     db.refresh(user)
 
-    admin_role = get_or_create_role(
-        db,
-        name="admin",
-        description="Platform administrator"
+    db.add(
+        UserRole(
+            user_id=user.id,
+            role_id=admin_role.id
+        )
     )
 
-    user_role = UserRole(
-        user_id=user.id,
-        role_id=admin_role.id,
-    )
-
-    db.add(user_role)
     db.commit()
     db.refresh(user)
 

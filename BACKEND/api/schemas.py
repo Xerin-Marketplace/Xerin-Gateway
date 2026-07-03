@@ -3,6 +3,7 @@ from uuid import UUID
 from datetime import datetime
 from decimal import Decimal
 from typing import Optional, List, Dict, Any
+from pydantic import BaseModel, Field
 
 
 class RegisterRequest(BaseModel):
@@ -46,6 +47,10 @@ class ResetPasswordRequest(BaseModel):
     email: EmailStr
     otp_code: str
     new_password: str
+    
+class ChangePasswordRequest(BaseModel):
+    current_password: str = Field(min_length=8)
+    new_password: str = Field(min_length=8)    
 
 
 class UserResponse(BaseModel):
