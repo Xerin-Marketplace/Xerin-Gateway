@@ -1,3 +1,6 @@
+import time
+import threading
+from collections import defaultdict, deque
 from datetime import datetime, timedelta, timezone
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
@@ -41,6 +44,78 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/auth", tags=["Auth"])
 
 
+# ---------------------------------------------------------------------------
+# Rate limiting / brute-force protection
+#
+# NOTE: This is an IN-MEMORY, single-process limiter. It is good enough to
+# stop a lone bot from hammering an endpoint during dev/testing, but it does
+# NOT work correctly if you run more than one worker/process/instance,
+# because each process keeps its own counters. For production, replace this
+# with Redis (e.g. via `slowapi` + redis, or `fastapi-limiter`) or persist
+# attempt counts in the database (e.g. an `attempts` column on OTPRequest).
+# ---------------------------------------------------------------------------
+_rate_lock = threading.Lock()
+_rate_buckets: dict[str, deque] = defaultdict(deque)
+_otp_attempts: dict[str, list] = defaultdict(list)  # phone -> [attempt_timestamps]
+
+OTP_MAX_ATTEMPTS = 5
+OTP_ATTEMPT_WINDOW_SECONDS = 10 * 60  # 10 minutes
+
+
+def _rate_limit(key: str, max_calls: int, window_seconds: int) -> None:
+    """Simple sliding-window rate limiter. Raises 429 if exceeded."""
+    now = time.time()
+    with _rate_lock:
+        bucket = _rate_buckets[key]
+        while bucket and bucket[0] < now - window_seconds:
+            bucket.popleft()
+        if len(bucket) >= max_calls:
+            raise HTTPException(
+                status_code=429,
+                detail="Too many requests. Please try again later.",
+            )
+        bucket.append(now)
+
+
+def _check_otp_lockout(phone: str) -> None:
+    """Raise 429 if this phone has exceeded failed OTP verification attempts."""
+    now = time.time()
+    with _rate_lock:
+        attempts = _otp_attempts[phone]
+        while attempts and attempts[0] < now - OTP_ATTEMPT_WINDOW_SECONDS:
+            attempts.pop(0)
+        if len(attempts) >= OTP_MAX_ATTEMPTS:
+            raise HTTPException(
+                status_code=429,
+                detail="Too many failed OTP attempts. Please try again later.",
+            )
+
+
+def _record_otp_failure(phone: str) -> None:
+    with _rate_lock:
+        _otp_attempts[phone].append(time.time())
+
+
+def _clear_otp_failures(phone: str) -> None:
+    with _rate_lock:
+        _otp_attempts.pop(phone, None)
+
+
+def _invalidate_existing_otps(db: Session, phone: str) -> None:
+    """
+    Mark any previously-issued, unverified OTPs for this phone as
+    used/invalid, so only the most recently issued OTP is ever valid.
+    """
+    db.query(OTPRequest).filter(
+        OTPRequest.phone == phone,
+        OTPRequest.verified == False,  # noqa: E712
+    ).update({"verified": True})
+
+
+# ---------------------------------------------------------------------------
+# Endpoints
+# ---------------------------------------------------------------------------
+
 @router.post("/register", response_model=UserResponse)
 def register(data: RegisterRequest, db: Session = Depends(get_db)):
     # normalize inputs
@@ -70,7 +145,9 @@ def register(data: RegisterRequest, db: Session = Depends(get_db)):
     db.commit()
     db.refresh(user)
 
-    # generate OTP and persist
+    # invalidate any stale OTPs for this phone, then generate a fresh one
+    _invalidate_existing_otps(db, phone)
+
     otp = generate_otp()
     otp_request = OTPRequest(
         user_id=user.id,
@@ -162,7 +239,7 @@ def register_seller(data: SellerRegisterRequest, db: Session = Depends(get_db)):
         contact_phone=data.contact_phone or phone,
         agreement_accepted=data.agreement_accepted,
         status=SellerStatus.pending,
-)
+    )
 
     db.add(seller)
     db.commit()
@@ -175,6 +252,13 @@ def register_seller(data: SellerRegisterRequest, db: Session = Depends(get_db)):
                 category_id=category_id,
             )
         )
+
+    # FIX: these inserts were never committed before — the category links
+    # would silently be lost once the session closed.
+    db.commit()
+
+    # invalidate any stale OTPs for this phone, then generate a fresh one
+    _invalidate_existing_otps(db, phone)
 
     otp = generate_otp()
 
@@ -213,8 +297,14 @@ def register_seller(data: SellerRegisterRequest, db: Session = Depends(get_db)):
 @router.post("/login", response_model=TokenResponse)
 def login(data: LoginRequest, db: Session = Depends(get_db)):
     email = data.email.strip().lower()
+
+    # Rate-limit by email to slow down credential-stuffing / brute force.
+    _rate_limit(f"login:{email}", max_calls=10, window_seconds=5 * 60)
+
     user = db.query(User).filter(User.email == email).first()
 
+    # Generic error message on purpose: don't reveal whether the account
+    # exists or whether it was the email or the password that was wrong.
     if not user or not verify_password(data.password, user.password_hash):
         raise HTTPException(status_code=401, detail="Invalid email or password")
 
@@ -223,7 +313,7 @@ def login(data: LoginRequest, db: Session = Depends(get_db)):
 
     # Enforce verification before allowing login
     if not user.is_verified:
-        raise HTTPException(status_code=403, detail="Account not verified")
+        raise HTTPException(status_code=405, detail="Account not verified")
 
     access_token = create_access_token({"sub": str(user.id)})
     refresh_token = create_refresh_token({"sub": str(user.id)})
@@ -292,6 +382,14 @@ def refresh_token(data: RefreshRequest, db: Session = Depends(get_db)):
     if not session:
         raise HTTPException(status_code=401, detail="Refresh token not found")
 
+    # FIX: previously the DB session's own expiry was never checked here —
+    # a session record past its expires_at could still be used to mint new
+    # tokens forever as long as the JWT itself decoded successfully.
+    if session.expires_at < datetime.now(timezone.utc):
+        db.delete(session)
+        db.commit()
+        raise HTTPException(status_code=401, detail="Refresh token expired")
+
     access_token = create_access_token({"sub": str(user_id)})
     new_refresh_token = create_refresh_token({"sub": str(user_id)})
 
@@ -307,10 +405,18 @@ def refresh_token(data: RefreshRequest, db: Session = Depends(get_db)):
 
 @router.post("/send-otp")
 def send_otp(data: SendOTPRequest, db: Session = Depends(get_db)):
+    phone = data.phone.strip()
+
+    _rate_limit(f"send-otp:{phone}", max_calls=3, window_seconds=5 * 60)
+
+    # invalidate any stale OTPs for this phone before issuing a new one
+    _invalidate_existing_otps(db, phone)
+    _clear_otp_failures(phone)
+
     otp = generate_otp()
 
     otp_request = OTPRequest(
-        phone=data.phone,
+        phone=phone,
         otp_code=otp,
         expires_at=datetime.now(timezone.utc) + timedelta(minutes=5),
         verified=False,
@@ -321,12 +427,12 @@ def send_otp(data: SendOTPRequest, db: Session = Depends(get_db)):
 
     # send via SMS (and email if a user exists with that phone)
     try:
-        send_sms(to=data.phone, message=f"Your verification code is: {otp}")
+        send_sms(to=phone, message=f"Your verification code is: {otp}")
     except Exception as e:
-        logger.exception("send_sms failed for %s: %s", data.phone, e)
+        logger.exception("send_sms failed for %s: %s", phone, e)
 
     # try find user by phone to send email if available
-    user = db.query(User).filter(User.phone == data.phone).first()
+    user = db.query(User).filter(User.phone == phone).first()
     if user:
         try:
             send_email(
@@ -342,41 +448,55 @@ def send_otp(data: SendOTPRequest, db: Session = Depends(get_db)):
 
 @router.post("/verify-otp")
 def verify_otp(data: VerifyOTPRequest, db: Session = Depends(get_db)):
+    phone = data.phone.strip()
+
+    # Brute-force protection: block after too many failed attempts.
+    _check_otp_lockout(phone)
+
     otp_request = (
         db.query(OTPRequest)
         .filter(
-            OTPRequest.phone == data.phone,
+            OTPRequest.phone == phone,
             OTPRequest.otp_code == data.otp_code,
-            OTPRequest.verified == False,
+            OTPRequest.verified == False,  # noqa: E712
         )
         .order_by(OTPRequest.created_at.desc())
         .first()
     )
 
     if not otp_request:
+        _record_otp_failure(phone)
         raise HTTPException(status_code=400, detail="Invalid OTP")
 
     if otp_request.expires_at < datetime.now(timezone.utc):
+        _record_otp_failure(phone)
         raise HTTPException(status_code=400, detail="OTP expired")
 
     otp_request.verified = True
 
-    user = db.query(User).filter(User.phone == data.phone).first()
+    user = db.query(User).filter(User.phone == phone).first()
     if user:
         user.is_verified = True
         user.status = UserStatus.active
 
     db.commit()
+    _clear_otp_failures(phone)
 
     return {"message": "OTP verified successfully"}
 
 
 @router.post("/forgot-password")
 def forgot_password(data: ForgotPasswordRequest, db: Session = Depends(get_db)):
-    user = db.query(User).filter(User.email == data.email.strip().lower()).first()
+    email = data.email.strip().lower()
+
+    _rate_limit(f"forgot-password:{email}", max_calls=3, window_seconds=15 * 60)
+
+    user = db.query(User).filter(User.email == email).first()
 
     if not user:
         return {"message": "If email exists, OTP has been sent"}
+
+    _invalidate_existing_otps(db, user.phone)
 
     otp = generate_otp()
 
@@ -424,7 +544,7 @@ def reset_password(data: ResetPasswordRequest, db: Session = Depends(get_db)):
         .filter(
             OTPRequest.user_id == user.id,
             OTPRequest.otp_code == data.otp_code,
-            OTPRequest.verified == False,
+            OTPRequest.verified == False,  # noqa: E712
         )
         .order_by(OTPRequest.created_at.desc())
         .first()
@@ -438,6 +558,10 @@ def reset_password(data: ResetPasswordRequest, db: Session = Depends(get_db)):
 
     user.password_hash = hash_password(data.new_password)
     otp_request.verified = True
+
+    # FIX: invalidate every existing session for this user after a password
+    # reset, so a previously-stolen refresh token stops working immediately.
+    db.query(UserSession).filter(UserSession.user_id == user.id).delete()
 
     db.commit()
 
