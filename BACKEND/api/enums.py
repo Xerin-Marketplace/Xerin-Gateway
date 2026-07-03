@@ -16,6 +16,7 @@ class PermissionCode(str, enum.Enum):
     upload_kyc = "upload_kyc"
     manage_payout_accounts = "manage_payout_accounts"
     manage_products = "manage_products"
+    can_assign_permissions = "can_assign_permissions"
 
     can_create_business_categories = "can_create_business_categories"
     can_view_business_categories = "can_view_business_categories"

@@ -38,7 +38,13 @@ from api.schemas import (
     AdminUserUpdate,
     AdminUserResponse,
     PaginatedAdminUserResponse,
+    PermissionResponse,
+    AssignUserPermissionsRequest,
+    UserPermissionsResponse,
     )
+
+from api.models import Permission, UserPermission
+
 
 router = APIRouter(prefix="/admin", tags=["Admin"])
 
@@ -366,6 +372,125 @@ def admin_create_admin(
         print("Failed to send admin email:", e)
 
     return user
+
+
+@router.get("/permissions", response_model=list[PermissionResponse])
+def get_all_permissions(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(
+        require_permission(PermissionCode.can_assign_permissions.value)
+    ),
+):
+    return db.query(Permission).order_by(Permission.code.asc()).all()
+
+
+@router.get("/users/{user_id}/permissions", response_model=UserPermissionsResponse)
+def get_user_permissions_admin(
+    user_id: UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(
+        require_permission(PermissionCode.can_assign_permissions.value)
+    ),
+):
+    user = db.query(User).filter(User.id == user_id).first()
+
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    role_permissions = []
+    for user_role in user.roles:
+        for role_permission in user_role.role.role_permissions:
+            role_permissions.append(role_permission.permission.code)
+
+    direct_permissions = db.query(UserPermission).filter(
+        UserPermission.user_id == user.id
+    ).all()
+
+    permissions = set(role_permissions)
+
+    for item in direct_permissions:
+        permissions.add(item.permission.code)
+
+    return {
+        "user_id": user.id,
+        "permissions": list(permissions),
+    }
+
+
+@router.post("/users/{user_id}/permissions", response_model=UserPermissionsResponse)
+def assign_permissions_to_user(
+    user_id: UUID,
+    data: AssignUserPermissionsRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(
+        require_permission(PermissionCode.can_assign_permissions.value)
+    ),
+):
+    user = db.query(User).filter(User.id == user_id).first()
+
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    permissions = db.query(Permission).filter(
+        Permission.code.in_(data.permission_codes)
+    ).all()
+
+    if len(permissions) != len(set(data.permission_codes)):
+        raise HTTPException(
+            status_code=400,
+            detail="One or more permission codes are invalid"
+        )
+
+    for permission in permissions:
+        exists = db.query(UserPermission).filter(
+            UserPermission.user_id == user.id,
+            UserPermission.permission_id == permission.id,
+        ).first()
+
+        if not exists:
+            db.add(
+                UserPermission(
+                    user_id=user.id,
+                    permission_id=permission.id,
+                )
+            )
+
+    db.commit()
+
+    return {
+        "user_id": user.id,
+        "permissions": data.permission_codes,
+    }
+
+
+@router.delete("/users/{user_id}/permissions/{permission_code}")
+def remove_permission_from_user(
+    user_id: UUID,
+    permission_code: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(
+        require_permission(PermissionCode.can_assign_permissions.value)
+    ),
+):
+    permission = db.query(Permission).filter(
+        Permission.code == permission_code
+    ).first()
+
+    if not permission:
+        raise HTTPException(status_code=404, detail="Permission not found")
+
+    user_permission = db.query(UserPermission).filter(
+        UserPermission.user_id == user_id,
+        UserPermission.permission_id == permission.id,
+    ).first()
+
+    if not user_permission:
+        raise HTTPException(status_code=404, detail="User permission not found")
+
+    db.delete(user_permission)
+    db.commit()
+
+    return {"message": "Permission removed successfully"}
 
 # =========================
 # BUSINESS CATEGORIES
