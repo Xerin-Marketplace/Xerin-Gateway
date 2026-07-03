@@ -31,7 +31,7 @@ st.set_page_config(page_title="API Tester", layout="wide")
 ADMIN_ROLE_NAMES = {"admin", "super_admin", "superadmin"}
 
 defaults = {
-    "base_url": "http://localhost:8000",
+    "base_url": "http://127.0.0.1:8000",
     "access_token": "",
     "refresh_token": "",
     "last_email": "",
