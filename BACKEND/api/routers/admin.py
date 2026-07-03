@@ -9,7 +9,7 @@ from api.models import Role, UserRole, UserStatus
 from api.routers.email import send_email
 from api.permissions import require_permission
 from api.enums import PermissionCode
-
+from api.models import Permission, RolePermission
 
 from api.deps import get_db, get_current_user
 from api.models import (
@@ -41,7 +41,10 @@ from api.schemas import (
     PermissionResponse,
     AssignUserPermissionsRequest,
     UserPermissionsResponse,
-    )
+    RolePermissionsUpdateRequest,
+    RolePermissionsResponse,
+    PermissionResponse
+)
 
 from api.models import Permission, UserPermission
 
@@ -461,6 +464,92 @@ def assign_permissions_to_user(
         "user_id": user.id,
         "permissions": data.permission_codes,
     }
+    
+@router.get("/roles", response_model=list[RoleResponse])
+def get_roles(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(
+        require_permission(PermissionCode.can_assign_permissions.value)
+    ),
+):
+    return db.query(Role).order_by(Role.name.asc()).all()
+
+
+@router.get("/permissions", response_model=list[PermissionResponse])
+def get_permissions(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(
+        require_permission(PermissionCode.can_assign_permissions.value)
+    ),
+):
+    return db.query(Permission).order_by(Permission.code.asc()).all()
+
+
+@router.get("/roles/{role_id}/permissions", response_model=RolePermissionsResponse)
+def get_role_permissions(
+    role_id: UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(
+        require_permission(PermissionCode.can_assign_permissions.value)
+    ),
+):
+    role = db.query(Role).filter(Role.id == role_id).first()
+
+    if not role:
+        raise HTTPException(status_code=404, detail="Role not found")
+
+    rows = db.query(RolePermission).filter(
+        RolePermission.role_id == role.id
+    ).all()
+
+    return {
+        "role_id": role.id,
+        "role_name": role.name,
+        "permissions": [row.permission.code for row in rows],
+    }
+
+
+@router.put("/roles/{role_id}/permissions", response_model=RolePermissionsResponse)
+def update_role_permissions(
+    role_id: UUID,
+    data: RolePermissionsUpdateRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(
+        require_permission(PermissionCode.can_assign_permissions.value)
+    ),
+):
+    role = db.query(Role).filter(Role.id == role_id).first()
+
+    if not role:
+        raise HTTPException(status_code=404, detail="Role not found")
+
+    if role.name == "super_admin":
+        raise HTTPException(
+            status_code=400,
+            detail="Super admin permissions cannot be edited"
+        )
+
+    permissions = db.query(Permission).filter(
+        Permission.code.in_(data.permission_codes)
+    ).all()
+
+    if len(permissions) != len(set(data.permission_codes)):
+        raise HTTPException(status_code=400, detail="One or more permission codes are invalid")
+
+    db.query(RolePermission).filter(
+        RolePermission.role_id == role.id
+    ).delete()
+
+    for permission in permissions:
+        db.add(RolePermission(role_id=role.id, permission_id=permission.id))
+
+    db.commit()
+
+    return {
+        "role_id": role.id,
+        "role_name": role.name,
+        "permissions": data.permission_codes,
+    }    
 
 
 @router.delete("/users/{user_id}/permissions/{permission_code}")

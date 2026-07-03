@@ -517,4 +517,22 @@ class AssignUserPermissionsRequest(BaseModel):
 
 class UserPermissionsResponse(BaseModel):
     user_id: UUID
+    permissions: list[str]    
+    
+class RoleResponse(BaseModel):
+    id: UUID
+    name: str
+    description: str | None
+
+    class Config:
+        from_attributes = True
+
+
+class RolePermissionsUpdateRequest(BaseModel):
+    permission_codes: list[str]
+
+
+class RolePermissionsResponse(BaseModel):
+    role_id: UUID
+    role_name: str
     permissions: list[str]               
