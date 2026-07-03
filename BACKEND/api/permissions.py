@@ -2,11 +2,7 @@ from fastapi import Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
 from api.deps import get_current_user, get_db
-from api.models import User, UserRole, RolePermission
-
-
-def get_user_roles(user: User) -> list[str]:
-    return [user_role.role.name for user_role in user.roles]
+from api.models import User, RolePermission
 
 
 def get_user_permissions(db: Session, user: User) -> list[str]:
@@ -22,37 +18,22 @@ def get_user_permissions(db: Session, user: User) -> list[str]:
     return [row.permission.code for row in rows]
 
 
-def require_roles(allowed_roles: list[str]):
-    def checker(current_user: User = Depends(get_current_user)):
-        roles = get_user_roles(current_user)
-
-        if not any(role in allowed_roles for role in roles):
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Permission denied"
-            )
-
-        return current_user
-
-    return checker
-
-
-def require_permissions(required_permissions: list[str]):
+def require_permission(permission_code: str):
     def checker(
         db: Session = Depends(get_db),
         current_user: User = Depends(get_current_user),
     ):
-        roles = get_user_roles(current_user)
+        roles = [user_role.role.name for user_role in current_user.roles]
 
         if "super_admin" in roles:
             return current_user
 
         permissions = get_user_permissions(db, current_user)
 
-        if not any(permission in permissions for permission in required_permissions):
+        if permission_code not in permissions:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail="Permission denied"
+                detail=f"Permission denied: {permission_code}"
             )
 
         return current_user

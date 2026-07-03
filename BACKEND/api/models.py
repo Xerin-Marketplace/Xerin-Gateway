@@ -81,7 +81,7 @@ class RolePermission(Base):
     permission_id = Column(UUID(as_uuid=True), ForeignKey("permissions.id"), primary_key=True)
 
     role = relationship("Role")
-    permission = relationship("Permission")    
+    permission = relationship("Permission")  
 
 class Session(Base):
     __tablename__ = "sessions"
