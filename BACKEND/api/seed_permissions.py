@@ -1,7 +1,14 @@
 from api.database import SessionLocal
 from api.models import Role, Permission, RolePermission
 from api.enums import PermissionCode
+import sys
+from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
+from api.database import SessionLocal
+from api.models import Role, Permission, RolePermission
+from api.enums import PermissionCode
 
 db = SessionLocal()
 

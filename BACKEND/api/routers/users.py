@@ -1,25 +1,32 @@
-from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy.orm import Session
 from uuid import UUID
-from fastapi import Query
-from api.permissions import require_permission
+
+from fastapi import APIRouter, Depends, HTTPException, Query, status
+from sqlalchemy.orm import Session
+
+from api.deps import get_db
 from api.enums import PermissionCode
-
-from api.deps import get_db, get_current_user
-from api.models import User, Address, Seller, UserRole, Role
-from api.schemas import UserResponse, UpdateUserRequest, AddressCreate, AddressResponse, UserMeResponse, PaginatedAddressResponse
-
+from api.models import Address, Seller, User, UserRole
+from api.permissions import require_permission
+from api.schemas import (
+    AddressCreate,
+    AddressResponse,
+    PaginatedAddressResponse,
+    UpdateUserRequest,
+    UserMeResponse,
+    UserResponse,
+)
 
 router = APIRouter(tags=["Users"])
 
-@router.get("/users/me")
+
+@router.get("/users/me", response_model=UserMeResponse)
 def get_my_profile(
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(
+        require_permission(PermissionCode.view_profile.value)
+    ),
 ):
-    seller = db.query(Seller).filter(
-        Seller.user_id == current_user.id
-    ).first()
+    seller = db.query(Seller).filter(Seller.user_id == current_user.id).first()
 
     user_roles = db.query(UserRole).filter(
         UserRole.user_id == current_user.id
@@ -44,44 +51,56 @@ def get_my_profile(
         "phone": current_user.phone,
         "is_verified": current_user.is_verified,
         "status": current_user.status.value if current_user.status else None,
-
         "is_seller": seller is not None,
         "seller_status": seller.status.value if seller else None,
         "account_type": account_type,
         "roles": roles,
     }
 
+
 @router.patch("/users/me", response_model=UserResponse)
 def update_my_profile(
     data: UpdateUserRequest,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(
+        require_permission(PermissionCode.update_profile.value)
+    ),
 ):
     update_data = data.model_dump(exclude_unset=True)
 
     if "email" in update_data:
+        email = update_data["email"].strip().lower()
+
         existing_email = db.query(User).filter(
-            User.email == update_data["email"],
-            User.id != current_user.id
+            User.email == email,
+            User.id != current_user.id,
         ).first()
 
         if existing_email:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Email already exists"
+                detail="Email already exists",
             )
 
-    if "phone" in update_data:
+        current_user.email = email
+        update_data.pop("email")
+
+    if "phone" in update_data and update_data["phone"]:
+        phone = update_data["phone"].strip()
+
         existing_phone = db.query(User).filter(
-            User.phone == update_data["phone"],
-            User.id != current_user.id
+            User.phone == phone,
+            User.id != current_user.id,
         ).first()
 
         if existing_phone:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Phone already exists"
+                detail="Phone already exists",
             )
+
+        current_user.phone = phone
+        update_data.pop("phone")
 
     for key, value in update_data.items():
         setattr(current_user, key, value)
@@ -91,15 +110,18 @@ def update_my_profile(
 
     return current_user
 
+
 @router.post(
     "/addresses",
     response_model=AddressResponse,
-    status_code=status.HTTP_201_CREATED
+    status_code=status.HTTP_201_CREATED,
 )
 def create_address(
     data: AddressCreate,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(
+        require_permission(PermissionCode.manage_addresses.value)
+    ),
 ):
     if data.is_default:
         db.query(Address).filter(
@@ -126,7 +148,9 @@ def create_address(
 @router.get("/addresses", response_model=PaginatedAddressResponse)
 def get_my_addresses(
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(
+        require_permission(PermissionCode.manage_addresses.value)
+    ),
     page: int = Query(1, ge=1),
     page_size: int = Query(10, ge=1, le=100),
 ):
@@ -134,10 +158,12 @@ def get_my_addresses(
 
     total = query.count()
 
-    addresses = query.order_by(Address.created_at.desc()) \
-        .offset((page - 1) * page_size) \
-        .limit(page_size) \
+    addresses = (
+        query.order_by(Address.created_at.desc())
+        .offset((page - 1) * page_size)
+        .limit(page_size)
         .all()
+    )
 
     return {
         "total": total,
@@ -152,23 +178,25 @@ def update_address(
     address_id: UUID,
     data: AddressCreate,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(
+        require_permission(PermissionCode.manage_addresses.value)
+    ),
 ):
     address = db.query(Address).filter(
         Address.id == address_id,
-        Address.user_id == current_user.id
+        Address.user_id == current_user.id,
     ).first()
 
     if not address:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Address not found"
+            detail="Address not found",
         )
 
     if data.is_default:
         db.query(Address).filter(
             Address.user_id == current_user.id,
-            Address.id != address.id
+            Address.id != address.id,
         ).update({"is_default": False})
 
     address.country = data.country
@@ -188,22 +216,22 @@ def update_address(
 def delete_address(
     address_id: UUID,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(
+        require_permission(PermissionCode.manage_addresses.value)
+    ),
 ):
     address = db.query(Address).filter(
         Address.id == address_id,
-        Address.user_id == current_user.id
+        Address.user_id == current_user.id,
     ).first()
 
     if not address:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Address not found"
+            detail="Address not found",
         )
 
     db.delete(address)
     db.commit()
 
-    return {
-        "message": "Address deleted successfully"
-    }
+    return {"message": "Address deleted successfully"}

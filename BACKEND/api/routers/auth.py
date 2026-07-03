@@ -19,6 +19,8 @@ from api.models import (
     SellerStatus,
     BusinessCategory,
     SellerBusinessCategory,
+    UserRole,
+    RolePermission,
 )
 from api.schemas import *
 from api.security import (
@@ -418,6 +420,53 @@ def register_seller(data: SellerRegisterRequest, db: Session = Depends(get_db)):
 
     return seller
 
+def build_auth_user_response(db: Session, user: User):
+    seller = db.query(Seller).filter(Seller.user_id == user.id).first()
+
+    user_roles = db.query(UserRole).filter(
+        UserRole.user_id == user.id
+    ).all()
+
+    roles = [user_role.role.name for user_role in user_roles]
+
+    role_ids = [user_role.role_id for user_role in user_roles]
+
+    permissions = []
+
+    if role_ids:
+        role_permissions = db.query(RolePermission).filter(
+            RolePermission.role_id.in_(role_ids)
+        ).all()
+
+        permissions = list({
+            role_permission.permission.code
+            for role_permission in role_permissions
+        })
+
+    if "super_admin" in roles:
+        account_type = "super_admin"
+    elif "admin" in roles:
+        account_type = "admin"
+    elif seller:
+        account_type = "seller"
+    else:
+        account_type = "customer"
+
+    return {
+        "id": str(user.id),
+        "first_name": user.first_name,
+        "last_name": user.last_name,
+        "email": user.email,
+        "phone": user.phone,
+        "is_verified": user.is_verified,
+        "status": user.status.value if user.status else None,
+        "account_type": account_type,
+        "is_seller": seller is not None,
+        "seller_status": seller.status.value if seller else None,
+        "roles": roles,
+        "permissions": permissions,
+    }
+
 
 @router.post("/login", response_model=TokenResponse)
 def login(request: Request, data: LoginRequest, db: Session = Depends(get_db)):
@@ -457,7 +506,12 @@ def login(request: Request, data: LoginRequest, db: Session = Depends(get_db)):
     db.add(session)
     db.commit()
 
-    return {"access_token": access_token, "refresh_token": refresh_token}
+    return {
+    "access_token": access_token,
+    "refresh_token": refresh_token,
+    "token_type": "bearer",
+    "user": build_auth_user_response(db, user),
+}
 
 
 @router.post("/logout")
