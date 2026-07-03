@@ -72,6 +72,15 @@ class Permission(Base):
     name = Column(String(150), nullable=False)
     description = Column(Text, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
+    
+class UserPermission(Base):
+    __tablename__ = "user_permissions"
+
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), primary_key=True)
+    permission_id = Column(UUID(as_uuid=True), ForeignKey("permissions.id"), primary_key=True)
+
+    user = relationship("User")
+    permission = relationship("Permission")    
 
 
 class RolePermission(Base):

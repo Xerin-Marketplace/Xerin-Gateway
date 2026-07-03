@@ -499,4 +499,22 @@ class RoleResponse(BaseModel):
     description: str | None
 
     class Config:
-        from_attributes = True         
+        from_attributes = True  
+        
+class PermissionResponse(BaseModel):
+    id: UUID
+    code: str
+    name: str
+    description: str | None
+
+    class Config:
+        from_attributes = True
+
+
+class AssignUserPermissionsRequest(BaseModel):
+    permission_codes: list[str]
+
+
+class UserPermissionsResponse(BaseModel):
+    user_id: UUID
+    permissions: list[str]               

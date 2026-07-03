@@ -2,20 +2,29 @@ from fastapi import Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
 from api.deps import get_current_user, get_db
-from api.models import User, RolePermission
-
+from api.models import User, RolePermission, UserPermission
 
 def get_user_permissions(db: Session, user: User) -> list[str]:
     role_ids = [user_role.role_id for user_role in user.roles]
 
-    if not role_ids:
-        return []
+    permissions = set()
 
-    rows = db.query(RolePermission).filter(
-        RolePermission.role_id.in_(role_ids)
+    if role_ids:
+        role_permissions = db.query(RolePermission).filter(
+            RolePermission.role_id.in_(role_ids)
+        ).all()
+
+        for row in role_permissions:
+            permissions.add(row.permission.code)
+
+    user_permissions = db.query(UserPermission).filter(
+        UserPermission.user_id == user.id
     ).all()
 
-    return [row.permission.code for row in rows]
+    for row in user_permissions:
+        permissions.add(row.permission.code)
+
+    return list(permissions)
 
 
 def require_permission(permission_code: str):
