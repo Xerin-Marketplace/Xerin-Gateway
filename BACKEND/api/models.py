@@ -81,6 +81,10 @@ class OTPRequest(Base):
     user_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
     phone = Column(String(30))
     otp_code = Column(String(10))
+    # What this OTP is for: "register", "password_reset", "phone_verify", etc.
+    # Prevents an OTP issued for one flow (e.g. forgot-password) from being
+    # accepted in an unrelated flow (e.g. account verification).
+    purpose = Column(String(50), nullable=False, server_default="generic")
     expires_at = Column(DateTime(timezone=True))
     verified = Column(Boolean, default=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now())

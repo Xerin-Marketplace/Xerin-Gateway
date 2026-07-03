@@ -66,10 +66,6 @@ def require_admin(current_user: User):
             detail="Admin access required"
         )
 
-# =========================
-# USER MANAGEMENT
-# =========================
-
 @router.get("/users", response_model=PaginatedAdminUserResponse)
 def admin_get_users(
     db: Session = Depends(get_db),

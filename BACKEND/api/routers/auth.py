@@ -2,7 +2,7 @@ import time
 import threading
 from collections import defaultdict, deque
 from datetime import datetime, timedelta, timezone
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 from jose import jwt, JWTError
 import logging
@@ -15,8 +15,9 @@ from api.models import (
     OTPRequest,
     UserStatus,
     Seller,
+    SellerProfile,
     SellerStatus,
-    Category,
+    BusinessCategory,
     SellerBusinessCategory,
 )
 from api.schemas import *
@@ -43,27 +44,70 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/auth", tags=["Auth"])
 
-
-# ---------------------------------------------------------------------------
-# Rate limiting / brute-force protection
-#
-# NOTE: This is an IN-MEMORY, single-process limiter. It is good enough to
-# stop a lone bot from hammering an endpoint during dev/testing, but it does
-# NOT work correctly if you run more than one worker/process/instance,
-# because each process keeps its own counters. For production, replace this
-# with Redis (e.g. via `slowapi` + redis, or `fastapi-limiter`) or persist
-# attempt counts in the database (e.g. an `attempts` column on OTPRequest).
-# ---------------------------------------------------------------------------
 _rate_lock = threading.Lock()
 _rate_buckets: dict[str, deque] = defaultdict(deque)
-_otp_attempts: dict[str, list] = defaultdict(list)  # phone -> [attempt_timestamps]
+_otp_attempts: dict[str, list] = defaultdict(list)
 
 OTP_MAX_ATTEMPTS = 5
 OTP_ATTEMPT_WINDOW_SECONDS = 10 * 60  # 10 minutes
 
+_redis_client = None
+_redis_url = getattr(settings, "REDIS_URL", None)
+if _redis_url:
+    try:
+        import redis as _redis_lib
+
+        _redis_client = _redis_lib.from_url(_redis_url, socket_timeout=0.5)
+        _redis_client.ping()
+        logger.info("Auth rate limiter: using Redis at %s", _redis_url)
+    except Exception as e:
+        logger.warning(
+            "Auth rate limiter: could not connect to Redis (%s). "
+            "Falling back to in-memory rate limiting.",
+            e,
+        )
+else:
+    logger.info(
+        "Auth rate limiter: REDIS_URL not configured, using in-memory "
+        "rate limiting (single-process only)."
+    )
+
+
+def _redis_sliding_window_count(key: str, window_seconds: int) -> int | None:
+    """
+    Record a hit and return the count of hits within the window using a
+    Redis sorted set. Returns None if Redis is unavailable or the call
+    fails, signaling the caller to use the in-memory fallback instead.
+    """
+    if _redis_client is None:
+        return None
+    now = time.time()
+    redis_key = f"authrl:{key}"
+    try:
+        pipe = _redis_client.pipeline()
+        pipe.zadd(redis_key, {f"{now}:{id(object())}": now})
+        pipe.zremrangebyscore(redis_key, 0, now - window_seconds)
+        pipe.zcard(redis_key)
+        pipe.expire(redis_key, window_seconds)
+        _, _, count, _ = pipe.execute()
+        return int(count)
+    except Exception as e:
+        logger.warning("Redis rate limit check failed for %s: %s", key, e)
+        return None
+
 
 def _rate_limit(key: str, max_calls: int, window_seconds: int) -> None:
-    """Simple sliding-window rate limiter. Raises 429 if exceeded."""
+    """Sliding-window rate limiter (Redis if available, else in-memory). Raises 429 if exceeded."""
+    count = _redis_sliding_window_count(key, window_seconds)
+    if count is not None:
+        if count > max_calls:
+            raise HTTPException(
+                status_code=429,
+                detail="Too many requests. Please try again later.",
+            )
+        return
+
+    # in-memory fallback
     now = time.time()
     with _rate_lock:
         bucket = _rate_buckets[key]
@@ -79,6 +123,25 @@ def _rate_limit(key: str, max_calls: int, window_seconds: int) -> None:
 
 def _check_otp_lockout(phone: str) -> None:
     """Raise 429 if this phone has exceeded failed OTP verification attempts."""
+    key = f"otp-fail:{phone}"
+
+    if _redis_client is not None:
+        try:
+            count = _redis_client.zcount(
+                f"authrl:{key}", time.time() - OTP_ATTEMPT_WINDOW_SECONDS, "+inf"
+            )
+            if count >= OTP_MAX_ATTEMPTS:
+                raise HTTPException(
+                    status_code=429,
+                    detail="Too many failed OTP attempts. Please try again later.",
+                )
+            return
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.warning("Redis OTP lockout check failed for %s: %s", phone, e)
+            # fall through to in-memory below
+
     now = time.time()
     with _rate_lock:
         attempts = _otp_attempts[phone]
@@ -92,29 +155,87 @@ def _check_otp_lockout(phone: str) -> None:
 
 
 def _record_otp_failure(phone: str) -> None:
+    key = f"otp-fail:{phone}"
+    if _redis_sliding_window_count(key, OTP_ATTEMPT_WINDOW_SECONDS) is not None:
+        return  # already recorded by the sliding-window call above
     with _rate_lock:
         _otp_attempts[phone].append(time.time())
 
 
 def _clear_otp_failures(phone: str) -> None:
+    if _redis_client is not None:
+        try:
+            _redis_client.delete(f"authrl:otp-fail:{phone}")
+        except Exception as e:
+            logger.warning("Redis OTP failure clear failed for %s: %s", phone, e)
     with _rate_lock:
         _otp_attempts.pop(phone, None)
 
 
-def _invalidate_existing_otps(db: Session, phone: str) -> None:
+def _invalidate_existing_otps(db: Session, phone: str, purpose: str = "generic") -> None:
     """
-    Mark any previously-issued, unverified OTPs for this phone as
-    used/invalid, so only the most recently issued OTP is ever valid.
+    Mark any previously-issued, unverified OTPs for this phone AND this
+    purpose as used/invalid, so only the most recently issued OTP for that
+    specific purpose is ever valid. Scoping by purpose means invalidating a
+    "register" OTP doesn't touch a still-pending "password_reset" OTP for
+    the same phone.
     """
     db.query(OTPRequest).filter(
         OTPRequest.phone == phone,
-        OTPRequest.verified == False,  # noqa: E712
+        OTPRequest.purpose == purpose,
+        OTPRequest.verified.is_(False),
     ).update({"verified": True})
 
 
-# ---------------------------------------------------------------------------
-# Endpoints
-# ---------------------------------------------------------------------------
+def _client_ip(request: Request) -> str:
+    """
+    Best-effort client IP.
+
+    X-Forwarded-For is only trusted when settings.TRUST_PROXY_HEADERS is
+    explicitly enabled — set this only if you are actually behind a
+    reverse proxy / load balancer that sets this header correctly.
+    Otherwise a client could set an arbitrary X-Forwarded-For value and
+    dodge IP-based rate limiting entirely, so we ignore it by default and
+    use the raw socket peer address instead.
+    """
+    if getattr(settings, "TRUST_PROXY_HEADERS", False):
+        forwarded = request.headers.get("x-forwarded-for")
+        if forwarded:
+            # x-forwarded-for can be a comma-separated chain; the first
+            # entry is the original client.
+            return forwarded.split(",")[0].strip()
+    return request.client.host if request.client else "unknown"
+
+
+def cleanup_old_otp_requests(db: Session, older_than_days: int = 30) -> int:
+    """
+    Delete OTP rows older than `older_than_days`.
+
+    This is NOT called automatically anywhere in this router — it's meant
+    to be invoked from a periodic job (cron, Celery beat, APScheduler,
+    a k8s CronJob, etc.) so the otp_requests table doesn't grow forever.
+    Returns the number of rows deleted.
+
+    Example wiring (outside this file):
+        from api.routers.auth import cleanup_old_otp_requests
+        from api.database import SessionLocal
+
+        def run_otp_cleanup():
+            db = SessionLocal()
+            try:
+                deleted = cleanup_old_otp_requests(db)
+                logger.info("Deleted %d stale OTP rows", deleted)
+            finally:
+                db.close()
+    """
+    cutoff = datetime.now(timezone.utc) - timedelta(days=older_than_days)
+    deleted = (
+        db.query(OTPRequest)
+        .filter(OTPRequest.created_at < cutoff)
+        .delete(synchronize_session=False)
+    )
+    db.commit()
+    return deleted
 
 @router.post("/register", response_model=UserResponse)
 def register(data: RegisterRequest, db: Session = Depends(get_db)):
@@ -146,13 +267,14 @@ def register(data: RegisterRequest, db: Session = Depends(get_db)):
     db.refresh(user)
 
     # invalidate any stale OTPs for this phone, then generate a fresh one
-    _invalidate_existing_otps(db, phone)
+    _invalidate_existing_otps(db, phone, purpose="register")
 
     otp = generate_otp()
     otp_request = OTPRequest(
         user_id=user.id,
         phone=phone,
         otp_code=otp,
+        purpose="register",
         expires_at=datetime.now(timezone.utc) + timedelta(minutes=5),
         verified=False,
     )
@@ -173,7 +295,7 @@ def register(data: RegisterRequest, db: Session = Depends(get_db)):
     try:
         send_sms(
             to=phone,
-            message=f"Use this OTP for verification in Exerim market Place and Your verification code is: {otp}",
+            message=f"Use this OTP to verify your Exerim Marketplace account: {otp}",
         )
     except Exception as e:
         logger.exception("send_sms failed for %s: %s", phone, e)
@@ -202,77 +324,80 @@ def register_seller(data: SellerRegisterRequest, db: Session = Depends(get_db)):
     if not data.business_category_ids:
         raise HTTPException(status_code=400, detail="At least one business category is required")
 
-    categories = db.query(Category).filter(
-        Category.id.in_(data.business_category_ids)
+    categories = db.query(BusinessCategory).filter(
+        BusinessCategory.id.in_(data.business_category_ids)
     ).all()
 
     if len(categories) != len(set(data.business_category_ids)):
         raise HTTPException(status_code=400, detail="One or more business categories are invalid")
 
-    user = User(
-        first_name=data.first_name,
-        last_name=data.last_name,
-        email=email,
-        phone=phone,
-        password_hash=hash_password(data.password),
-        status=UserStatus.pending_verification,
-        is_verified=False,
-    )
-
-    db.add(user)
-    db.commit()
-    db.refresh(user)
-
-    seller = Seller(
-        user_id=user.id,
-        business_name=data.business_name,
-        business_description=data.business_description,
-        business_location=data.business_location,
-        business_country=data.business_country,
-        business_region=data.business_region,
-        business_city=data.business_city,
-        business_address=data.business_address,
-        product_description=data.product_description,
-        years_in_business=data.years_in_business,
-        website_url=data.website_url,
-        contact_email=data.contact_email or email,
-        contact_phone=data.contact_phone or phone,
-        agreement_accepted=data.agreement_accepted,
-        status=SellerStatus.pending,
-    )
-
-    db.add(seller)
-    db.commit()
-    db.refresh(seller)
-
-    for category_id in set(data.business_category_ids):
-        db.add(
-            SellerBusinessCategory(
-                seller_id=seller.id,
-                category_id=category_id,
-            )
+    try:
+        user = User(
+            first_name=data.first_name,
+            last_name=data.last_name,
+            email=email,
+            phone=phone,
+            password_hash=hash_password(data.password),
+            status=UserStatus.pending_verification,
+            is_verified=False,
         )
+        db.add(user)
+        db.flush()  # assigns user.id without committing
 
-    # FIX: these inserts were never committed before — the category links
-    # would silently be lost once the session closed.
-    db.commit()
+        seller = Seller(
+            user_id=user.id,
+            business_name=data.business_name,
+            contact_email=data.contact_email or email,
+            contact_phone=data.contact_phone or phone,
+            agreement_accepted=data.agreement_accepted,
+            status=SellerStatus.pending,
+        )
+        db.add(seller)
+        db.flush()  # assigns seller.id without committing
 
-    # invalidate any stale OTPs for this phone, then generate a fresh one
-    _invalidate_existing_otps(db, phone)
+        seller_profile = SellerProfile(
+            seller_id=seller.id,
+            business_description=data.business_description,
+            business_country=data.business_country,
+            business_region=data.business_region,
+            business_city=data.business_city,
+            business_address=data.business_address,
+            product_description=data.product_description,
+            years_in_business=data.years_in_business,
+            website_url=data.website_url,
+        )
+        db.add(seller_profile)
+        
+        for category_id in set(data.business_category_ids):
+            db.add(
+                SellerBusinessCategory(
+                    seller_id=seller.id,
+                    business_category_id=category_id,
+                )
+            )
 
-    otp = generate_otp()
+        # invalidate any stale OTPs for this phone, then generate a fresh one
+        _invalidate_existing_otps(db, phone, purpose="register_seller")
 
-    otp_request = OTPRequest(
-        user_id=user.id,
-        phone=phone,
-        otp_code=otp,
-        expires_at=datetime.now(timezone.utc) + timedelta(minutes=5),
-        verified=False,
-    )
+        otp = generate_otp()
+        otp_request = OTPRequest(
+            user_id=user.id,
+            phone=phone,
+            otp_code=otp,
+            purpose="register_seller",
+            expires_at=datetime.now(timezone.utc) + timedelta(minutes=5),
+            verified=False,
+        )
+        db.add(otp_request)
 
-    db.add(otp_request)
-    db.commit()
-    db.refresh(seller)
+        db.commit()
+        db.refresh(user)
+        db.refresh(seller)
+        db.refresh(seller_profile)
+    except Exception:
+        db.rollback()
+        logger.exception("Seller registration failed for %s / %s", email, phone)
+        raise HTTPException(status_code=500, detail="Seller registration failed. Please try again.")
 
     try:
         send_email(
@@ -286,7 +411,7 @@ def register_seller(data: SellerRegisterRequest, db: Session = Depends(get_db)):
     try:
         send_sms(
             to=phone,
-            message=f"Use this OTP to verify your Xerin Market seller account: {otp}",
+            message=f"Use this OTP to verify your Exerim Marketplace seller account: {otp}",
         )
     except Exception as e:
         logger.exception("send_sms failed for %s: %s", phone, e)
@@ -295,25 +420,27 @@ def register_seller(data: SellerRegisterRequest, db: Session = Depends(get_db)):
 
 
 @router.post("/login", response_model=TokenResponse)
-def login(data: LoginRequest, db: Session = Depends(get_db)):
+def login(request: Request, data: LoginRequest, db: Session = Depends(get_db)):
     email = data.email.strip().lower()
+    ip = _client_ip(request)
 
-    # Rate-limit by email to slow down credential-stuffing / brute force.
-    _rate_limit(f"login:{email}", max_calls=10, window_seconds=5 * 60)
+    _rate_limit(f"login:email:{email}", max_calls=10, window_seconds=5 * 60)
+    _rate_limit(f"login:ip:{ip}", max_calls=30, window_seconds=5 * 60)
 
     user = db.query(User).filter(User.email == email).first()
 
-    # Generic error message on purpose: don't reveal whether the account
-    # exists or whether it was the email or the password that was wrong.
     if not user or not verify_password(data.password, user.password_hash):
         raise HTTPException(status_code=401, detail="Invalid email or password")
 
     if user.status == UserStatus.suspended:
         raise HTTPException(status_code=403, detail="Account suspended")
 
-    # Enforce verification before allowing login
-    if not user.is_verified:
-        raise HTTPException(status_code=405, detail="Account not verified")
+    inactive_status = getattr(UserStatus, "inactive", None)
+    if inactive_status is not None and user.status == inactive_status:
+        raise HTTPException(status_code=403, detail="Account inactive")
+
+    if user.status == UserStatus.pending_verification or not user.is_verified:
+        raise HTTPException(status_code=403, detail="Account not verified")
 
     access_token = create_access_token({"sub": str(user.id)})
     refresh_token = create_refresh_token({"sub": str(user.id)})
@@ -404,13 +531,20 @@ def refresh_token(data: RefreshRequest, db: Session = Depends(get_db)):
 
 
 @router.post("/send-otp")
-def send_otp(data: SendOTPRequest, db: Session = Depends(get_db)):
+def send_otp(request: Request, data: SendOTPRequest, db: Session = Depends(get_db)):
     phone = data.phone.strip()
+    ip = _client_ip(request)
 
-    _rate_limit(f"send-otp:{phone}", max_calls=3, window_seconds=5 * 60)
+    # If SendOTPRequest has a `purpose` field, use it; otherwise default to
+    # "generic". Add `purpose: str` to the SendOTPRequest schema if you want
+    # callers to specify why they're requesting an OTP (e.g. "phone_verify").
+    purpose = getattr(data, "purpose", None) or "generic"
+
+    _rate_limit(f"send-otp:phone:{phone}", max_calls=3, window_seconds=5 * 60)
+    _rate_limit(f"send-otp:ip:{ip}", max_calls=10, window_seconds=5 * 60)
 
     # invalidate any stale OTPs for this phone before issuing a new one
-    _invalidate_existing_otps(db, phone)
+    _invalidate_existing_otps(db, phone, purpose=purpose)
     _clear_otp_failures(phone)
 
     otp = generate_otp()
@@ -418,6 +552,7 @@ def send_otp(data: SendOTPRequest, db: Session = Depends(get_db)):
     otp_request = OTPRequest(
         phone=phone,
         otp_code=otp,
+        purpose=purpose,
         expires_at=datetime.now(timezone.utc) + timedelta(minutes=5),
         verified=False,
     )
@@ -450,19 +585,26 @@ def send_otp(data: SendOTPRequest, db: Session = Depends(get_db)):
 def verify_otp(data: VerifyOTPRequest, db: Session = Depends(get_db)):
     phone = data.phone.strip()
 
+    # If VerifyOTPRequest has a `purpose` field, scope the lookup to it —
+    # this is what stops a "password_reset" OTP from being accepted here
+    # as if it were a "register" OTP. If the schema doesn't have a
+    # `purpose` field yet, this falls back to the old behavior (matches
+    # any unverified OTP for the phone, regardless of what it was for).
+    # Add `purpose: str | None = None` to VerifyOTPRequest to enable this.
+    purpose = getattr(data, "purpose", None)
+
     # Brute-force protection: block after too many failed attempts.
     _check_otp_lockout(phone)
 
-    otp_request = (
-        db.query(OTPRequest)
-        .filter(
-            OTPRequest.phone == phone,
-            OTPRequest.otp_code == data.otp_code,
-            OTPRequest.verified == False,  # noqa: E712
-        )
-        .order_by(OTPRequest.created_at.desc())
-        .first()
+    query = db.query(OTPRequest).filter(
+        OTPRequest.phone == phone,
+        OTPRequest.otp_code == data.otp_code,
+        OTPRequest.verified.is_(False),
     )
+    if purpose:
+        query = query.filter(OTPRequest.purpose == purpose)
+
+    otp_request = query.order_by(OTPRequest.created_at.desc()).first()
 
     if not otp_request:
         _record_otp_failure(phone)
@@ -486,17 +628,19 @@ def verify_otp(data: VerifyOTPRequest, db: Session = Depends(get_db)):
 
 
 @router.post("/forgot-password")
-def forgot_password(data: ForgotPasswordRequest, db: Session = Depends(get_db)):
+def forgot_password(request: Request, data: ForgotPasswordRequest, db: Session = Depends(get_db)):
     email = data.email.strip().lower()
+    ip = _client_ip(request)
 
-    _rate_limit(f"forgot-password:{email}", max_calls=3, window_seconds=15 * 60)
+    _rate_limit(f"forgot-password:email:{email}", max_calls=3, window_seconds=15 * 60)
+    _rate_limit(f"forgot-password:ip:{ip}", max_calls=10, window_seconds=15 * 60)
 
     user = db.query(User).filter(User.email == email).first()
 
     if not user:
         return {"message": "If email exists, OTP has been sent"}
 
-    _invalidate_existing_otps(db, user.phone)
+    _invalidate_existing_otps(db, user.phone, purpose="password_reset")
 
     otp = generate_otp()
 
@@ -504,6 +648,7 @@ def forgot_password(data: ForgotPasswordRequest, db: Session = Depends(get_db)):
         user_id=user.id,
         phone=user.phone,
         otp_code=otp,
+        purpose="password_reset",
         expires_at=datetime.now(timezone.utc) + timedelta(minutes=5),
         verified=False,
     )
@@ -544,7 +689,8 @@ def reset_password(data: ResetPasswordRequest, db: Session = Depends(get_db)):
         .filter(
             OTPRequest.user_id == user.id,
             OTPRequest.otp_code == data.otp_code,
-            OTPRequest.verified == False,  # noqa: E712
+            OTPRequest.purpose == "password_reset",
+            OTPRequest.verified.is_(False),
         )
         .order_by(OTPRequest.created_at.desc())
         .first()

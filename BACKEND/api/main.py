@@ -1,4 +1,8 @@
-from itertools import product
+import logging
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
+)
 
 from fastapi import FastAPI
 from api.database import Base, engine
@@ -11,6 +15,7 @@ api.include_router(users.router)
 api.include_router(sellers.router)
 api.include_router(products.router)
 api.include_router(admin.router)
+
 
 @api.on_event("startup")
 def on_startup():

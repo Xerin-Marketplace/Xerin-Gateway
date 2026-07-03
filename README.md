@@ -255,4 +255,22 @@ Admin Service
 uvicorn api.main:api --reload
 
 ```
+# REDDIS 
+
+```
+pip install "redis>=5.0.0"
+```
+
+```
+nano ~/.bashrc
+
+```
+```ex
+port REDIS_URL=redis://localhost:6379/0
+
+```
+```
+source ~/.bashrc
+
+```
 
