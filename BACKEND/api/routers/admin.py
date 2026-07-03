@@ -7,6 +7,8 @@ from fastapi import APIRouter, Depends, HTTPException, status, Form
 from sqlalchemy.orm import Session
 from api.models import Role, UserRole, UserStatus
 from api.routers.email import send_email
+from api.permissions import require_permission
+from api.enums import PermissionCode
 
 
 from api.deps import get_db, get_current_user
@@ -70,13 +72,15 @@ def require_admin(current_user: User):
 @router.get("/users", response_model=PaginatedAdminUserResponse)
 def admin_get_users(
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(
+    require_permission(PermissionCode.can_view_users.value)
+),
     page: int = Query(1, ge=1),
     page_size: int = Query(10, ge=1, le=100),
     search: str | None = Query(None),
     status_filter: str | None = Query(None),
 ):
-    require_admin(current_user)
+     
 
     query = db.query(User)
 
@@ -112,9 +116,11 @@ def admin_get_users(
 def admin_create_user(
     data: AdminUserCreate,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(
+    require_permission(PermissionCode.can_create_users.value)
+),
 ):
-    require_admin(current_user)
+     
 
     email = data.email.strip().lower()
     phone = data.phone.strip() if data.phone else None
@@ -147,9 +153,11 @@ def admin_create_user(
 def admin_get_user_detail(
     user_id: UUID,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(
+    require_permission(PermissionCode.can_view_users.value)
+),
 ):
-    require_admin(current_user)
+     
 
     user = db.query(User).filter(User.id == user_id).first()
 
@@ -164,9 +172,11 @@ def admin_update_user(
     user_id: UUID,
     data: AdminUserUpdate,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(
+    require_permission(PermissionCode.can_update_users.value)
+),
 ):
-    require_admin(current_user)
+     
 
     user = db.query(User).filter(User.id == user_id).first()
 
@@ -218,9 +228,11 @@ def admin_update_user(
 def admin_delete_user(
     user_id: UUID,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(
+    require_permission(PermissionCode.can_delete_users.value)
+),
 ):
-    require_admin(current_user)
+     
 
     if user_id == current_user.id:
         raise HTTPException(
@@ -282,9 +294,10 @@ XERIM Marketplace Team
 def admin_create_admin(
     data: AdminUserCreate,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(
+    require_permission(PermissionCode.can_create_admin_users.value)
+),
 ):
-    require_admin(current_user)
 
     email = data.email.strip().lower()
     phone = data.phone.strip() if data.phone else None
@@ -362,9 +375,11 @@ def admin_create_admin(
 def create_business_category(
     data: BusinessCategoryCreate,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(
+    require_permission(PermissionCode.can_create_business_categories.value)
+),
 ):
-    require_admin(current_user)
+     
 
     existing = db.query(BusinessCategory).filter(
         BusinessCategory.slug == data.slug
@@ -390,9 +405,11 @@ def create_business_category(
 @router.get("/business-categories", response_model=list[BusinessCategoryResponse])
 def get_business_categories(
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(
+    require_permission(PermissionCode.can_view_business_categories.value)
+),
 ):
-    require_admin(current_user)
+     
 
     return db.query(BusinessCategory).order_by(BusinessCategory.name.asc()).all()
 
@@ -402,9 +419,11 @@ def update_business_category(
     category_id: UUID,
     data: BusinessCategoryUpdate,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(
+    require_permission(PermissionCode.can_update_business_categories.value)
+),
 ):
-    require_admin(current_user)
+     
 
     category = db.query(BusinessCategory).filter(
         BusinessCategory.id == category_id
@@ -428,9 +447,10 @@ def update_business_category(
 def delete_business_category(
     category_id: UUID,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(
+    require_permission(PermissionCode.can_delete_business_categories.value)
+),
 ):
-    require_admin(current_user)
 
     category = db.query(BusinessCategory).filter(
         BusinessCategory.id == category_id
@@ -453,9 +473,11 @@ def delete_business_category(
 def create_product_category(
     data: CategoryCreate,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(
+    require_permission(PermissionCode.can_create_product_categories.value)
+),
 ):
-    require_admin(current_user)
+     
 
     existing = db.query(Category).filter(Category.slug == data.slug).first()
 
@@ -478,9 +500,11 @@ def create_product_category(
 @router.get("/product-categories", response_model=list[CategoryResponse])
 def get_product_categories(
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(
+    require_permission(PermissionCode.can_view_product_categories.value)
+),
 ):
-    require_admin(current_user)
+     
 
     return db.query(Category).order_by(Category.name.asc()).all()
 
@@ -489,9 +513,11 @@ def get_product_categories(
 def delete_product_category(
     category_id: UUID,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(
+    require_permission(PermissionCode.can_delete_product_categories.value)
+),
 ):
-    require_admin(current_user)
+     
 
     category = db.query(Category).filter(Category.id == category_id).first()
 
@@ -512,9 +538,11 @@ def delete_product_category(
 def create_brand(
     data: BrandCreate,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(
+    require_permission(PermissionCode.can_create_brands.value)
+),
 ):
-    require_admin(current_user)
+     
 
     existing = db.query(Brand).filter(Brand.slug == data.slug).first()
 
@@ -533,9 +561,11 @@ def create_brand(
 @router.get("/brands", response_model=list[BrandResponse])
 def get_brands(
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(
+    require_permission(PermissionCode.can_view_brands.value)
+),
 ):
-    require_admin(current_user)
+     
 
     return db.query(Brand).order_by(Brand.name.asc()).all()
 
@@ -544,9 +574,11 @@ def get_brands(
 def delete_brand(
     brand_id: UUID,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(
+    require_permission(PermissionCode.can_delete_brands.value)
+),
 ):
-    require_admin(current_user)
+     
 
     brand = db.query(Brand).filter(Brand.id == brand_id).first()
 
@@ -566,9 +598,11 @@ def delete_brand(
 @router.get("/sellers", response_model=list[SellerResponse])
 def get_all_sellers(
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(
+    require_permission(PermissionCode.can_view_sellers.value)
+),
 ):
-    require_admin(current_user)
+     
 
     return db.query(Seller).order_by(Seller.created_at.desc()).all()
 
@@ -576,12 +610,14 @@ def get_all_sellers(
 @router.get("/sellers/pending", response_model=list[SellerResponse])
 def get_pending_sellers(
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(
+    require_permission(PermissionCode.can_view_pending_sellers.value)
+),
 ):
-    require_admin(current_user)
+     
 
     return db.query(Seller).filter(
-        Seller.status == SellerStatus.under_review
+        Seller.status == SellerStatus.under_recan_view
     ).order_by(Seller.created_at.desc()).all()
 
 
@@ -589,9 +625,11 @@ def get_pending_sellers(
 def get_seller_detail(
     seller_id: UUID,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(
+    require_permission(PermissionCode.can_view_sellers.value)
+),
 ):
-    require_admin(current_user)
+     
 
     seller = db.query(Seller).filter(Seller.id == seller_id).first()
 
@@ -605,9 +643,11 @@ def get_seller_detail(
 def get_seller_documents(
     seller_id: UUID,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(
+    require_permission(PermissionCode.can_view_seller_documents.value)
+),
 ):
-    require_admin(current_user)
+     
 
     return db.query(SellerKYCDocument).filter(
         SellerKYCDocument.seller_id == seller_id
@@ -618,9 +658,11 @@ def get_seller_documents(
 def approve_seller(
     seller_id: UUID,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(
+    require_permission(PermissionCode.can_approve_sellers.value)
+),
 ):
-    require_admin(current_user)
+     
 
     seller = db.query(Seller).filter(Seller.id == seller_id).first()
 
@@ -657,9 +699,11 @@ def reject_seller(
     seller_id: UUID,
     reason: str = Form(...),
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(
+    require_permission(PermissionCode.can_reject_sellers.value)
+),
 ):
-    require_admin(current_user)
+     
 
     seller = db.query(Seller).filter(Seller.id == seller_id).first()
 
@@ -688,12 +732,14 @@ def reject_seller(
 @router.get("/products/pending", response_model=list[ProductResponse])
 def get_pending_products(
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(
+    require_permission(PermissionCode.can_view_products.value)
+),
 ):
-    require_admin(current_user)
+     
 
     return db.query(Product).filter(
-        Product.status == ProductStatus.pending_review
+        Product.status == ProductStatus.pending_recan_can_view
     ).order_by(Product.created_at.desc()).all()
 
 
@@ -701,9 +747,11 @@ def get_pending_products(
 def approve_product(
     product_id: UUID,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(
+    require_permission(PermissionCode.can_approve_products.value)
+),
 ):
-    require_admin(current_user)
+     
 
     product = db.query(Product).filter(Product.id == product_id).first()
 
@@ -725,9 +773,11 @@ def reject_product(
     product_id: UUID,
     reason: str = Form(...),
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(
+    require_permission(PermissionCode.can_reject_products.value)
+),
 ):
-    require_admin(current_user)
+     
 
     product = db.query(Product).filter(Product.id == product_id).first()
 
