@@ -98,38 +98,18 @@ def show_result(status, body):
 def rand_suffix() -> str:
     return uuid.uuid4().hex[:6]
 
-
 def check_is_admin(profile: dict) -> bool:
-    """Best-effort role detection across a few plausible /users/me response shapes."""
     if not isinstance(profile, dict):
         return False
 
-    for key in ("is_admin", "is_superadmin", "super_admin"):
-        if profile.get(key):
-            return True
-
-    role_val = profile.get("role")
-    if isinstance(role_val, str) and role_val.lower() in ADMIN_ROLE_NAMES:
+    account_type = str(profile.get("account_type", "")).lower()
+    if account_type in ADMIN_ROLE_NAMES:
         return True
 
-    roles = profile.get("roles")
+    roles = profile.get("roles", [])
     if isinstance(roles, list):
-        for r in roles:
-            if isinstance(r, str) and r.lower() in ADMIN_ROLE_NAMES:
-                return True
-            if isinstance(r, dict):
-                candidates = []
-                if isinstance(r.get("name"), str):
-                    candidates.append(r["name"])
-                if isinstance(r.get("role_name"), str):
-                    candidates.append(r["role_name"])
-                if isinstance(r.get("role"), dict) and isinstance(r["role"].get("name"), str):
-                    candidates.append(r["role"]["name"])
-                if isinstance(r.get("role"), str):
-                    candidates.append(r["role"])
-                for c in candidates:
-                    if c.lower() in ADMIN_ROLE_NAMES:
-                        return True
+        return any(str(role).lower() in ADMIN_ROLE_NAMES for role in roles)
+
     return False
 
 
@@ -346,9 +326,14 @@ with tab_map["Login"]:
             if status and status < 300 and isinstance(body, dict):
                 st.session_state.access_token = body.get("access_token", "")
                 st.session_state.refresh_token = body.get("refresh_token", "")
-                # Immediately figure out who we are and whether we can see the Admin tab.
+
+            if isinstance(body.get("user"), dict):
+                st.session_state.profile = body["user"]
+                st.session_state.is_admin = check_is_admin(body["user"])
+            else:
                 fetch_profile(silent=True)
-                st.rerun()
+
+            st.rerun()
     with c2:
         st.caption("Edge case: expect 401 'Invalid email or password'.")
         if st.button("Login with WRONG password (expect 401)"):
@@ -381,8 +366,14 @@ with tab_map["Session (logout / refresh)"]:
             if status and status < 300 and isinstance(body, dict):
                 st.session_state.access_token = body.get("access_token", "")
                 st.session_state.refresh_token = body.get("refresh_token", "")
+
+            if isinstance(body.get("user"), dict):
+                st.session_state.profile = body["user"]
+                st.session_state.is_admin = check_is_admin(body["user"])
+            else:
                 fetch_profile(silent=True)
-                st.rerun()
+
+            st.rerun()
     with c2:
         st.caption("Edge case: garbage token should return 401 'Invalid refresh token'.")
         if st.button("Refresh with GARBAGE token (expect 401)"):
@@ -470,6 +461,19 @@ with tab_map["My Profile"]:
 
         if st.session_state.profile:
             st.caption(f"Role check result: {'🛡️ Admin (Admin Panel tab unlocked)' if st.session_state.is_admin else '👤 Regular user'}")
+            roles = st.session_state.profile.get("roles", [])
+            permissions = st.session_state.profile.get("permissions", [])
+            account_type = st.session_state.profile.get("account_type")
+
+            st.caption(f"Account type: {account_type}")
+            st.caption(f"Roles: {', '.join(roles) if roles else 'None'}")
+
+            with st.expander("Permissions"):
+                if permissions:
+                    for permission in permissions:
+                       st.write(f"✅ {permission}")
+                else:
+                    st.warning("No permissions found")
             st.json(st.session_state.profile)
 
         st.divider()
