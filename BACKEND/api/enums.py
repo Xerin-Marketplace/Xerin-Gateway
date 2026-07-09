@@ -40,4 +40,9 @@ class PermissionCode(str, enum.Enum):
     can_view_products = "can_view_products"
     can_approve_products = "can_approve_products"
     can_reject_products = "can_reject_products"
-    
+
+    orders_read = "orders:read"
+    payments_read = "payments:read"
+    inventory_manage = "inventory:manage"
+    coupons_write = "coupons:write"
+    coupons_read = "coupons:read"

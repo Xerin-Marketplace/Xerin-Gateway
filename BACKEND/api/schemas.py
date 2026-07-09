@@ -535,4 +535,248 @@ class RolePermissionsUpdateRequest(BaseModel):
 class RolePermissionsResponse(BaseModel):
     role_id: UUID
     role_name: str
-    permissions: list[str]               
+    permissions: list[str]
+# =========================================================
+# CART SCHEMAS
+# =========================================================
+
+class CartItemCreate(BaseModel):
+    product_id: UUID
+    variant_id: Optional[UUID] = None
+    quantity: int = Field(ge=1)
+
+
+class CartItemUpdate(BaseModel):
+    quantity: int = Field(ge=1)
+
+
+class CartItemResponse(BaseModel):
+    id: UUID
+    product_id: UUID
+    variant_id: Optional[UUID]
+    quantity: int
+    unit_price: Decimal
+    product: "ProductResponse"
+
+    class Config:
+        from_attributes = True
+
+
+class CartResponse(BaseModel):
+    id: UUID
+    user_id: UUID
+    coupon_code: Optional[str]
+    items: list[CartItemResponse]
+    subtotal: Decimal
+    discount_amount: Decimal
+    total: Decimal
+
+    class Config:
+        from_attributes = True
+
+
+class ApplyCouponRequest(BaseModel):
+    code: str
+
+
+# =========================================================
+# ORDER SCHEMAS
+# =========================================================
+
+class OrderItemResponse(BaseModel):
+    id: UUID
+    product_id: UUID
+    variant_id: Optional[UUID]
+    seller_id: UUID
+    product_name: str
+    variant_name: Optional[str]
+    quantity: int
+    unit_price: Decimal
+    total_price: Decimal
+
+    class Config:
+        from_attributes = True
+
+
+class OrderStatusHistoryResponse(BaseModel):
+    id: UUID
+    status: str
+    notes: Optional[str]
+    created_by_id: Optional[UUID]
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class OrderCreateRequest(BaseModel):
+    shipping_address_id: Optional[UUID] = None
+    coupon_code: Optional[str] = None
+    notes: Optional[str] = None
+
+
+class OrderStatusUpdateRequest(BaseModel):
+    status: str
+    notes: Optional[str] = None
+
+
+class OrderResponse(BaseModel):
+    id: UUID
+    user_id: UUID
+    shipping_address_id: Optional[UUID]
+    status: str
+    currency: str
+    subtotal: Decimal
+    discount_amount: Decimal
+    shipping_amount: Decimal
+    tax_amount: Decimal
+    total: Decimal
+    coupon_code: Optional[str]
+    notes: Optional[str]
+    items: list[OrderItemResponse]
+    status_history: list[OrderStatusHistoryResponse]
+    created_at: datetime
+    updated_at: Optional[datetime]
+
+    class Config:
+        from_attributes = True
+
+
+class PaginatedOrderResponse(BaseModel):
+    total: int
+    page: int
+    page_size: int
+    results: list[OrderResponse]
+
+
+# =========================================================
+# INVENTORY SCHEMAS
+# =========================================================
+
+class InventoryCreate(BaseModel):
+    product_id: UUID
+    variant_id: Optional[UUID] = None
+    quantity: int = Field(ge=0)
+    reserved_quantity: int = Field(default=0, ge=0)
+    warehouse_location: Optional[str] = None
+    low_stock_threshold: int = Field(default=10, ge=0)
+
+
+class InventoryUpdate(BaseModel):
+    quantity: Optional[int] = Field(default=None, ge=0)
+    reserved_quantity: Optional[int] = Field(default=None, ge=0)
+    warehouse_location: Optional[str] = None
+    low_stock_threshold: Optional[int] = Field(default=None, ge=0)
+
+
+class InventoryResponse(BaseModel):
+    id: UUID
+    product_id: UUID
+    variant_id: Optional[UUID]
+    quantity: int
+    reserved_quantity: int
+    available_quantity: int
+    warehouse_location: Optional[str]
+    low_stock_threshold: int
+    restock_date: Optional[datetime]
+    updated_at: Optional[datetime]
+
+    class Config:
+        from_attributes = True
+
+
+# =========================================================
+# PAYMENT SCHEMAS
+# =========================================================
+
+class PaymentInitiateRequest(BaseModel):
+    order_id: UUID
+    method: str  # mobile_money, bank_transfer, card, cash_on_delivery
+    provider: Optional[str] = None  # mpesa, airtel_money, tigo_pesa
+    phone_number: Optional[str] = None
+
+
+class PaymentCallbackRequest(BaseModel):
+    provider: str
+    transaction_id: str
+    status: str
+    payload: Optional[Dict[str, Any]] = None
+
+
+class PaymentTransactionResponse(BaseModel):
+    id: UUID
+    transaction_type: str
+    status: str
+    amount: Optional[Decimal]
+    provider_response: Optional[Dict[str, Any]]
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class PaymentResponse(BaseModel):
+    id: UUID
+    order_id: UUID
+    user_id: UUID
+    amount: Decimal
+    currency: str
+    method: str
+    provider: Optional[str]
+    status: str
+    provider_transaction_id: Optional[str]
+    paid_at: Optional[datetime]
+    transactions: list[PaymentTransactionResponse]
+    created_at: datetime
+    updated_at: Optional[datetime]
+
+    class Config:
+        from_attributes = True
+
+
+# =========================================================
+# COUPON SCHEMAS
+# =========================================================
+
+class CouponCreate(BaseModel):
+    code: str
+    description: Optional[str] = None
+    discount_type: str  # percentage, fixed_amount
+    discount_value: Decimal
+    minimum_order_amount: Optional[Decimal] = None
+    maximum_discount_amount: Optional[Decimal] = None
+    usage_limit: Optional[int] = None
+    valid_from: Optional[datetime] = None
+    valid_until: Optional[datetime] = None
+    is_active: bool = True
+
+
+class CouponUpdate(BaseModel):
+    description: Optional[str] = None
+    discount_type: Optional[str] = None
+    discount_value: Optional[Decimal] = None
+    minimum_order_amount: Optional[Decimal] = None
+    maximum_discount_amount: Optional[Decimal] = None
+    usage_limit: Optional[int] = None
+    valid_from: Optional[datetime] = None
+    valid_until: Optional[datetime] = None
+    is_active: Optional[bool] = None
+
+
+class CouponResponse(BaseModel):
+    id: UUID
+    code: str
+    description: Optional[str]
+    discount_type: str
+    discount_value: Decimal
+    minimum_order_amount: Optional[Decimal]
+    maximum_discount_amount: Optional[Decimal]
+    usage_limit: Optional[int]
+    usage_count: int
+    is_active: bool
+    valid_from: Optional[datetime]
+    valid_until: Optional[datetime]
+    created_at: datetime
+
+    class Config:
+        from_attributes = True

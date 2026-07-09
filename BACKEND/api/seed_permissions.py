@@ -42,6 +42,9 @@ DEFAULT_ROLE_PERMISSIONS = {
         PermissionCode.can_approve_sellers.value,
         PermissionCode.can_reject_sellers.value,
         PermissionCode.can_view_products.value,
+        PermissionCode.orders_read.value,
+        PermissionCode.payments_read.value,
+        PermissionCode.coupons_read.value,
     ],
     "super_admin": [p.value for p in PermissionCode],
 }

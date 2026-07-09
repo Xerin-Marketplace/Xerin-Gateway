@@ -180,6 +180,11 @@ tab_names = [
     "OTP (send / verify)",
     "Password Reset",
     "My Profile",
+    "Cart",
+    "Orders",
+    "Payments",
+    "Inventory",
+    "Coupons",
 ]
 if st.session_state.is_admin:
     tab_names.append("Admin Panel")
@@ -849,6 +854,200 @@ if st.session_state.is_admin:
                             st.error(f"Request failed: {e}")
                     else:
                         st.warning("Provide a product ID.")
+
+
+with tab_map["Cart"]:
+    st.subheader("GET /cart")
+    if st.button("Fetch cart", key="cart_fetch"):
+        status, body = call("GET", "/cart", auth=True)
+        show_result(status, body)
+
+    st.divider()
+    st.subheader("POST /cart/items")
+    c_prod = st.text_input("Product ID", "", key="cart_prod")
+    c_var = st.text_input("Variant ID (optional)", "", key="cart_var")
+    c_qty = st.number_input("Quantity", min_value=1, value=1, key="cart_qty")
+    if st.button("Add to cart", key="cart_add"):
+        payload = {"product_id": c_prod, "quantity": int(c_qty)}
+        if c_var:
+            payload["variant_id"] = c_var
+        status, body = call("POST", "/cart/items", payload, auth=True)
+        show_result(status, body)
+
+    st.divider()
+    st.subheader("PUT /cart/items/{item_id}")
+    c_item = st.text_input("Cart item ID", "", key="cart_item")
+    c_new_qty = st.number_input("New quantity", min_value=1, value=1, key="cart_new_qty")
+    if st.button("Update cart item", key="cart_update"):
+        status, body = call("PUT", f"/cart/items/{c_item}", {"quantity": int(c_new_qty)}, auth=True)
+        show_result(status, body)
+
+    st.divider()
+    st.subheader("DELETE /cart/items/{item_id}")
+    c_del_item = st.text_input("Cart item ID to remove", "", key="cart_del_item")
+    if st.button("Remove cart item", key="cart_remove"):
+        status, body = call("DELETE", f"/cart/items/{c_del_item}", auth=True)
+        show_result(status, body)
+
+    st.divider()
+    st.subheader("POST /cart/apply-coupon")
+    c_coupon = st.text_input("Coupon code", "", key="cart_coupon")
+    if st.button("Apply coupon", key="cart_apply_coupon"):
+        status, body = call("POST", "/cart/apply-coupon", {"code": c_coupon}, auth=True)
+        show_result(status, body)
+
+    st.divider()
+    st.subheader("DELETE /cart")
+    if st.button("Clear cart", key="cart_clear"):
+        status, body = call("DELETE", "/cart", auth=True)
+        show_result(status, body)
+
+
+with tab_map["Orders"]:
+    st.subheader("POST /orders")
+    o_addr = st.text_input("Shipping address ID (optional)", "", key="order_addr")
+    o_coupon = st.text_input("Coupon code (optional)", "", key="order_coupon")
+    o_notes = st.text_area("Notes (optional)", "", key="order_notes")
+    if st.button("Create order from cart", key="order_create"):
+        payload = {}
+        if o_addr:
+            payload["shipping_address_id"] = o_addr
+        if o_coupon:
+            payload["coupon_code"] = o_coupon
+        if o_notes:
+            payload["notes"] = o_notes
+        status, body = call("POST", "/orders", payload or None, auth=True)
+        show_result(status, body)
+
+    st.divider()
+    st.subheader("GET /orders/my-orders")
+    if st.button("List my orders", key="orders_list"):
+        status, body = call("GET", "/orders/my-orders", auth=True)
+        show_result(status, body)
+
+    st.divider()
+    st.subheader("GET /orders/{order_id}")
+    o_id = st.text_input("Order ID", "", key="order_id")
+    if st.button("Get order", key="order_get"):
+        status, body = call("GET", f"/orders/{o_id}", auth=True)
+        show_result(status, body)
+
+    st.divider()
+    st.subheader("PATCH /orders/{order_id}/status")
+    o_status_id = st.text_input("Order ID", "", key="order_status_id")
+    o_status = st.selectbox("New status", ["pending", "paid", "processing", "shipped", "delivered", "cancelled"], key="order_status")
+    o_status_notes = st.text_input("Status notes", "", key="order_status_notes")
+    if st.button("Update order status", key="order_status_update"):
+        status, body = call("PATCH", f"/orders/{o_status_id}/status", {"status": o_status, "notes": o_status_notes or None}, auth=True)
+        show_result(status, body)
+
+
+with tab_map["Payments"]:
+    st.subheader("POST /payments/initiate")
+    p_order = st.text_input("Order ID", "", key="pay_order")
+    p_method = st.selectbox("Method", ["mobile_money", "bank_transfer", "card", "cash_on_delivery"], key="pay_method")
+    p_provider = st.text_input("Provider (e.g. mpesa)", "", key="pay_provider")
+    p_phone = st.text_input("Phone number", "", key="pay_phone")
+    if st.button("Initiate payment", key="pay_init"):
+        payload = {"order_id": p_order, "method": p_method}
+        if p_provider:
+            payload["provider"] = p_provider
+        if p_phone:
+            payload["phone_number"] = p_phone
+        status, body = call("POST", "/payments/initiate", payload, auth=True)
+        show_result(status, body)
+
+    st.divider()
+    st.subheader("POST /payments/callback/{provider}")
+    cb_provider = st.text_input("Provider", "mpesa", key="cb_provider")
+    cb_tx = st.text_input("Transaction ID", "", key="cb_tx")
+    cb_status = st.selectbox("Callback status", ["success", "failed", "cancelled"], key="cb_status")
+    if st.button("Send callback", key="pay_callback"):
+        status, body = call("POST", f"/payments/callback/{cb_provider}", {
+            "provider": cb_provider,
+            "transaction_id": cb_tx,
+            "status": cb_status,
+            "payload": {"reason": "test callback"},
+        })
+        show_result(status, body)
+
+    st.divider()
+    st.subheader("GET /payments/{payment_id}")
+    p_id = st.text_input("Payment ID", "", key="pay_id")
+    if st.button("Get payment", key="pay_get"):
+        status, body = call("GET", f"/payments/{p_id}", auth=True)
+        show_result(status, body)
+
+
+with tab_map["Inventory"]:
+    st.subheader("POST /inventory")
+    i_prod = st.text_input("Product ID", "", key="inv_prod")
+    i_var = st.text_input("Variant ID (optional)", "", key="inv_var")
+    i_qty = st.number_input("Quantity", min_value=0, value=100, key="inv_qty")
+    i_res = st.number_input("Reserved quantity", min_value=0, value=0, key="inv_res")
+    i_loc = st.text_input("Warehouse location", "", key="inv_loc")
+    if st.button("Create inventory record", key="inv_create"):
+        payload = {"product_id": i_prod, "quantity": int(i_qty), "reserved_quantity": int(i_res)}
+        if i_var:
+            payload["variant_id"] = i_var
+        if i_loc:
+            payload["warehouse_location"] = i_loc
+        status, body = call("POST", "/inventory", payload, auth=True)
+        show_result(status, body)
+
+    st.divider()
+    st.subheader("GET /inventory/my-inventory")
+    if st.button("List my inventory", key="inv_list"):
+        status, body = call("GET", "/inventory/my-inventory", auth=True)
+        show_result(status, body)
+
+    st.divider()
+    st.subheader("PUT /inventory/{inventory_id}")
+    i_id = st.text_input("Inventory ID", "", key="inv_id")
+    i_new_qty = st.number_input("New quantity", min_value=0, value=100, key="inv_new_qty")
+    if st.button("Update inventory", key="inv_update"):
+        status, body = call("PUT", f"/inventory/{i_id}", {"quantity": int(i_new_qty)}, auth=True)
+        show_result(status, body)
+
+    st.divider()
+    st.subheader("GET /inventory/low-stock")
+    if st.button("List low stock", key="inv_low"):
+        status, body = call("GET", "/inventory/low-stock", auth=True)
+        show_result(status, body)
+
+
+with tab_map["Coupons"]:
+    st.subheader("POST /coupons")
+    cp_code = st.text_input("Code", f"SAVE{rand_suffix()}", key="cp_code")
+    cp_type = st.selectbox("Discount type", ["percentage", "fixed_amount"], key="cp_type")
+    cp_value = st.number_input("Discount value", min_value=0.0, value=10.0, step=0.01, key="cp_value")
+    cp_min = st.number_input("Minimum order amount", min_value=0.0, value=0.0, step=0.01, key="cp_min")
+    cp_limit = st.number_input("Usage limit", min_value=1, value=100, key="cp_limit")
+    if st.button("Create coupon", key="cp_create"):
+        payload = {
+            "code": cp_code,
+            "discount_type": cp_type,
+            "discount_value": cp_value,
+            "minimum_order_amount": cp_min if cp_min > 0 else None,
+            "usage_limit": int(cp_limit),
+        }
+        status, body = call("POST", "/coupons", payload, auth=True)
+        show_result(status, body)
+
+    st.divider()
+    st.subheader("GET /coupons")
+    if st.button("List coupons", key="cp_list"):
+        status, body = call("GET", "/coupons", auth=True)
+        show_result(status, body)
+
+    st.divider()
+    st.subheader("PUT /coupons/{coupon_id}")
+    cp_id = st.text_input("Coupon ID", "", key="cp_id")
+    cp_active = st.checkbox("Active", value=True, key="cp_active")
+    if st.button("Update coupon", key="cp_update"):
+        status, body = call("PUT", f"/coupons/{cp_id}", {"is_active": cp_active}, auth=True)
+        show_result(status, body)
+
 
 with tab_map["Stress tests"]:
     st.subheader("Rate limiting")
