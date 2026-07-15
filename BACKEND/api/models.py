@@ -6,9 +6,11 @@ from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.sql import func
 from sqlalchemy.orm import relationship
 import datetime
+from sqlalchemy import Float, Time
 from sqlalchemy import Numeric, Integer
 from sqlalchemy.dialects.postgresql import JSONB
 from api.database import Base
+from api.enums import StoreStatus
 
 
 
@@ -173,6 +175,13 @@ class Seller(Base):
     back_populates="seller",
     uselist=False,
     cascade="all, delete-orphan"
+)
+    
+    store = relationship(
+    "Store",
+    back_populates="seller",
+    uselist=False,
+    cascade="all, delete-orphan",
 )
     
 class SellerProfile(Base):
@@ -584,3 +593,87 @@ class Coupon(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     created_by = relationship("User")
+    
+    
+class Store(Base):
+    __tablename__ = "stores"
+
+    id = Column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=uuid.uuid4,
+    )
+
+    seller_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("sellers.id", ondelete="CASCADE"),
+        unique=True,
+        nullable=False,
+        index=True,
+    )
+
+    store_name = Column(String(255), nullable=False)
+    slug = Column(String(255), unique=True, index=True, nullable=False)
+
+    description = Column(Text, nullable=True)
+
+    logo_url = Column(Text, nullable=True)
+    banner_url = Column(Text, nullable=True)
+
+    contact_email = Column(String(255), nullable=True)
+    contact_phone = Column(String(30), nullable=True)
+    website_url = Column(Text, nullable=True)
+
+    country = Column(String(100), nullable=True)
+    region = Column(String(100), nullable=True)
+    district = Column(String(100), nullable=True)
+    ward = Column(String(100), nullable=True)
+    street = Column(Text, nullable=True)
+
+    latitude = Column(Float, nullable=True)
+    longitude = Column(Float, nullable=True)
+
+    opening_time = Column(Time, nullable=True)
+    closing_time = Column(Time, nullable=True)
+
+    shipping_policy = Column(Text, nullable=True)
+    return_policy = Column(Text, nullable=True)
+    privacy_policy = Column(Text, nullable=True)
+
+    facebook_url = Column(Text, nullable=True)
+    instagram_url = Column(Text, nullable=True)
+    twitter_url = Column(Text, nullable=True)
+    tiktok_url = Column(Text, nullable=True)
+    youtube_url = Column(Text, nullable=True)
+
+    status = Column(
+        Enum(StoreStatus),
+        nullable=False,
+        default=StoreStatus.draft,
+        index=True,
+    )
+
+    is_verified = Column(Boolean, default=False, nullable=False)
+    is_featured = Column(Boolean, default=False, nullable=False)
+
+    rating = Column(Numeric(3, 2), default=0, nullable=False)
+    review_count = Column(Integer, default=0, nullable=False)
+    followers_count = Column(Integer, default=0, nullable=False)
+
+    created_at = Column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+    )
+
+    updated_at = Column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+    seller = relationship(
+        "Seller",
+        back_populates="store",
+    )

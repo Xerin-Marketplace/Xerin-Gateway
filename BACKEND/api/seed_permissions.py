@@ -19,6 +19,7 @@ DEFAULT_ROLE_PERMISSIONS = {
         PermissionCode.update_profile.value,
         PermissionCode.manage_addresses.value,
         PermissionCode.can_view_products.value,
+        PermissionCode.can_view_public_stores.value,
     ],
     "seller": [
         PermissionCode.view_profile.value,
@@ -30,6 +31,15 @@ DEFAULT_ROLE_PERMISSIONS = {
         PermissionCode.manage_payout_accounts.value,
         PermissionCode.manage_products.value,
         PermissionCode.can_view_products.value,
+        PermissionCode.view_profile.value,
+        PermissionCode.update_profile.value,
+        PermissionCode.manage_addresses.value,
+        
+        PermissionCode.view_own_store.value,
+        PermissionCode.update_own_store.value,
+        PermissionCode.upload_store_logo.value,
+        PermissionCode.upload_store_banner.value,
+        PermissionCode.can_view_public_stores.value,
     ],
     "admin": [
         PermissionCode.view_profile.value,

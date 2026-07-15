@@ -1,5 +1,11 @@
 import enum
 
+class StoreStatus(str, enum.Enum):
+    draft = "draft"
+    active = "active"
+    closed = "closed"
+    suspended = "suspended"
+
 class PermissionCode(str, enum.Enum):
     view_all_users = "view_all_users"
     can_create_users = "can_create_users"
@@ -46,3 +52,11 @@ class PermissionCode(str, enum.Enum):
     inventory_manage = "inventory:manage"
     coupons_write = "coupons:write"
     coupons_read = "coupons:read"
+    
+    view_own_store = "view_own_store"
+    update_own_store = "update_own_store"
+    upload_store_logo = "upload_store_logo"
+    upload_store_banner = "upload_store_banner"
+    can_view_public_stores = "can_view_public_stores"
+    manage_all_stores = "manage_all_stores"
+    

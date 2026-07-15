@@ -4,6 +4,9 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Optional, List, Dict, Any
 from pydantic import BaseModel, Field
+from datetime import datetime, time
+from pydantic import BaseModel, EmailStr, Field, HttpUrl, ConfigDict
+from uuid import UUID
 
 
 class RegisterRequest(BaseModel):
@@ -245,6 +248,142 @@ class SellerProfileResponse(BaseModel):
 
     class Config:
         from_attributes = True
+        
+        
+        
+class StoreUpdate(BaseModel):
+    store_name: str | None = Field(default=None, min_length=2, max_length=255)
+    description: str | None = Field(default=None, max_length=5000)
+
+    contact_email: EmailStr | None = None
+    contact_phone: str | None = Field(default=None, max_length=30)
+    website_url: str | None = None
+
+    country: str | None = Field(default=None, max_length=100)
+    region: str | None = Field(default=None, max_length=100)
+    district: str | None = Field(default=None, max_length=100)
+    ward: str | None = Field(default=None, max_length=100)
+    street: str | None = None
+
+    latitude: float | None = Field(default=None, ge=-90, le=90)
+    longitude: float | None = Field(default=None, ge=-180, le=180)
+
+    opening_time: time | None = None
+    closing_time: time | None = None
+
+    shipping_policy: str | None = None
+    return_policy: str | None = None
+    privacy_policy: str | None = None
+
+    facebook_url: str | None = None
+    instagram_url: str | None = None
+    twitter_url: str | None = None
+    tiktok_url: str | None = None
+    youtube_url: str | None = None
+
+
+class StoreResponse(BaseModel):
+    id: UUID
+    seller_id: UUID
+
+    store_name: str
+    slug: str
+    description: str | None
+
+    logo_url: str | None
+    banner_url: str | None
+
+    contact_email: str | None
+    contact_phone: str | None
+    website_url: str | None
+
+    country: str | None
+    region: str | None
+    district: str | None
+    ward: str | None
+    street: str | None
+
+    latitude: float | None
+    longitude: float | None
+
+    opening_time: time | None
+    closing_time: time | None
+
+    shipping_policy: str | None
+    return_policy: str | None
+    privacy_policy: str | None
+
+    facebook_url: str | None
+    instagram_url: str | None
+    twitter_url: str | None
+    tiktok_url: str | None
+    youtube_url: str | None
+
+    status: str
+    is_verified: bool
+    is_featured: bool
+
+    rating: Decimal
+    review_count: int
+    followers_count: int
+
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class StorePublicResponse(BaseModel):
+    id: UUID
+    seller_id: UUID
+
+    store_name: str
+    slug: str
+    description: str | None
+
+    logo_url: str | None
+    banner_url: str | None
+
+    contact_email: str | None
+    contact_phone: str | None
+    website_url: str | None
+
+    country: str | None
+    region: str | None
+    district: str | None
+    ward: str | None
+    street: str | None
+
+    opening_time: time | None
+    closing_time: time | None
+
+    shipping_policy: str | None
+    return_policy: str | None
+
+    facebook_url: str | None
+    instagram_url: str | None
+    twitter_url: str | None
+    tiktok_url: str | None
+    youtube_url: str | None
+
+    is_verified: bool
+    is_featured: bool
+
+    rating: Decimal
+    review_count: int
+    followers_count: int
+
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class PaginatedStoreResponse(BaseModel):
+    total: int
+    page: int
+    page_size: int
+    total_pages: int
+    results: list[StorePublicResponse]        
 
 
 class UserMeResponse(BaseModel):
