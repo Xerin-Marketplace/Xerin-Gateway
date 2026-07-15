@@ -51,7 +51,6 @@ def require_admin(current_user: User):
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Admin access required"
         )
-
 @router.get("/me", response_model=SellerResponse)
 def get_my_seller_profile(
     db: Session = Depends(get_db),
