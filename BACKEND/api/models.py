@@ -758,14 +758,3 @@ class StoreOpeningHour(Base):
             name="uq_store_opening_hours_store_day",
         ),
     )
-
-    id = Column(
-        UUID(as_uuid=True),
-        primary_key=True,
-        default=uuid.uuid4,
-    )
-
-    store_id = Column(
-        UUID(as_uuid=True),
-        ForeignKey("stores.id", ondelete="CASCADE"),
-        nullable

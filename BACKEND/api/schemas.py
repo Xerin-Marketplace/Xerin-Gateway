@@ -5,8 +5,9 @@ from decimal import Decimal
 from typing import Optional, List, Dict, Any
 from pydantic import BaseModel, Field
 from datetime import datetime, time
-from pydantic import BaseModel, EmailStr, Field, HttpUrl, ConfigDict
+from pydantic import BaseModel, EmailStr, Field, HttpUrl, ConfigDict, 
 from uuid import UUID
+from api.enums import DayOfWeek, StoreStatus
 
 
 class RegisterRequest(BaseModel):
@@ -326,6 +327,9 @@ class StoreResponse(BaseModel):
     rating: Decimal
     review_count: int
     followers_count: int
+    
+    gallery_images: list[StoreGalleryImageResponse] = []
+    opening_hours: list[StoreOpeningHourResponse] = []
 
     created_at: datetime
     updated_at: datetime
@@ -372,11 +376,21 @@ class StorePublicResponse(BaseModel):
     rating: Decimal
     review_count: int
     followers_count: int
+    
+    gallery_images: list[StoreGalleryImageResponse] = []
+    opening_hours: list[StoreOpeningHourResponse] = []
 
     created_at: datetime
 
     model_config = ConfigDict(from_attributes=True)
 
+
+class PaginatedAdminStoreResponse(BaseModel):
+    total: int
+    page: int
+    page_size: int
+    total_pages: int
+    results: list[StoreResponse]
 
 class PaginatedStoreResponse(BaseModel):
     total: int
@@ -901,6 +915,73 @@ class CouponUpdate(BaseModel):
     valid_until: Optional[datetime] = None
     is_active: Optional[bool] = None
 
+
+class StoreGalleryImageUpdate(BaseModel):
+    caption: str | None = Field(
+        default=None,
+        max_length=500,
+    )
+    display_order: int | None = Field(
+        default=None,
+        ge=0,
+    )
+    is_active: bool | None = None
+
+
+class StoreGalleryImageResponse(BaseModel):
+    id: UUID
+    store_id: UUID
+    image_url: str
+    caption: str | None
+    display_order: int
+    is_active: bool
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class StoreOpeningHourCreate(BaseModel):
+    day_of_week: DayOfWeek
+    opening_time: time | None = None
+    closing_time: time | None = None
+    is_closed: bool = False
+
+
+class StoreOpeningHourUpdate(BaseModel):
+    opening_time: time | None = None
+    closing_time: time | None = None
+    is_closed: bool | None = None
+
+
+class StoreOpeningHourResponse(BaseModel):
+    id: UUID
+    store_id: UUID
+    day_of_week: DayOfWeek
+    day_position: int
+    opening_time: time | None
+    closing_time: time | None
+    is_closed: bool
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class AdminStoreStatusUpdate(BaseModel):
+    status: StoreStatus
+    reason: str | None = Field(
+        default=None,
+        max_length=2000,
+    )
+
+
+class AdminStoreVerificationUpdate(BaseModel):
+    is_verified: bool
+
+
+class AdminStoreFeaturedUpdate(BaseModel):
+    is_featured: bool
 
 class CouponResponse(BaseModel):
     id: UUID
