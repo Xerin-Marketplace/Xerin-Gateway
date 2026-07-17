@@ -1,7 +1,7 @@
 import uuid
 import enum
 
-from sqlalchemy import Column, String, Boolean, DateTime, ForeignKey, Enum, Text
+from sqlalchemy import Column, String, Boolean, DateTime, ForeignKey, Enum, Text, UniqueConstraint
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.sql import func
 from sqlalchemy.orm import relationship
@@ -10,8 +10,7 @@ from sqlalchemy import Float, Time
 from sqlalchemy import Numeric, Integer
 from sqlalchemy.dialects.postgresql import JSONB
 from api.database import Base
-from api.enums import StoreStatus
-
+from api.enums import DayOfWeek, StoreStatus
 
 
 class UserStatus(str, enum.Enum):
@@ -677,3 +676,96 @@ class Store(Base):
         "Seller",
         back_populates="store",
     )
+    
+    gallery_images = relationship(
+        "StoreGalleryImage",
+        back_populates="store",
+        cascade="all, delete-orphan",
+        order_by="StoreGalleryImage.display_order",
+    )
+
+    opening_hours = relationship(
+        "StoreOpeningHour",
+        back_populates="store",
+        cascade="all, delete-orphan",
+        order_by="StoreOpeningHour.day_number",
+    )
+    
+class StoreGalleryImage(Base):
+    __tablename__ = "store_gallery_images"
+
+    id = Column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=uuid.uuid4,
+    )
+
+    store_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("stores.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+
+    image_url = Column(
+        Text,
+        nullable=False,
+    )
+
+    caption = Column(
+        String(255),
+        nullable=True,
+    )
+
+    display_order = Column(
+        Integer,
+        nullable=False,
+        default=0,
+    )
+
+    is_active = Column(
+        Boolean,
+        nullable=False,
+        default=True,
+    )
+
+    created_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+
+    updated_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+
+    store = relationship(
+        "Store",
+        back_populates="gallery_images",
+    )
+
+
+class StoreOpeningHour(Base):
+    __tablename__ = "store_opening_hours"
+
+    __table_args__ = (
+        UniqueConstraint(
+            "store_id",
+            "day_of_week",
+            name="uq_store_opening_hours_store_day",
+        ),
+    )
+
+    id = Column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=uuid.uuid4,
+    )
+
+    store_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("stores.id", ondelete="CASCADE"),
+        nullable

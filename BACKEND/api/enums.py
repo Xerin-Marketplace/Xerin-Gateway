@@ -2,9 +2,20 @@ import enum
 
 class StoreStatus(str, enum.Enum):
     draft = "draft"
+    pending_review = "pending_review"
     active = "active"
-    closed = "closed"
+    rejected = "rejected"
     suspended = "suspended"
+    closed = "closed"
+    
+class DayOfWeek(str, enum.Enum):
+    monday = "monday"
+    tuesday = "tuesday"
+    wednesday = "wednesday"
+    thursday = "thursday"
+    friday = "friday"
+    saturday = "saturday"
+    sunday = "sunday"    
 
 class PermissionCode(str, enum.Enum):
     view_all_users = "view_all_users"
@@ -59,4 +70,16 @@ class PermissionCode(str, enum.Enum):
     upload_store_banner = "upload_store_banner"
     can_view_public_stores = "can_view_public_stores"
     manage_all_stores = "manage_all_stores"
+    
+    STORE_VIEW_OWN = "store:view_own"
+    STORE_UPDATE_OWN = "store:update_own"
+    STORE_UPLOAD_MEDIA = "store:upload_media"
+    STORE_MANAGE_GALLERY = "store:manage_gallery"
+    STORE_MANAGE_HOURS = "store:manage_hours"
+
+    STORE_ADMIN_VIEW = "store:admin_view"
+    STORE_ADMIN_UPDATE = "store:admin_update"
+    STORE_ADMIN_VERIFY = "store:admin_verify"
+    STORE_ADMIN_FEATURE = "store:admin_feature"
+    STORE_ADMIN_DELETE = "store:admin_delete"
     
