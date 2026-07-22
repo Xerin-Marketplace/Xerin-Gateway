@@ -1,12 +1,8 @@
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel, EmailStr, Field, HttpUrl, ConfigDict
 from uuid import UUID
-from datetime import datetime
+from datetime import datetime, time as Time
 from decimal import Decimal
 from typing import Optional, List, Dict, Any
-from pydantic import BaseModel, Field
-from datetime import datetime, time
-from pydantic import BaseModel, EmailStr, Field, HttpUrl, ConfigDict, 
-from uuid import UUID
 from api.enums import DayOfWeek, StoreStatus
 
 
@@ -269,8 +265,8 @@ class StoreUpdate(BaseModel):
     latitude: float | None = Field(default=None, ge=-90, le=90)
     longitude: float | None = Field(default=None, ge=-180, le=180)
 
-    opening_time: time | None = None
-    closing_time: time | None = None
+    opening_time: Time | None = None
+    closing_time: Time | None = None
 
     shipping_policy: str | None = None
     return_policy: str | None = None
@@ -307,8 +303,8 @@ class StoreResponse(BaseModel):
     latitude: float | None
     longitude: float | None
 
-    opening_time: time | None
-    closing_time: time | None
+    opening_time: Time | None
+    closing_time: Time | None
 
     shipping_policy: str | None
     return_policy: str | None
@@ -328,8 +324,8 @@ class StoreResponse(BaseModel):
     review_count: int
     followers_count: int
     
-    gallery_images: list[StoreGalleryImageResponse] = []
-    opening_hours: list[StoreOpeningHourResponse] = []
+    gallery_images: list["StoreGalleryImageResponse"] = []
+    opening_hours: list["StoreOpeningHourResponse"] = []
 
     created_at: datetime
     updated_at: datetime
@@ -358,8 +354,8 @@ class StorePublicResponse(BaseModel):
     ward: str | None
     street: str | None
 
-    opening_time: time | None
-    closing_time: time | None
+    opening_time: Time | None
+    closing_time: Time | None
 
     shipping_policy: str | None
     return_policy: str | None
@@ -377,8 +373,8 @@ class StorePublicResponse(BaseModel):
     review_count: int
     followers_count: int
     
-    gallery_images: list[StoreGalleryImageResponse] = []
-    opening_hours: list[StoreOpeningHourResponse] = []
+    gallery_images: list["StoreGalleryImageResponse"] = []
+    opening_hours: list["StoreOpeningHourResponse"] = []
 
     created_at: datetime
 
@@ -943,14 +939,14 @@ class StoreGalleryImageResponse(BaseModel):
 
 class StoreOpeningHourCreate(BaseModel):
     day_of_week: DayOfWeek
-    opening_time: time | None = None
-    closing_time: time | None = None
+    opening_time: Time | None = None
+    closing_time: Time | None = None
     is_closed: bool = False
 
 
 class StoreOpeningHourUpdate(BaseModel):
-    opening_time: time | None = None
-    closing_time: time | None = None
+    opening_time: Time | None = None
+    closing_time: Time | None = None
     is_closed: bool | None = None
 
 
@@ -959,8 +955,8 @@ class StoreOpeningHourResponse(BaseModel):
     store_id: UUID
     day_of_week: DayOfWeek
     day_position: int
-    opening_time: time | None
-    closing_time: time | None
+    opening_time: Time | None
+    closing_time: Time | None
     is_closed: bool
     created_at: datetime
     updated_at: datetime

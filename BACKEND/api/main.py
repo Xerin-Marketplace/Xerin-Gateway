@@ -5,12 +5,21 @@ logging.basicConfig(
 )
 
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from api.database import Base, engine
 from api.routers import auth, users, sellers, products, admin, cart, orders, payments, inventory, coupons
 from fastapi.staticfiles import StaticFiles
 from api.routers import stores
 
 api = FastAPI(title="Ecommerce Platform API", version="1.0.0")
+
+api.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 @api.on_event("startup")
 def on_startup():

@@ -751,6 +751,51 @@ class StoreGalleryImage(Base):
 class StoreOpeningHour(Base):
     __tablename__ = "store_opening_hours"
 
+    id = Column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=uuid.uuid4,
+    )
+
+    store_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("stores.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+
+    day_of_week = Column(
+        Enum(DayOfWeek),
+        nullable=False,
+    )
+
+    day_number = Column(
+        Integer,
+        nullable=False,
+    )
+
+    open_time = Column(Time, nullable=True)
+    close_time = Column(Time, nullable=True)
+    is_closed = Column(Boolean, default=False, nullable=False)
+
+    created_at = Column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+    )
+
+    updated_at = Column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+    store = relationship(
+        "Store",
+        back_populates="opening_hours",
+    )
+
     __table_args__ = (
         UniqueConstraint(
             "store_id",
