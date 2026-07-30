@@ -1042,6 +1042,7 @@ class PaymentInitiateRequest(BaseModel):
 
 
 class PaymentCallbackRequest(BaseModel):
+    payment_id: UUID
     provider: str = Field(min_length=1, max_length=100)
     transaction_id: str = Field(min_length=1, max_length=255)
     status: PaymentStatus
