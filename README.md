@@ -274,3 +274,119 @@ source ~/.bashrc
 
 ```
 
+
+
+
+
+
+
+-------------------------------------------------------------------------------------------
+
+```
+Phase 1 — Seller Store (highest priority)
+Store profile
+Store logo
+Store banner
+Store opening hours
+Store policies
+Store social links
+Store location
+Store status (Open / Closed)
+Phase 2 — Product Management
+Product CRUD
+Multiple images
+Variants
+Attributes
+Inventory
+Stock movement
+Product approval workflow
+Phase 3 — Shopping
+Wishlist
+Cart
+Coupons
+Shipping calculation
+Phase 4 — Orders
+Checkout
+Orders
+Order items
+Order timeline
+Order status
+Seller dashboard
+Phase 5 — Payments
+Payment methods
+Payment gateway
+Seller wallet
+Withdrawals
+Transactions
+Phase 6 — Notifications
+Email
+SMS
+Push notifications
+In-app notifications
+Phase 7 — Reports
+Admin dashboard
+Seller dashboard
+Sales
+Revenue
+Customers
+Best-selling products
+Phase 8 — Settings
+Company profile
+Permissions
+Roles
+Taxes
+Shipping zones
+Currencies
+Business categories
+Product categories
+Brands
+````
+
+```
+SEED PERMISSIONS
+python -m api.seed_permissions
+
+```
+
+Phase 1 — Stabilize the existing backend
+Review models and schemas
+Fix authorization weaknesses
+Add API versioning
+Add transaction boundaries
+Add automated tests
+Secure payment callbacks
+Correct product/category permissions
+Review order-status permissions
+Phase 2 — Complete checkout and payment
+Shipping methods
+Shipping calculation
+Tax calculation
+Currency handling
+Real payment-provider adapter
+Idempotency
+Secure webhooks
+Payment retries
+Confirmation notifications
+Phase 3 — Complete order fulfilment
+Seller incoming orders
+Accept/reject order
+Tracking numbers
+Shipment records
+Logistics API
+Status webhooks
+Delivery confirmation
+Phase 4 — Complete post-purchase features
+Returns
+Refunds
+Disputes
+Invoices
+Receipts
+Reviews and ratings
+Phase 5 — Dashboards and growth features
+Seller analytics
+Admin analytics
+Commissions
+Payouts
+Elasticsearch
+Recommendations
+Promotions
