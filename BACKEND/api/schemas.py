@@ -14,7 +14,7 @@ from decimal import Decimal
 from typing import Optional, List, Dict, Any, Literal
 import enum
 from api.enums import DayOfWeek, StoreStatus
-
+from pydantic import BaseModel, ConfigDict
 
 class UserStatus(str, enum.Enum):
     active = "active"
@@ -829,8 +829,7 @@ class RoleResponse(BaseModel):
     name: str
     description: str | None
 
-    class Config:
-        from_attributes = True  
+    model_config = ConfigDict(from_attributes=True)
         
 class PermissionResponse(BaseModel):
     id: UUID
@@ -1227,5 +1226,4 @@ class CouponResponse(BaseModel):
     valid_until: Optional[datetime]
     created_at: datetime
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
