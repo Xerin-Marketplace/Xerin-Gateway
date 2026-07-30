@@ -10,7 +10,7 @@ from sqlalchemy import Float, Time
 from sqlalchemy import Numeric, Integer
 from sqlalchemy.dialects.postgresql import JSONB
 from api.database import Base
-from api.enums import DayOfWeek, StoreStatus, ShippingRateType, ShipmentStatus, InventoryReservationStatus
+from api.enums import DayOfWeek, StoreStatus, ShippingRateType, ShipmentStatus
 
 
 class UserStatus(str, enum.Enum):
@@ -545,7 +545,6 @@ class Order(Base):
     shipping_rate = relationship("ShippingRate")
     shipping_method = relationship("ShippingMethod")
     shipments = relationship("Shipment", back_populates="order", cascade="all, delete-orphan")
-    inventory_reservations = relationship("InventoryReservation", back_populates="order", cascade="all, delete-orphan")
 
 
 class OrderItem(Base):
@@ -675,7 +674,6 @@ class Inventory(Base):
     product = relationship("Product")
     variant = relationship("ProductVariant")
     updated_by = relationship("User")
-    reservations = relationship("InventoryReservation", back_populates="inventory")
 
     __table_args__ = (
         CheckConstraint("quantity >= 0", name="ck_inventory_quantity_nonnegative"),
@@ -689,33 +687,6 @@ class Inventory(Base):
             unique=True,
             postgresql_where=(variant_id.is_(None)),
         ),
-    )
-
-
-class InventoryReservation(Base):
-    __tablename__ = "inventory_reservations"
-
-    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    inventory_id = Column(UUID(as_uuid=True), ForeignKey("inventory.id", ondelete="RESTRICT"), nullable=False, index=True)
-    order_id = Column(UUID(as_uuid=True), ForeignKey("orders.id", ondelete="CASCADE"), nullable=False, index=True)
-    order_item_id = Column(UUID(as_uuid=True), ForeignKey("order_items.id", ondelete="CASCADE"), nullable=False, unique=True, index=True)
-    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="RESTRICT"), nullable=False, index=True)
-    quantity = Column(Integer, nullable=False)
-    status = Column(Enum(InventoryReservationStatus), nullable=False, default=InventoryReservationStatus.active, server_default="active", index=True)
-    expires_at = Column(DateTime(timezone=True), nullable=False, index=True)
-    committed_at = Column(DateTime(timezone=True), nullable=True)
-    released_at = Column(DateTime(timezone=True), nullable=True)
-    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
-    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
-
-    inventory = relationship("Inventory", back_populates="reservations")
-    order = relationship("Order", back_populates="inventory_reservations")
-    order_item = relationship("OrderItem")
-    user = relationship("User")
-
-    __table_args__ = (
-        CheckConstraint("quantity > 0", name="ck_inventory_reservation_quantity_positive"),
-        Index("ix_inventory_reservation_active_expiry", "status", "expires_at"),
     )
 
 

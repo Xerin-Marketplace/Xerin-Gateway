@@ -55,9 +55,7 @@ def create_inventory(data: InventoryCreate, db: Session = Depends(get_db), curre
         if not variant:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Product variant not found")
 
-    if data.reserved_quantity != 0:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="reserved_quantity is managed by the reservation engine")
-    _validate_stock(data.quantity, 0)
+    _validate_stock(data.quantity, data.reserved_quantity)
     existing_query = db.query(Inventory).filter(Inventory.product_id == data.product_id)
     existing_query = existing_query.filter(Inventory.variant_id == data.variant_id) if data.variant_id else existing_query.filter(Inventory.variant_id.is_(None))
     if existing_query.first():
@@ -106,9 +104,7 @@ def update_inventory(inventory_id: UUID, data: InventoryUpdate, db: Session = De
     _owned_product(db, seller, inventory.product_id)
 
     new_quantity = data.quantity if data.quantity is not None else inventory.quantity
-    if data.reserved_quantity is not None and data.reserved_quantity != inventory.reserved_quantity:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="reserved_quantity is managed by the reservation engine")
-    new_reserved = inventory.reserved_quantity
+    new_reserved = data.reserved_quantity if data.reserved_quantity is not None else inventory.reserved_quantity
     _validate_stock(new_quantity, new_reserved)
 
     inventory.quantity = new_quantity

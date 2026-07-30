@@ -8,7 +8,6 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session, selectinload
 
-from api.config import settings
 from api.deps import get_current_user, get_db
 from api.models import (
     Address,
@@ -30,8 +29,6 @@ from api.models import (
 )
 from api.permissions import get_user_permissions, get_user_role_names, require_permission
 from api.schemas import OrderCreateRequest, OrderResponse, OrderStatusUpdateRequest, PaginatedOrderResponse
-from api.enums import InventoryReservationStatus
-from api.services.inventory_reservations import create_reservation, release_order_reservations
 
 router = APIRouter(prefix="/orders", tags=["Orders"])
 
@@ -129,7 +126,14 @@ def _validate_coupon(coupon: Coupon, subtotal: Decimal) -> Decimal:
 
 
 def _release_reserved_inventory(db: Session, order: Order) -> None:
-    release_order_reservations(db, order, target_status=InventoryReservationStatus.cancelled)
+    for item in order.items:
+        inventory = _inventory_query(db, item.product_id, item.variant_id).with_for_update().first()
+        if not inventory:
+            raise HTTPException(status_code=409, detail=f"Inventory missing for order item {item.id}")
+        if inventory.reserved_quantity < item.quantity:
+            raise HTTPException(status_code=409, detail=f"Reserved stock is inconsistent for order item {item.id}")
+        inventory.reserved_quantity -= item.quantity
+        inventory.available_quantity = inventory.quantity - inventory.reserved_quantity
 
 
 def _is_privileged_order_operator(db: Session, user: User) -> bool:
@@ -232,10 +236,12 @@ def create_order(
         db.add(order)
         db.flush()
 
-        reservation_expires_at = datetime.now(timezone.utc) + timedelta(minutes=settings.INVENTORY_RESERVATION_MINUTES)
         for prepared in prepared_items:
             cart_item = prepared["cart_item"]
-            order_item = OrderItem(
+            inventory = prepared["inventory"]
+            inventory.reserved_quantity += cart_item.quantity
+            inventory.available_quantity = inventory.quantity - inventory.reserved_quantity
+            db.add(OrderItem(
                 order_id=order.id,
                 product_id=cart_item.product_id,
                 variant_id=cart_item.variant_id,
@@ -245,13 +251,7 @@ def create_order(
                 quantity=cart_item.quantity,
                 unit_price=prepared["unit_price"],
                 total_price=prepared["line_total"],
-            )
-            db.add(order_item)
-            db.flush()
-            create_reservation(
-                db, inventory=prepared["inventory"], order=order, order_item_id=order_item.id,
-                user_id=current_user.id, quantity=cart_item.quantity, expires_at=reservation_expires_at,
-            )
+            ))
 
         _create_status_history(db, order, OrderStatus.pending, "Order created", current_user.id)
         if coupon:

@@ -46,9 +46,6 @@ class Settings(BaseSettings):
     SERVE_LOCAL_UPLOADS: bool = True
     MAX_UPLOAD_SIZE_MB: int = Field(default=5, ge=1)
 
-    # Inventory reservations
-    INVENTORY_RESERVATION_MINUTES: int = Field(default=30, ge=5, le=1440)
-
     # Redis
     REDIS_URL: str | None = None
 
