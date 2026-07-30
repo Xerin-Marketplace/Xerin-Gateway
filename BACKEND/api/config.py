@@ -64,6 +64,9 @@ class Settings(BaseSettings):
     AT_SENDER_ID: str | None = None
     SMS_API_URL: str | None = None
 
+    # Payment webhook security
+    PAYMENT_WEBHOOK_SECRET: str | None = None
+
     # Initial super-admin bootstrap
     SUPER_ADMIN_EMAIL: str | None = None
     SUPER_ADMIN_PHONE: str | None = None
