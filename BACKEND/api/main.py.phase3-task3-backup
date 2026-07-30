@@ -25,7 +25,6 @@ from api.routers import (
     shipping,
     stores,
     users,
-    wallets,
 )
 
 
@@ -128,7 +127,6 @@ for router in (
     products.router,
     cart.router,
     commissions.router,
-    wallets.router,
     orders.router,
     payments.router,
     inventory.router,
