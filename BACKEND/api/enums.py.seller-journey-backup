@@ -63,12 +63,6 @@ class PermissionCode(str, enum.Enum):
     can_view_products = "can_view_products"
     can_approve_products = "can_approve_products"
     can_reject_products = "can_reject_products"
-    seller_products_create = "seller_products:create"
-    seller_products_read = "seller_products:read"
-    seller_products_update = "seller_products:update"
-    seller_products_delete = "seller_products:delete"
-    seller_product_images_manage = "seller_product_images:manage"
-    seller_products_submit = "seller_products:submit"
 
     # Commerce
     orders_read = "orders:read"
