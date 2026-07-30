@@ -85,8 +85,6 @@ DEFAULT_ROLE_PERMISSIONS: dict[str, set[str]] = {
         PermissionCode.refunds_review.value,
         PermissionCode.refunds_process.value,
         PermissionCode.analytics_admin_read.value,
-        PermissionCode.audit_logs_read.value,
-        PermissionCode.security_events_read.value,
         PermissionCode.STORE_ADMIN_VIEW.value,
     },
     "super_admin": {permission.value for permission in PermissionCode},
