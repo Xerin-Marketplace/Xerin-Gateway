@@ -69,7 +69,6 @@ if settings.trusted_hosts:
         "api.xerinmarketplace.com",
     ],
 )
-    )
 
 api.add_middleware(
     CORSMiddleware,
