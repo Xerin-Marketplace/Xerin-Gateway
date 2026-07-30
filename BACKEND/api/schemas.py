@@ -1,18 +1,142 @@
-from pydantic import BaseModel, EmailStr, Field, HttpUrl, ConfigDict
+from pydantic import (
+    AliasChoices,
+    BaseModel,
+    ConfigDict,
+    EmailStr,
+    Field,
+    HttpUrl,
+    field_validator,
+    model_validator,
+)
 from uuid import UUID
 from datetime import datetime, time as Time
 from decimal import Decimal
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Literal
+import enum
 from api.enums import DayOfWeek, StoreStatus
 
 
+class UserStatus(str, enum.Enum):
+    active = "active"
+    inactive = "inactive"
+    suspended = "suspended"
+    pending_verification = "pending_verification"
+
+
+class SellerStatus(str, enum.Enum):
+    pending = "pending"
+    under_review = "under_review"
+    approved = "approved"
+    rejected = "rejected"
+    suspended = "suspended"
+
+
+class ProductStatus(str, enum.Enum):
+    draft = "draft"
+    pending_review = "pending_review"
+    approved = "approved"
+    rejected = "rejected"
+    suspended = "suspended"
+
+
+class OrderStatus(str, enum.Enum):
+    pending = "pending"
+    confirmed = "confirmed"
+    processing = "processing"
+    shipped = "shipped"
+    delivered = "delivered"
+    cancelled = "cancelled"
+    refunded = "refunded"
+
+
+class PaymentStatus(str, enum.Enum):
+    pending = "pending"
+    processing = "processing"
+    completed = "completed"
+    failed = "failed"
+    refunded = "refunded"
+    cancelled = "cancelled"
+
+
+class PaymentMethod(str, enum.Enum):
+    mobile_money = "mobile_money"
+    bank_transfer = "bank_transfer"
+    card = "card"
+    cash_on_delivery = "cash_on_delivery"
+    xerin_pay = "xerin_pay"
+
+
+# Shared schema configuration and validation helpers.
+ORM_CONFIG = ConfigDict(from_attributes=True, populate_by_name=True, extra="forbid")
+
+
+def _clean_required_text(value: str) -> str:
+    value = value.strip()
+    if not value:
+        raise ValueError("Value must not be blank")
+    return value
+
+
+def _clean_optional_text(value: str | None) -> str | None:
+    if value is None:
+        return None
+    value = value.strip()
+    return value or None
+
+
+def _normalise_phone(value: str | None) -> str | None:
+    if value is None:
+        return None
+    value = value.strip().replace(" ", "").replace("-", "")
+    if not value:
+        return None
+    if value.startswith("+"):
+        digits = value[1:]
+    else:
+        digits = value
+    if not digits.isdigit() or not 7 <= len(digits) <= 15:
+        raise ValueError("Phone number must contain 7 to 15 digits")
+    return value
+
+
+def _validate_password(value: str) -> str:
+    if len(value.encode("utf-8")) > 72:
+        raise ValueError("Password must not exceed 72 bytes")
+    if len(value) < 10:
+        raise ValueError("Password must contain at least 10 characters")
+    if not any(ch.isupper() for ch in value):
+        raise ValueError("Password must contain an uppercase letter")
+    if not any(ch.islower() for ch in value):
+        raise ValueError("Password must contain a lowercase letter")
+    if not any(ch.isdigit() for ch in value):
+        raise ValueError("Password must contain a number")
+    return value
+
+
+def _normalise_currency(value: str) -> str:
+    value = value.strip().upper()
+    if len(value) != 3 or not value.isalpha():
+        raise ValueError("Currency must be a three-letter ISO code")
+    return value
+
+
+def _normalise_code(value: str) -> str:
+    value = value.strip().upper()
+    if not value:
+        raise ValueError("Code must not be blank")
+    return value
+
+
 class RegisterRequest(BaseModel):
-    first_name: str
-    last_name: str
+    first_name: str = Field(min_length=1, max_length=100)
+    last_name: str = Field(min_length=1, max_length=100)
     email: EmailStr
     phone: Optional[str] = None
     password: str
-    # password_confirmation: str
+
+    _clean_names = field_validator("first_name", "last_name")(_clean_required_text)
+    _clean_phone = field_validator("phone")(_normalise_phone)
+    _strong_password = field_validator("password")(_validate_password)
 
 
 class LoginRequest(BaseModel):
@@ -46,12 +170,23 @@ class ForgotPasswordRequest(BaseModel):
 
 class ResetPasswordRequest(BaseModel):
     email: EmailStr
-    otp_code: str
+    otp_code: str = Field(min_length=4, max_length=10)
     new_password: str
-    
+
+    _strong_password = field_validator("new_password")(_validate_password)
+
+
 class ChangePasswordRequest(BaseModel):
-    current_password: str = Field(min_length=8)
-    new_password: str = Field(min_length=8)    
+    current_password: str = Field(min_length=8, max_length=128)
+    new_password: str
+
+    _strong_password = field_validator("new_password")(_validate_password)
+
+    @model_validator(mode="after")
+    def passwords_must_differ(self):
+        if self.current_password == self.new_password:
+            raise ValueError("New password must be different from the current password")
+        return self
 
 
 class UserResponse(BaseModel):
@@ -67,8 +202,7 @@ class UserResponse(BaseModel):
     seller_status: str | None = None
     account_type: str = "customer"
 
-    class Config:
-        from_attributes = True
+    model_config = ORM_CONFIG
 
 
 class UpdateUserRequest(BaseModel):
@@ -89,11 +223,7 @@ class AddressCreate(BaseModel):
 class AddressResponse(AddressCreate):
     id: UUID
 
-    class Config:
-        from_attributes = True
-        
-        
-        from datetime import datetime
+    model_config = ORM_CONFIG
 
 
 class SellerCreate(BaseModel):
@@ -101,7 +231,7 @@ class SellerCreate(BaseModel):
     business_category: str | None = None
     contact_email: EmailStr | None = None
     contact_phone: str | None = None
-    agreement_accepted: bool = True
+    agreement_accepted: Literal[True]
 
 
 class SellerUpdate(BaseModel):
@@ -124,23 +254,47 @@ class SellerResponse(BaseModel):
     id: UUID
     user_id: UUID
     business_name: str
-    business_description: str | None
-    business_location: str | None
-    business_country: str | None
-    business_region: str | None
-    business_city: str | None
-    business_address: str | None
-    product_description: str | None
-    years_in_business: str | None
-    website_url: str | None
+    business_description: str | None = None
+    business_location: str | None = None
+    business_country: str | None = None
+    business_region: str | None = None
+    business_city: str | None = None
+    business_address: str | None = None
+    product_description: str | None = None
+    years_in_business: str | None = None
+    website_url: str | None = None
     contact_email: str | None
     contact_phone: str | None
     status: str
     agreement_accepted: bool
     created_at: datetime
 
-    class Config:
-        from_attributes = True
+    model_config = ORM_CONFIG
+
+    @model_validator(mode="before")
+    @classmethod
+    def flatten_profile(cls, value):
+        if isinstance(value, dict):
+            return value
+        profile = getattr(value, "profile", None)
+        data = {
+            "id": getattr(value, "id", None),
+            "user_id": getattr(value, "user_id", None),
+            "business_name": getattr(value, "business_name", None),
+            "contact_email": getattr(value, "contact_email", None),
+            "contact_phone": getattr(value, "contact_phone", None),
+            "status": getattr(value, "status", None),
+            "agreement_accepted": getattr(value, "agreement_accepted", False),
+            "created_at": getattr(value, "created_at", None),
+        }
+        for name in (
+            "business_description", "business_country", "business_region",
+            "business_city", "business_address", "product_description",
+            "years_in_business", "website_url"
+        ):
+            data[name] = getattr(profile, name, None) if profile is not None else None
+        data["business_location"] = data.get("business_address")
+        return data
 
 
 class SellerRegisterRequest(BaseModel):
@@ -163,7 +317,18 @@ class SellerRegisterRequest(BaseModel):
     website_url: str | None = None
     contact_email: EmailStr | None = None
     contact_phone: str | None = None
-    agreement_accepted: bool = True
+    agreement_accepted: Literal[True]
+
+    _clean_names = field_validator("first_name", "last_name", "business_name")(_clean_required_text)
+    _clean_phones = field_validator("phone", "contact_phone")(_normalise_phone)
+    _strong_password = field_validator("password")(_validate_password)
+
+    @field_validator("business_category_ids")
+    @classmethod
+    def require_categories(cls, value: list[UUID]) -> list[UUID]:
+        if not value:
+            raise ValueError("At least one business category is required")
+        return list(dict.fromkeys(value))
 
 class SellerKYCCreate(BaseModel):
     document_type: str
@@ -179,8 +344,7 @@ class SellerKYCResponse(BaseModel):
     rejection_reason: str | None
     uploaded_at: datetime
     
-    class Config:
-        from_attributes = True
+    model_config = ORM_CONFIG
 
 class SellerKYCStatusResponse(BaseModel):
     seller_status: str
@@ -189,17 +353,18 @@ class SellerKYCStatusResponse(BaseModel):
     missing_documents: list[str]
     can_submit_for_review: bool
 
-    class Config:
-        from_attributes = True
+    model_config = ORM_CONFIG
 
 
 class SellerPayoutCreate(BaseModel):
-    account_type: str
-    provider: str
-    account_name: str
-    account_number: str
+    account_type: str = Field(min_length=1, max_length=50)
+    provider: str = Field(min_length=1, max_length=100)
+    account_name: str = Field(min_length=1, max_length=255)
+    account_number: str = Field(min_length=1, max_length=255)
     currency: str = "TZS"
     is_default: bool = False
+
+    _currency = field_validator("currency")(_normalise_currency)
 
 
 class SellerPayoutResponse(BaseModel):
@@ -213,11 +378,7 @@ class SellerPayoutResponse(BaseModel):
     is_default: bool
     created_at: datetime
 
-    class Config:
-        from_attributes = True
-        
-        
-        from decimal import Decimal
+    model_config = ORM_CONFIG
         
 class SellerProfileUpdate(BaseModel):
     business_description: str | None = None
@@ -243,8 +404,7 @@ class SellerProfileResponse(BaseModel):
     website_url: str | None
     created_at: datetime
 
-    class Config:
-        from_attributes = True
+    model_config = ORM_CONFIG
         
         
         
@@ -324,8 +484,8 @@ class StoreResponse(BaseModel):
     review_count: int
     followers_count: int
     
-    gallery_images: list["StoreGalleryImageResponse"] = []
-    opening_hours: list["StoreOpeningHourResponse"] = []
+    gallery_images: list["StoreGalleryImageResponse"] = Field(default_factory=list)
+    opening_hours: list["StoreOpeningHourResponse"] = Field(default_factory=list)
 
     created_at: datetime
     updated_at: datetime
@@ -373,8 +533,8 @@ class StorePublicResponse(BaseModel):
     review_count: int
     followers_count: int
     
-    gallery_images: list["StoreGalleryImageResponse"] = []
-    opening_hours: list["StoreOpeningHourResponse"] = []
+    gallery_images: list["StoreGalleryImageResponse"] = Field(default_factory=list)
+    opening_hours: list["StoreOpeningHourResponse"] = Field(default_factory=list)
 
     created_at: datetime
 
@@ -407,9 +567,9 @@ class UserMeResponse(BaseModel):
     is_seller: bool
     seller_status: str | None
     account_type: str
+    roles: list[str] = Field(default_factory=list)
 
-    class Config:
-        from_attributes = True
+    model_config = ORM_CONFIG
 
 
 class PaginatedAddressResponse(BaseModel):
@@ -453,8 +613,7 @@ class CategoryResponse(BaseModel):
     slug: str
     created_at: datetime
 
-    class Config:
-        from_attributes = True
+    model_config = ORM_CONFIG
 
 
 class BrandCreate(BaseModel):
@@ -468,8 +627,7 @@ class BrandResponse(BaseModel):
     slug: str
     created_at: datetime
 
-    class Config:
-        from_attributes = True
+    model_config = ORM_CONFIG
 
 
 class ProductCreate(BaseModel):
@@ -479,10 +637,18 @@ class ProductCreate(BaseModel):
     name: str
     slug: str
     description: Optional[str] = None
-    price: Decimal
-    sale_price: Optional[Decimal] = None
+    price: Decimal = Field(gt=0, max_digits=18, decimal_places=2)
+    sale_price: Optional[Decimal] = Field(default=None, ge=0, max_digits=18, decimal_places=2)
     currency: str = "TZS"
-    weight: Optional[Decimal] = None
+    weight: Optional[Decimal] = Field(default=None, ge=0)
+
+    _currency = field_validator("currency")(_normalise_currency)
+
+    @model_validator(mode="after")
+    def validate_sale_price(self):
+        if self.sale_price is not None and self.sale_price > self.price:
+            raise ValueError("Sale price cannot be greater than price")
+        return self
 
 
 class ProductUpdate(BaseModel):
@@ -495,8 +661,30 @@ class ProductUpdate(BaseModel):
     price: Optional[Decimal] = None
     sale_price: Optional[Decimal] = None
     currency: Optional[str] = None
-    weight: Optional[Decimal] = None
+    weight: Optional[Decimal] = Field(default=None, ge=0)
     is_active: Optional[bool] = None
+
+    _currency = field_validator("currency")(_normalise_currency)
+
+    @field_validator("price")
+    @classmethod
+    def positive_price(cls, value):
+        if value is not None and value <= 0:
+            raise ValueError("Price must be greater than zero")
+        return value
+
+    @field_validator("sale_price")
+    @classmethod
+    def nonnegative_sale_price(cls, value):
+        if value is not None and value < 0:
+            raise ValueError("Sale price cannot be negative")
+        return value
+
+    @model_validator(mode="after")
+    def validate_sale_price(self):
+        if self.price is not None and self.sale_price is not None and self.sale_price > self.price:
+            raise ValueError("Sale price cannot be greater than price")
+        return self
 
 
 class ProductResponse(BaseModel):
@@ -512,13 +700,12 @@ class ProductResponse(BaseModel):
     sale_price: Optional[Decimal]
     currency: str
     weight: Optional[Decimal]
-    status: str
+    status: ProductStatus
     rejection_reason: Optional[str]
     is_active: bool
     created_at: datetime
 
-    class Config:
-        from_attributes = True
+    model_config = ORM_CONFIG
 
 
 class ProductImageCreate(BaseModel):
@@ -533,8 +720,7 @@ class ProductImageResponse(BaseModel):
     is_primary: bool
     created_at: datetime
 
-    class Config:
-        from_attributes = True
+    model_config = ORM_CONFIG
 
 
 class ProductVariantCreate(BaseModel):
@@ -553,8 +739,7 @@ class ProductVariantResponse(BaseModel):
     attributes: Optional[Dict[str, Any]]
     created_at: datetime
 
-    class Config:
-        from_attributes = True
+    model_config = ORM_CONFIG
 
 
 class ProductTagCreate(BaseModel):
@@ -566,8 +751,7 @@ class ProductTagResponse(BaseModel):
     product_id: UUID
     tag: str
 
-    class Config:
-        from_attributes = True
+    model_config = ORM_CONFIG
     
 class BusinessCategoryCreate(BaseModel):
     name: str
@@ -591,8 +775,7 @@ class BusinessCategoryResponse(BaseModel):
     active: bool
     created_at: datetime
 
-    class Config:
-        from_attributes = True
+    model_config = ORM_CONFIG
         
 class AdminUserCreate(BaseModel):
     first_name: str
@@ -624,8 +807,7 @@ class AdminUserResponse(BaseModel):
     is_verified: bool
     created_at: datetime
 
-    class Config:
-        from_attributes = True
+    model_config = ORM_CONFIG
 
 
 class PaginatedAdminUserResponse(BaseModel):
@@ -656,12 +838,17 @@ class PermissionResponse(BaseModel):
     name: str
     description: str | None
 
-    class Config:
-        from_attributes = True
+    model_config = ORM_CONFIG
 
 
 class AssignUserPermissionsRequest(BaseModel):
     permission_codes: list[str]
+
+    @field_validator("permission_codes")
+    @classmethod
+    def clean_permissions(cls, value: list[str]) -> list[str]:
+        cleaned = [item.strip() for item in value if item and item.strip()]
+        return list(dict.fromkeys(cleaned))
 
 
 class UserPermissionsResponse(BaseModel):
@@ -673,12 +860,17 @@ class RoleResponse(BaseModel):
     name: str
     description: str | None
 
-    class Config:
-        from_attributes = True
+    model_config = ORM_CONFIG
 
 
 class RolePermissionsUpdateRequest(BaseModel):
     permission_codes: list[str]
+
+    @field_validator("permission_codes")
+    @classmethod
+    def clean_permissions(cls, value: list[str]) -> list[str]:
+        cleaned = [item.strip() for item in value if item and item.strip()]
+        return list(dict.fromkeys(cleaned))
 
 
 class RolePermissionsResponse(BaseModel):
@@ -707,8 +899,7 @@ class CartItemResponse(BaseModel):
     unit_price: Decimal
     product: "ProductResponse"
 
-    class Config:
-        from_attributes = True
+    model_config = ORM_CONFIG
 
 
 class CartResponse(BaseModel):
@@ -720,8 +911,7 @@ class CartResponse(BaseModel):
     discount_amount: Decimal
     total: Decimal
 
-    class Config:
-        from_attributes = True
+    model_config = ORM_CONFIG
 
 
 class ApplyCouponRequest(BaseModel):
@@ -743,8 +933,7 @@ class OrderItemResponse(BaseModel):
     unit_price: Decimal
     total_price: Decimal
 
-    class Config:
-        from_attributes = True
+    model_config = ORM_CONFIG
 
 
 class OrderStatusHistoryResponse(BaseModel):
@@ -754,8 +943,7 @@ class OrderStatusHistoryResponse(BaseModel):
     created_by_id: Optional[UUID]
     created_at: datetime
 
-    class Config:
-        from_attributes = True
+    model_config = ORM_CONFIG
 
 
 class OrderCreateRequest(BaseModel):
@@ -765,7 +953,7 @@ class OrderCreateRequest(BaseModel):
 
 
 class OrderStatusUpdateRequest(BaseModel):
-    status: str
+    status: OrderStatus
     notes: Optional[str] = None
 
 
@@ -773,7 +961,7 @@ class OrderResponse(BaseModel):
     id: UUID
     user_id: UUID
     shipping_address_id: Optional[UUID]
-    status: str
+    status: OrderStatus
     currency: str
     subtotal: Decimal
     discount_amount: Decimal
@@ -787,8 +975,7 @@ class OrderResponse(BaseModel):
     created_at: datetime
     updated_at: Optional[datetime]
 
-    class Config:
-        from_attributes = True
+    model_config = ORM_CONFIG
 
 
 class PaginatedOrderResponse(BaseModel):
@@ -830,8 +1017,7 @@ class InventoryResponse(BaseModel):
     restock_date: Optional[datetime]
     updated_at: Optional[datetime]
 
-    class Config:
-        from_attributes = True
+    model_config = ORM_CONFIG
 
 
 # =========================================================
@@ -840,15 +1026,25 @@ class InventoryResponse(BaseModel):
 
 class PaymentInitiateRequest(BaseModel):
     order_id: UUID
-    method: str  # mobile_money, bank_transfer, card, cash_on_delivery
-    provider: Optional[str] = None  # mpesa, airtel_money, tigo_pesa
+    method: PaymentMethod
+    provider: Optional[str] = Field(default=None, max_length=100)
     phone_number: Optional[str] = None
+
+    _clean_phone = field_validator("phone_number")(_normalise_phone)
+
+    @model_validator(mode="after")
+    def validate_method_details(self):
+        if self.method == PaymentMethod.mobile_money and not self.phone_number:
+            raise ValueError("Phone number is required for mobile-money payments")
+        if self.method == PaymentMethod.mobile_money and not self.provider:
+            raise ValueError("Provider is required for mobile-money payments")
+        return self
 
 
 class PaymentCallbackRequest(BaseModel):
-    provider: str
-    transaction_id: str
-    status: str
+    provider: str = Field(min_length=1, max_length=100)
+    transaction_id: str = Field(min_length=1, max_length=255)
+    status: PaymentStatus
     payload: Optional[Dict[str, Any]] = None
 
 
@@ -860,8 +1056,7 @@ class PaymentTransactionResponse(BaseModel):
     provider_response: Optional[Dict[str, Any]]
     created_at: datetime
 
-    class Config:
-        from_attributes = True
+    model_config = ORM_CONFIG
 
 
 class PaymentResponse(BaseModel):
@@ -870,17 +1065,16 @@ class PaymentResponse(BaseModel):
     user_id: UUID
     amount: Decimal
     currency: str
-    method: str
+    method: PaymentMethod
     provider: Optional[str]
-    status: str
+    status: PaymentStatus
     provider_transaction_id: Optional[str]
     paid_at: Optional[datetime]
     transactions: list[PaymentTransactionResponse]
     created_at: datetime
     updated_at: Optional[datetime]
 
-    class Config:
-        from_attributes = True
+    model_config = ORM_CONFIG
 
 
 # =========================================================
@@ -890,26 +1084,44 @@ class PaymentResponse(BaseModel):
 class CouponCreate(BaseModel):
     code: str
     description: Optional[str] = None
-    discount_type: str  # percentage, fixed_amount
-    discount_value: Decimal
-    minimum_order_amount: Optional[Decimal] = None
-    maximum_discount_amount: Optional[Decimal] = None
-    usage_limit: Optional[int] = None
+    discount_type: Literal["percentage", "fixed_amount"]
+    discount_value: Decimal = Field(gt=0, max_digits=18, decimal_places=2)
+    minimum_order_amount: Optional[Decimal] = Field(default=None, ge=0)
+    maximum_discount_amount: Optional[Decimal] = Field(default=None, ge=0)
+    usage_limit: Optional[int] = Field(default=None, ge=0)
     valid_from: Optional[datetime] = None
     valid_until: Optional[datetime] = None
     is_active: bool = True
 
+    _code = field_validator("code")(_normalise_code)
+
+    @model_validator(mode="after")
+    def validate_coupon(self):
+        if self.discount_type == "percentage" and self.discount_value > 100:
+            raise ValueError("Percentage discount cannot exceed 100")
+        if self.valid_from and self.valid_until and self.valid_until <= self.valid_from:
+            raise ValueError("valid_until must be later than valid_from")
+        return self
+
 
 class CouponUpdate(BaseModel):
     description: Optional[str] = None
-    discount_type: Optional[str] = None
-    discount_value: Optional[Decimal] = None
-    minimum_order_amount: Optional[Decimal] = None
-    maximum_discount_amount: Optional[Decimal] = None
-    usage_limit: Optional[int] = None
+    discount_type: Optional[Literal["percentage", "fixed_amount"]] = None
+    discount_value: Optional[Decimal] = Field(default=None, gt=0)
+    minimum_order_amount: Optional[Decimal] = Field(default=None, ge=0)
+    maximum_discount_amount: Optional[Decimal] = Field(default=None, ge=0)
+    usage_limit: Optional[int] = Field(default=None, ge=0)
     valid_from: Optional[datetime] = None
     valid_until: Optional[datetime] = None
     is_active: Optional[bool] = None
+
+    @model_validator(mode="after")
+    def validate_coupon(self):
+        if self.discount_type == "percentage" and self.discount_value is not None and self.discount_value > 100:
+            raise ValueError("Percentage discount cannot exceed 100")
+        if self.valid_from and self.valid_until and self.valid_until <= self.valid_from:
+            raise ValueError("valid_until must be later than valid_from")
+        return self
 
 
 class StoreGalleryImageUpdate(BaseModel):
@@ -943,20 +1155,40 @@ class StoreOpeningHourCreate(BaseModel):
     closing_time: Time | None = None
     is_closed: bool = False
 
+    @model_validator(mode="after")
+    def validate_hours(self):
+        if self.is_closed:
+            self.opening_time = None
+            self.closing_time = None
+        elif self.opening_time is None or self.closing_time is None:
+            raise ValueError("Opening and closing times are required when the store is open")
+        elif self.closing_time <= self.opening_time:
+            raise ValueError("Closing time must be later than opening time")
+        return self
+
 
 class StoreOpeningHourUpdate(BaseModel):
     opening_time: Time | None = None
     closing_time: Time | None = None
     is_closed: bool | None = None
 
+    @model_validator(mode="after")
+    def validate_hours(self):
+        if self.is_closed is True:
+            self.opening_time = None
+            self.closing_time = None
+        elif self.opening_time is not None and self.closing_time is not None and self.closing_time <= self.opening_time:
+            raise ValueError("Closing time must be later than opening time")
+        return self
+
 
 class StoreOpeningHourResponse(BaseModel):
     id: UUID
     store_id: UUID
     day_of_week: DayOfWeek
-    day_position: int
-    opening_time: Time | None
-    closing_time: Time | None
+    day_position: int = Field(validation_alias=AliasChoices("day_position", "day_number"))
+    opening_time: Time | None = Field(validation_alias=AliasChoices("opening_time", "open_time"))
+    closing_time: Time | None = Field(validation_alias=AliasChoices("closing_time", "close_time"))
     is_closed: bool
     created_at: datetime
     updated_at: datetime
