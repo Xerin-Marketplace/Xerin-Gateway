@@ -27,7 +27,6 @@ from api.permissions import require_permission
 from api.schemas import PaymentCallbackRequest, PaymentInitiateRequest, PaymentResponse
 from api.enums import InventoryReservationStatus
 from api.services.inventory_reservations import commit_order_reservations, ensure_order_reservations_active, release_order_reservations
-from api.services.commission_engine import calculate_order_commissions
 
 router = APIRouter(prefix="/payments", tags=["Payments"])
 
@@ -213,7 +212,6 @@ def payment_callback(
 
         _deduct_reserved_inventory(db, order)
         _create_shipments_for_order(db, order)
-        calculate_order_commissions(db, order)
         payment.status = PaymentStatus.completed
         payment.paid_at = datetime.now(timezone.utc)
         payment.provider_transaction_id = data.transaction_id

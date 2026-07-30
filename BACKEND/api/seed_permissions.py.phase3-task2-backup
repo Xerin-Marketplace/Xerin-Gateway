@@ -33,7 +33,6 @@ DEFAULT_ROLE_PERMISSIONS: dict[str, set[str]] = {
         PermissionCode.can_view_public_stores.value,
         PermissionCode.shipping_track.value,
         PermissionCode.shipping_manage_own.value,
-        PermissionCode.seller_earnings_read.value,
         # Legacy permissions currently used by store profile/media routes.
         PermissionCode.view_own_store.value,
         PermissionCode.update_own_store.value,
@@ -69,9 +68,6 @@ DEFAULT_ROLE_PERMISSIONS: dict[str, set[str]] = {
         PermissionCode.shipping_write.value,
         PermissionCode.shipping_track.value,
         PermissionCode.shipping_manage_all.value,
-        PermissionCode.commissions_read.value,
-        PermissionCode.commissions_write.value,
-        PermissionCode.commissions_manage.value,
         PermissionCode.STORE_ADMIN_VIEW.value,
     },
     "super_admin": {permission.value for permission in PermissionCode},
