@@ -1,27 +1,25 @@
-from api.database import SessionLocal
-from api.models import Role, Permission, RolePermission
-from api.enums import PermissionCode
-import sys
-from pathlib import Path
+from __future__ import annotations
 
-sys.path.insert(0, str(Path(__file__).parent.parent))
+import logging
+
+from sqlalchemy.orm import Session
 
 from api.database import SessionLocal
-from api.models import Role, Permission, RolePermission
 from api.enums import PermissionCode
+from api.models import Permission, Role, RolePermission
 
-db = SessionLocal()
+logger = logging.getLogger(__name__)
 
 
-DEFAULT_ROLE_PERMISSIONS = {
-    "customer": [
+DEFAULT_ROLE_PERMISSIONS: dict[str, set[str]] = {
+    "customer": {
         PermissionCode.view_profile.value,
         PermissionCode.update_profile.value,
         PermissionCode.manage_addresses.value,
         PermissionCode.can_view_products.value,
         PermissionCode.can_view_public_stores.value,
-    ],
-    "seller": [
+    },
+    "seller": {
         PermissionCode.view_profile.value,
         PermissionCode.update_profile.value,
         PermissionCode.manage_addresses.value,
@@ -31,73 +29,110 @@ DEFAULT_ROLE_PERMISSIONS = {
         PermissionCode.manage_payout_accounts.value,
         PermissionCode.manage_products.value,
         PermissionCode.can_view_products.value,
-        PermissionCode.view_profile.value,
-        PermissionCode.update_profile.value,
-        PermissionCode.manage_addresses.value,
-        
+        PermissionCode.can_view_public_stores.value,
+        # Legacy permissions currently used by store profile/media routes.
         PermissionCode.view_own_store.value,
         PermissionCode.update_own_store.value,
         PermissionCode.upload_store_logo.value,
         PermissionCode.upload_store_banner.value,
-        PermissionCode.can_view_public_stores.value,
-    ],
-    "admin": [
+        # Granular permissions used by gallery and opening-hours routes.
+        PermissionCode.STORE_VIEW_OWN.value,
+        PermissionCode.STORE_UPDATE_OWN.value,
+        PermissionCode.STORE_UPLOAD_MEDIA.value,
+        PermissionCode.STORE_MANAGE_GALLERY.value,
+        PermissionCode.STORE_MANAGE_HOURS.value,
+    },
+    "admin": {
         PermissionCode.view_profile.value,
         PermissionCode.update_profile.value,
         PermissionCode.manage_users.value,
+        PermissionCode.can_view_users.value,
         PermissionCode.can_view_business_categories.value,
         PermissionCode.can_view_product_categories.value,
         PermissionCode.can_view_brands.value,
         PermissionCode.can_view_sellers.value,
+        PermissionCode.can_view_pending_sellers.value,
+        PermissionCode.can_view_seller_documents.value,
         PermissionCode.can_approve_sellers.value,
         PermissionCode.can_reject_sellers.value,
         PermissionCode.can_view_products.value,
+        PermissionCode.can_approve_products.value,
+        PermissionCode.can_reject_products.value,
         PermissionCode.orders_read.value,
         PermissionCode.payments_read.value,
         PermissionCode.coupons_read.value,
-    ],
-    "super_admin": [p.value for p in PermissionCode],
+        PermissionCode.STORE_ADMIN_VIEW.value,
+    },
+    "super_admin": {permission.value for permission in PermissionCode},
 }
 
 
-for permission_code in PermissionCode:
-    permission = db.query(Permission).filter(
-        Permission.code == permission_code.value
-    ).first()
+def _permission_name(code: str) -> str:
+    return code.replace(":", " ").replace("_", " ").title()
 
-    if not permission:
-        permission = Permission(
-            code=permission_code.value,
-            name=permission_code.value.replace("_", " ").title(),
-            description=f"Allows user to {permission_code.value.replace('_', ' ')}",
-        )
-        db.add(permission)
 
-db.commit()
+def seed_permissions(db: Session) -> None:
+    try:
+        permission_by_code: dict[str, Permission] = {}
 
-for role_name, permission_codes in DEFAULT_ROLE_PERMISSIONS.items():
-    role = db.query(Role).filter(Role.name == role_name).first()
+        for permission_code in PermissionCode:
+            code = permission_code.value
+            permission = (
+                db.query(Permission)
+                .filter(Permission.code == code)
+                .first()
+            )
+            if permission is None:
+                permission = Permission(
+                    code=code,
+                    name=_permission_name(code),
+                    description=f"Allows the assigned role or user to {_permission_name(code).lower()}.",
+                )
+                db.add(permission)
+                db.flush()
+            permission_by_code[code] = permission
 
-    if not role:
-        role = Role(name=role_name, description=f"{role_name} role")
-        db.add(role)
+        for role_name, permission_codes in DEFAULT_ROLE_PERMISSIONS.items():
+            role = db.query(Role).filter(Role.name == role_name).first()
+            if role is None:
+                role = Role(
+                    name=role_name,
+                    description=f"Default {role_name.replace('_', ' ')} role",
+                )
+                db.add(role)
+                db.flush()
+
+            existing_codes = {
+                row.permission.code
+                for row in db.query(RolePermission)
+                .filter(RolePermission.role_id == role.id)
+                .all()
+                if row.permission is not None
+            }
+
+            for code in permission_codes - existing_codes:
+                db.add(
+                    RolePermission(
+                        role_id=role.id,
+                        permission_id=permission_by_code[code].id,
+                    )
+                )
+
         db.commit()
-        db.refresh(role)
+    except Exception:
+        db.rollback()
+        logger.exception("Permission seeding failed")
+        raise
 
-    for permission_code in permission_codes:
-        permission = db.query(Permission).filter(
-            Permission.code == permission_code
-        ).first()
 
-        exists = db.query(RolePermission).filter(
-            RolePermission.role_id == role.id,
-            RolePermission.permission_id == permission.id,
-        ).first()
+def main() -> None:
+    db = SessionLocal()
+    try:
+        seed_permissions(db)
+        print("Permissions and default roles seeded successfully")
+    finally:
+        db.close()
 
-        if not exists:
-            db.add(RolePermission(role_id=role.id, permission_id=permission.id))
 
-db.commit()
-db.close()
-
-print("Permissions seeded successfully")
+if __name__ == "__main__":
+    main()

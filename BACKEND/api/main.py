@@ -1,51 +1,129 @@
+from __future__ import annotations
+
 import logging
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
+from contextlib import asynccontextmanager
+
+from fastapi import FastAPI, HTTPException, status
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.trustedhost import TrustedHostMiddleware
+from fastapi.staticfiles import StaticFiles
+from sqlalchemy import text
+
+from api.config import settings
+from api.database import SessionLocal
+from api.routers import (
+    admin,
+    auth,
+    cart,
+    coupons,
+    inventory,
+    orders,
+    payments,
+    products,
+    sellers,
+    stores,
+    users,
 )
 
-from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
-from api.database import Base, engine
-from api.routers import auth, users, sellers, products, admin, cart, orders, payments, inventory, coupons
-from fastapi.staticfiles import StaticFiles
-from api.routers import stores
 
-api = FastAPI(title="Ecommerce Platform API", version="1.0.0")
+logging.basicConfig(
+    level=getattr(logging, settings.LOG_LEVEL.upper(), logging.INFO),
+    format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
+)
+logger = logging.getLogger(__name__)
+
+
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    # Database schema changes must be applied with Alembic before startup:
+    # alembic upgrade head
+    if settings.SERVE_LOCAL_UPLOADS:
+        settings.upload_path.mkdir(parents=True, exist_ok=True)
+
+    logger.info(
+        "Starting %s in %s mode",
+        settings.APP_NAME,
+        settings.APP_ENV,
+    )
+    yield
+    logger.info("Stopping %s", settings.APP_NAME)
+
+
+api = FastAPI(
+    title=settings.APP_NAME,
+    version="1.0.0",
+    debug=settings.DEBUG,
+    lifespan=lifespan,
+    docs_url="/docs" if not settings.is_production else None,
+    redoc_url="/redoc" if not settings.is_production else None,
+    openapi_url="/openapi.json" if not settings.is_production else None,
+)
+
+if settings.trusted_hosts:
+    api.add_middleware(
+        TrustedHostMiddleware,
+        allowed_hosts=settings.trusted_hosts,
+    )
 
 api.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=settings.cors_origins,
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type", "Accept", "Origin", "X-Request-ID"],
+    expose_headers=["X-Request-ID"],
 )
 
-@api.on_event("startup")
-def on_startup():
-    Base.metadata.create_all(bind=engine)
+
+@api.get("/", tags=["system"])
+def root() -> dict[str, str]:
+    return {
+        "message": f"{settings.APP_NAME} is running",
+        "environment": settings.APP_ENV,
+    }
 
 
-@api.get("/")
-def root():
-    return {"message": "Ecommerce backend is running"}
-
-api.mount(
-    "/uploads",
-    StaticFiles(directory="uploads"),
-    name="uploads",
-)
-
-api.include_router(auth.router)
-api.include_router(users.router)
-api.include_router(sellers.router)
-api.include_router(products.router)
-api.include_router(cart.router)
-api.include_router(orders.router)
-api.include_router(payments.router)
-api.include_router(inventory.router)
-api.include_router(coupons.router)
-api.include_router(admin.router)
-api.include_router(stores.router)
+@api.get("/health/live", tags=["system"])
+def liveness() -> dict[str, str]:
+    return {"status": "ok"}
 
 
+@api.get("/health/ready", tags=["system"])
+def readiness() -> dict[str, str]:
+    db = SessionLocal()
+    try:
+        db.execute(text("SELECT 1"))
+    except Exception as exc:
+        logger.exception("Database readiness check failed")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Database is unavailable",
+        ) from exc
+    finally:
+        db.close()
+
+    return {"status": "ready", "database": "ok"}
+
+
+if settings.SERVE_LOCAL_UPLOADS:
+    api.mount(
+        "/uploads",
+        StaticFiles(directory=str(settings.upload_path)),
+        name="uploads",
+    )
+
+
+for router in (
+    auth.router,
+    users.router,
+    sellers.router,
+    products.router,
+    cart.router,
+    orders.router,
+    payments.router,
+    inventory.router,
+    coupons.router,
+    admin.router,
+    stores.router,
+):
+    api.include_router(router, prefix=settings.API_PREFIX)

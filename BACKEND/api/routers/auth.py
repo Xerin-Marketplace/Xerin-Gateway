@@ -20,7 +20,9 @@ from api.models import (
     BusinessCategory,
     SellerBusinessCategory,
     UserRole,
+    Role,
     RolePermission,
+    UserPermission,
 )
 from api.schemas import *
 from api.security import (
@@ -239,70 +241,102 @@ def cleanup_old_otp_requests(db: Session, older_than_days: int = 30) -> int:
     db.commit()
     return deleted
 
+def _get_required_role(db: Session, role_name: str) -> Role:
+    role = db.query(Role).filter(Role.name == role_name).first()
+    if role is None:
+        raise RuntimeError(
+            f"Required role '{role_name}' does not exist. "
+            "Run: python -m api.seed_permissions"
+        )
+    return role
+
+
+def _assign_role(db: Session, user_id, role_name: str) -> None:
+    role = _get_required_role(db, role_name)
+    exists = (
+        db.query(UserRole)
+        .filter(
+            UserRole.user_id == user_id,
+            UserRole.role_id == role.id,
+        )
+        .first()
+    )
+    if exists is None:
+        db.add(UserRole(user_id=user_id, role_id=role.id))
+
+
 @router.post("/register", response_model=UserResponse)
 def register(data: RegisterRequest, db: Session = Depends(get_db)):
-    # normalize inputs
     email = data.email.strip().lower()
-    phone = data.phone.strip()
+    phone = (data.phone or "").strip()
+    if not phone:
+        raise HTTPException(status_code=422, detail="Phone number is required")
 
     existing_user = (
         db.query(User)
         .filter((User.email == email) | (User.phone == phone))
         .first()
     )
-
     if existing_user:
         raise HTTPException(status_code=400, detail="Email or phone already exists")
 
-    user = User(
-        first_name=data.first_name,
-        last_name=data.last_name,
-        email=email,
-        phone=phone,
-        password_hash=hash_password(data.password),
-        status=UserStatus.pending_verification,
-        is_verified=False,
-    )
-
-    db.add(user)
-    db.commit()
-    db.refresh(user)
-
-    # invalidate any stale OTPs for this phone, then generate a fresh one
-    _invalidate_existing_otps(db, phone, purpose="register")
-
     otp = generate_otp()
-    otp_request = OTPRequest(
-        user_id=user.id,
-        phone=phone,
-        otp_code=otp,
-        purpose="register",
-        expires_at=datetime.now(timezone.utc) + timedelta(minutes=5),
-        verified=False,
-    )
+    try:
+        user = User(
+            first_name=data.first_name.strip(),
+            last_name=data.last_name.strip(),
+            email=email,
+            phone=phone,
+            password_hash=hash_password(data.password),
+            status=UserStatus.pending_verification,
+            is_verified=False,
+        )
+        db.add(user)
+        db.flush()
 
-    db.add(otp_request)
-    db.commit()
+        _assign_role(db, user.id, "customer")
+        _invalidate_existing_otps(db, phone, purpose="register")
+        db.add(
+            OTPRequest(
+                user_id=user.id,
+                phone=phone,
+                otp_code=otp,
+                purpose="register",
+                expires_at=datetime.now(timezone.utc) + timedelta(minutes=5),
+                verified=False,
+            )
+        )
 
-    # send OTP via email and SMS (best-effort; failures do not block registration)
+        db.commit()
+        db.refresh(user)
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception:
+        db.rollback()
+        logger.exception("Customer registration failed for %s / %s", email, phone)
+        raise HTTPException(
+            status_code=500,
+            detail="Registration failed. Please try again.",
+        )
+
     try:
         send_email(
             to=email,
             subject="Verify your account",
             body=f"Your verification code is: {otp}",
         )
-    except Exception as e:
-        logger.exception("send_email failed for %s: %s", email, e)
+    except Exception as exc:
+        logger.exception("send_email failed for %s: %s", email, exc)
 
     try:
         send_sms(
             to=phone,
-            message=f"Use this OTP to verify your Exerim Marketplace account: {otp}",
+            message=f"Use this OTP to verify your Xerin Marketplace account: {otp}",
         )
-    except Exception as e:
-        logger.exception("send_sms failed for %s: %s", phone, e)
+    except Exception as exc:
+        logger.exception("send_sms failed for %s: %s", phone, exc)
 
-    # In development you may want to return dev_otp; production should not expose it.
     return user
 
 
@@ -345,6 +379,7 @@ def register_seller(data: SellerRegisterRequest, db: Session = Depends(get_db)):
         )
         db.add(user)
         db.flush()  # assigns user.id without committing
+        _assign_role(db, user.id, "seller")
 
         seller = Seller(
             user_id=user.id,
@@ -413,7 +448,7 @@ def register_seller(data: SellerRegisterRequest, db: Session = Depends(get_db)):
     try:
         send_sms(
             to=phone,
-            message=f"Use this OTP to verify your Exerim Marketplace seller account: {otp}",
+            message=f"Use this OTP to verify your Xerin Marketplace seller account: {otp}",
         )
     except Exception as e:
         logger.exception("send_sms failed for %s: %s", phone, e)
@@ -438,10 +473,23 @@ def build_auth_user_response(db: Session, user: User):
             RolePermission.role_id.in_(role_ids)
         ).all()
 
-        permissions = list({
+        permissions = {
             role_permission.permission.code
             for role_permission in role_permissions
-        })
+            if role_permission.permission is not None
+        }
+    else:
+        permissions = set()
+
+    direct_permissions = db.query(UserPermission).filter(
+        UserPermission.user_id == user.id
+    ).all()
+    permissions.update(
+        row.permission.code
+        for row in direct_permissions
+        if row.permission is not None
+    )
+    permissions = sorted(permissions)
 
     if "super_admin" in roles:
         account_type = "super_admin"
@@ -540,7 +588,11 @@ def logout(
 def refresh_token(data: RefreshRequest, db: Session = Depends(get_db)):
     try:
         payload = jwt.decode(
-            data.refresh_token, settings.SECRET_KEY, algorithms=[ALGORITHM]
+            data.refresh_token,
+            settings.refresh_token_secret,
+            algorithms=[ALGORITHM],
+            audience=settings.JWT_AUDIENCE,
+            issuer=settings.JWT_ISSUER,
         )
         user_id = payload.get("sub")
         token_type = payload.get("type")
@@ -562,6 +614,16 @@ def refresh_token(data: RefreshRequest, db: Session = Depends(get_db)):
 
     if not session:
         raise HTTPException(status_code=401, detail="Refresh token not found")
+
+    user = db.query(User).filter(User.id == user_id).first()
+    if user is None:
+        db.delete(session)
+        db.commit()
+        raise HTTPException(status_code=401, detail="User not found")
+    if user.status in {UserStatus.suspended, UserStatus.inactive}:
+        raise HTTPException(status_code=403, detail="Account is not active")
+    if not user.is_verified or user.status == UserStatus.pending_verification:
+        raise HTTPException(status_code=403, detail="Account not verified")
 
     # FIX: previously the DB session's own expiry was never checked here —
     # a session record past its expires_at could still be used to mint new
