@@ -86,8 +86,6 @@ class PermissionCode(str, enum.Enum):
     refunds_process = "refunds:process"
     analytics_admin_read = "analytics:admin_read"
     analytics_seller_read = "analytics:seller_read"
-    audit_logs_read = "audit_logs:read"
-    security_events_read = "security_events:read"
 
     # Shipping and delivery
     shipping_read = "shipping:read"
@@ -211,16 +209,3 @@ class InventoryMovementType(str, enum.Enum):
     refund_restock = "refund_restock"
     refund_damaged = "refund_damaged"
     manual_adjustment = "manual_adjustment"
-
-
-class AuditSeverity(str, enum.Enum):
-    info = "info"
-    warning = "warning"
-    critical = "critical"
-
-
-class SecurityEventType(str, enum.Enum):
-    authentication_failed = "authentication_failed"
-    authorization_denied = "authorization_denied"
-    suspicious_request = "suspicious_request"
-    sensitive_action = "sensitive_action"

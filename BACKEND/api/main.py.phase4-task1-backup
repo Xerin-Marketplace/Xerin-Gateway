@@ -5,7 +5,6 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
-from api.middleware.audit import AuditMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import text
@@ -14,7 +13,6 @@ from api.config import settings
 from api.database import SessionLocal
 from api.routers import (
     analytics,
-    audit_logs,
     admin,
     auth,
     cart,
@@ -77,9 +75,6 @@ if settings.trusted_hosts:
     ],
 )
 
-
-api.add_middleware(AuditMiddleware)
-
 api.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins,
@@ -130,7 +125,6 @@ if settings.SERVE_LOCAL_UPLOADS:
 
 for router in (
     analytics.router,
-    audit_logs.router,
     auth.router,
     users.router,
     sellers.router,
