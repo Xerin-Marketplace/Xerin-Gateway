@@ -71,12 +71,6 @@ class PermissionCode(str, enum.Enum):
     coupons_write = "coupons:write"
     coupons_read = "coupons:read"
 
-    # Marketplace finance and commissions
-    commissions_read = "commissions:read"
-    commissions_write = "commissions:write"
-    commissions_manage = "commissions:manage"
-    seller_earnings_read = "seller_earnings:read"
-
     # Shipping and delivery
     shipping_read = "shipping:read"
     shipping_write = "shipping:write"
@@ -130,25 +124,3 @@ class InventoryReservationStatus(str, enum.Enum):
     released = "released"
     expired = "expired"
     cancelled = "cancelled"
-
-
-class CommissionScope(str, enum.Enum):
-    global_rule = "global"
-    category = "category"
-    seller = "seller"
-    product = "product"
-
-
-class CommissionRuleType(str, enum.Enum):
-    percentage = "percentage"
-    fixed = "fixed"
-
-
-class MarketplaceTransactionType(str, enum.Enum):
-    sale = "sale"
-    commission = "commission"
-    seller_earning = "seller_earning"
-    commission_reversal = "commission_reversal"
-    refund = "refund"
-    adjustment = "adjustment"
-    payout = "payout"
