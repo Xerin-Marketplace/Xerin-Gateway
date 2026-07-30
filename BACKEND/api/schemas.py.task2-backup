@@ -14,7 +14,6 @@ from decimal import Decimal
 from typing import Optional, List, Dict, Any, Literal
 import enum
 from api.enums import DayOfWeek, StoreStatus, ShippingRateType
-from api.enums import ShipmentStatus
 
 
 class UserStatus(str, enum.Enum):
@@ -983,8 +982,7 @@ class OrderStatusHistoryResponse(BaseModel):
 
 
 class OrderCreateRequest(BaseModel):
-    shipping_address_id: UUID
-    shipping_rate_id: UUID
+    shipping_address_id: Optional[UUID] = None
     coupon_code: Optional[str] = None
     notes: Optional[str] = None
 
@@ -998,12 +996,6 @@ class OrderResponse(BaseModel):
     id: UUID
     user_id: UUID
     shipping_address_id: Optional[UUID]
-    shipping_rate_id: Optional[UUID]
-    shipping_method_id: Optional[UUID]
-    shipping_method_name: Optional[str]
-    shipping_carrier: Optional[str]
-    estimated_delivery_from: Optional[datetime]
-    estimated_delivery_to: Optional[datetime]
     status: OrderStatus
     currency: str
     subtotal: Decimal
@@ -1386,52 +1378,3 @@ class ShippingQuoteOption(BaseModel):
     currency: str = "TZS"
     min_delivery_days: int
     max_delivery_days: int
-
-
-# =========================================================
-# SHIPMENT SCHEMAS
-# =========================================================
-
-class ShipmentItemResponse(BaseModel):
-    id: UUID
-    order_item_id: UUID
-    quantity: int
-    model_config = ORM_CONFIG
-
-
-class ShipmentTrackingEventCreate(BaseModel):
-    status: ShipmentStatus
-    location: Optional[str] = Field(default=None, max_length=255)
-    notes: Optional[str] = None
-    tracking_number: Optional[str] = Field(default=None, max_length=150)
-    carrier_name: Optional[str] = Field(default=None, max_length=120)
-
-
-class ShipmentTrackingEventResponse(BaseModel):
-    id: UUID
-    shipment_id: UUID
-    status: ShipmentStatus
-    location: Optional[str]
-    notes: Optional[str]
-    created_by_id: Optional[UUID]
-    created_at: datetime
-    model_config = ORM_CONFIG
-
-
-class ShipmentResponse(BaseModel):
-    id: UUID
-    order_id: UUID
-    seller_id: UUID
-    shipping_method_id: Optional[UUID]
-    status: ShipmentStatus
-    carrier_name: Optional[str]
-    tracking_number: Optional[str]
-    estimated_delivery_from: Optional[datetime]
-    estimated_delivery_to: Optional[datetime]
-    dispatched_at: Optional[datetime]
-    delivered_at: Optional[datetime]
-    items: list[ShipmentItemResponse] = Field(default_factory=list)
-    tracking_events: list[ShipmentTrackingEventResponse] = Field(default_factory=list)
-    created_at: datetime
-    updated_at: Optional[datetime]
-    model_config = ORM_CONFIG

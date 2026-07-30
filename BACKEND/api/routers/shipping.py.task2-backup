@@ -1,20 +1,18 @@
-from datetime import datetime, timezone
 from decimal import Decimal
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import Session, joinedload, selectinload
+from sqlalchemy.orm import Session, joinedload
 
 from api.deps import get_current_user, get_db
 from api.enums import PermissionCode, ShippingRateType
-from api.models import Address, Order, Shipment, ShipmentStatus, ShipmentTrackingEvent, ShippingMethod, ShippingRate, ShippingZone, User
+from api.models import Address, ShippingMethod, ShippingRate, ShippingZone, User
 from api.permissions import require_permission
 from api.schemas import (
     ShippingMethodCreate, ShippingMethodResponse, ShippingMethodUpdate,
     ShippingQuoteOption, ShippingQuoteRequest, ShippingRateCreate, ShippingRateResponse,
     ShippingZoneCreate, ShippingZoneResponse, ShippingZoneUpdate,
-    ShipmentResponse, ShipmentTrackingEventCreate,
 )
 
 router = APIRouter(prefix="/shipping", tags=["Shipping"])
@@ -94,78 +92,3 @@ def quote_shipping(data: ShippingQuoteRequest, db: Session=Depends(get_db), curr
             amount=Decimal(rate.base_amount)
         options.append(ShippingQuoteOption(rate_id=rate.id, method_id=rate.method.id, method_name=rate.method.name, carrier_name=rate.method.carrier_name, amount=amount.quantize(Decimal("0.01")), min_delivery_days=rate.method.min_delivery_days, max_delivery_days=rate.method.max_delivery_days))
     return sorted(options, key=lambda x: x.amount)
-
-
-ALLOWED_SHIPMENT_TRANSITIONS = {
-    ShipmentStatus.pending: {ShipmentStatus.ready_for_dispatch, ShipmentStatus.cancelled},
-    ShipmentStatus.ready_for_dispatch: {ShipmentStatus.dispatched, ShipmentStatus.cancelled},
-    ShipmentStatus.dispatched: {ShipmentStatus.in_transit, ShipmentStatus.delivery_failed},
-    ShipmentStatus.in_transit: {ShipmentStatus.out_for_delivery, ShipmentStatus.delivery_failed, ShipmentStatus.returned_to_sender},
-    ShipmentStatus.out_for_delivery: {ShipmentStatus.delivered, ShipmentStatus.delivery_failed, ShipmentStatus.returned_to_sender},
-    ShipmentStatus.delivery_failed: {ShipmentStatus.out_for_delivery, ShipmentStatus.returned_to_sender},
-    ShipmentStatus.delivered: set(),
-    ShipmentStatus.returned_to_sender: set(),
-    ShipmentStatus.cancelled: set(),
-}
-
-
-def _can_manage_shipment(db: Session, user: User, shipment: Shipment) -> bool:
-    from api.permissions import get_user_permissions, get_user_role_names
-    roles = get_user_role_names(user)
-    permissions = get_user_permissions(db, user)
-    if "super_admin" in roles or PermissionCode.shipping_manage_all.value in permissions:
-        return True
-    return bool(user.seller_profile and user.seller_profile.id == shipment.seller_id and PermissionCode.shipping_manage_own.value in permissions)
-
-
-def _can_view_shipment(db: Session, user: User, shipment: Shipment) -> bool:
-    return shipment.order.user_id == user.id or _can_manage_shipment(db, user, shipment) or PermissionCode.shipping_read.value in __import__('api.permissions', fromlist=['get_user_permissions']).get_user_permissions(db, user)
-
-
-@router.get("/shipments/my", response_model=list[ShipmentResponse])
-def my_shipments(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    return db.query(Shipment).options(selectinload(Shipment.items), selectinload(Shipment.tracking_events)).join(Order).filter(Order.user_id == current_user.id).order_by(Shipment.created_at.desc()).all()
-
-
-@router.get("/shipments/seller", response_model=list[ShipmentResponse])
-def seller_shipments(db: Session = Depends(get_db), current_user: User = Depends(require_permission(PermissionCode.shipping_manage_own.value))):
-    if not current_user.seller_profile:
-        raise HTTPException(status_code=403, detail="Seller profile required")
-    return db.query(Shipment).options(selectinload(Shipment.items), selectinload(Shipment.tracking_events)).filter(Shipment.seller_id == current_user.seller_profile.id).order_by(Shipment.created_at.desc()).all()
-
-
-@router.get("/shipments/{shipment_id}", response_model=ShipmentResponse)
-def get_shipment(shipment_id: UUID, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    shipment = db.query(Shipment).options(selectinload(Shipment.items), selectinload(Shipment.tracking_events), joinedload(Shipment.order)).filter(Shipment.id == shipment_id).first()
-    if not shipment:
-        raise HTTPException(status_code=404, detail="Shipment not found")
-    if not _can_view_shipment(db, current_user, shipment):
-        raise HTTPException(status_code=403, detail="Not authorized to view this shipment")
-    return shipment
-
-
-@router.post("/shipments/{shipment_id}/events", response_model=ShipmentResponse)
-def update_shipment(shipment_id: UUID, data: ShipmentTrackingEventCreate, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    shipment = db.query(Shipment).options(selectinload(Shipment.items), selectinload(Shipment.tracking_events), joinedload(Shipment.order)).filter(Shipment.id == shipment_id).with_for_update().first()
-    if not shipment:
-        raise HTTPException(status_code=404, detail="Shipment not found")
-    if not _can_manage_shipment(db, current_user, shipment):
-        raise HTTPException(status_code=403, detail="Not authorized to manage this shipment")
-    if data.status not in ALLOWED_SHIPMENT_TRANSITIONS.get(shipment.status, set()):
-        raise HTTPException(status_code=409, detail=f"Invalid shipment transition: {shipment.status.value} -> {data.status.value}")
-    if data.tracking_number:
-        duplicate = db.query(Shipment.id).filter(Shipment.tracking_number == data.tracking_number, Shipment.id != shipment.id).first()
-        if duplicate:
-            raise HTTPException(status_code=409, detail="Tracking number is already in use")
-        shipment.tracking_number = data.tracking_number.strip()
-    if data.carrier_name:
-        shipment.carrier_name = data.carrier_name.strip()
-    shipment.status = data.status
-    now = datetime.now(timezone.utc)
-    if data.status == ShipmentStatus.dispatched and shipment.dispatched_at is None:
-        shipment.dispatched_at = now
-    if data.status == ShipmentStatus.delivered:
-        shipment.delivered_at = now
-    db.add(ShipmentTrackingEvent(shipment_id=shipment.id, status=data.status, location=data.location, notes=data.notes, created_by_id=current_user.id))
-    _commit(db)
-    return db.query(Shipment).options(selectinload(Shipment.items), selectinload(Shipment.tracking_events)).filter(Shipment.id == shipment.id).one()

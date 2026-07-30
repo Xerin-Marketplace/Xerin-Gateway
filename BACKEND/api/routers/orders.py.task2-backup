@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from decimal import Decimal
 from uuid import UUID
 
@@ -22,9 +22,6 @@ from api.models import (
     Payment,
     PaymentStatus,
     ProductStatus,
-    ShippingMethod,
-    ShippingRate,
-    ShippingZone,
     User,
 )
 from api.permissions import get_user_permissions, get_user_role_names, require_permission
@@ -42,42 +39,6 @@ ALLOWED_TRANSITIONS: dict[OrderStatus, set[OrderStatus]] = {
     OrderStatus.refunded: set(),
 }
 
-
-
-def _normalise_place(value: str | None) -> str:
-    return (value or "").strip().lower()
-
-
-def _calculate_shipping(db: Session, address: Address, rate_id: UUID, subtotal: Decimal, weight_kg: Decimal):
-    rate = db.query(ShippingRate).options(selectinload(ShippingRate.zone), selectinload(ShippingRate.method)).filter(
-        ShippingRate.id == rate_id,
-        ShippingRate.is_active.is_(True),
-    ).with_for_update().first()
-    if not rate or not rate.zone or not rate.method or not rate.zone.is_active or not rate.method.is_active:
-        raise HTTPException(status_code=409, detail="Selected shipping rate is unavailable")
-    zone = rate.zone
-    if _normalise_place(zone.country) != _normalise_place(address.country):
-        raise HTTPException(status_code=422, detail="Shipping rate does not serve this country")
-    regions = {_normalise_place(x) for x in (zone.regions or [])}
-    cities = {_normalise_place(x) for x in (zone.cities or [])}
-    if regions and _normalise_place(address.region) not in regions:
-        raise HTTPException(status_code=422, detail="Shipping rate does not serve this region")
-    if cities and _normalise_place(address.city) not in cities:
-        raise HTTPException(status_code=422, detail="Shipping rate does not serve this city")
-    if rate.min_weight_kg is not None and weight_kg < Decimal(rate.min_weight_kg):
-        raise HTTPException(status_code=422, detail="Shipment weight is below the selected rate minimum")
-    if rate.max_weight_kg is not None and weight_kg > Decimal(rate.max_weight_kg):
-        raise HTTPException(status_code=422, detail="Shipment weight exceeds the selected rate maximum")
-    if rate.free_shipping_threshold is not None and subtotal >= Decimal(rate.free_shipping_threshold):
-        amount = Decimal("0")
-    elif rate.rate_type.value == "free":
-        amount = Decimal("0")
-    elif rate.rate_type.value == "weight_based":
-        amount = Decimal(rate.base_amount) + Decimal(rate.amount_per_kg) * weight_kg
-    else:
-        amount = Decimal(rate.base_amount)
-    now = datetime.now(timezone.utc)
-    return rate, amount.quantize(Decimal("0.01")), now + timedelta(days=rate.method.min_delivery_days), now + timedelta(days=rate.method.max_delivery_days)
 
 def _inventory_query(db: Session, product_id: UUID, variant_id: UUID | None):
     query = db.query(Inventory).filter(Inventory.product_id == product_id)
@@ -163,16 +124,16 @@ def create_order(
         if not cart or not cart.items:
             raise HTTPException(status_code=400, detail="Cart is empty")
 
-        address = db.query(Address).filter(
-            Address.id == data.shipping_address_id,
-            Address.user_id == current_user.id,
-        ).first()
-        if not address:
-            raise HTTPException(status_code=404, detail="Shipping address not found")
+        if data.shipping_address_id:
+            address = db.query(Address).filter(
+                Address.id == data.shipping_address_id,
+                Address.user_id == current_user.id,
+            ).first()
+            if not address:
+                raise HTTPException(status_code=404, detail="Shipping address not found")
 
         subtotal = Decimal("0.00")
         prepared_items: list[dict] = []
-        total_weight_kg = Decimal("0.000")
         for cart_item in cart.items:
             product = cart_item.product
             if not product or not product.is_active or product.status != ProductStatus.approved:
@@ -193,7 +154,6 @@ def create_order(
             )
             line_total = current_price * cart_item.quantity
             subtotal += line_total
-            total_weight_kg += Decimal(product.weight or 0) * cart_item.quantity
             prepared_items.append({
                 "cart_item": cart_item,
                 "inventory": inventory,
@@ -210,19 +170,13 @@ def create_order(
                 raise HTTPException(status_code=404, detail="Coupon not found")
             discount_amount = _validate_coupon(coupon, subtotal)
 
-        shipping_rate, shipping_amount, delivery_from, delivery_to = _calculate_shipping(db, address, data.shipping_rate_id, subtotal, total_weight_kg)
+        shipping_amount = Decimal("0.00")
         tax_amount = Decimal("0.00")
         total = subtotal - discount_amount + shipping_amount + tax_amount
 
         order = Order(
             user_id=current_user.id,
             shipping_address_id=data.shipping_address_id,
-            shipping_rate_id=shipping_rate.id,
-            shipping_method_id=shipping_rate.method.id,
-            shipping_method_name=shipping_rate.method.name,
-            shipping_carrier=shipping_rate.method.carrier_name,
-            estimated_delivery_from=delivery_from,
-            estimated_delivery_to=delivery_to,
             status=OrderStatus.pending,
             currency="TZS",
             subtotal=subtotal,
