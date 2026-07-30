@@ -80,10 +80,6 @@ class PermissionCode(str, enum.Enum):
     wallet_payout = "wallet:payout"
     wallet_manage = "wallet:manage"
     wallet_adjust = "wallet:adjust"
-    refunds_read = "refunds:read"
-    refunds_create = "refunds:create"
-    refunds_review = "refunds:review"
-    refunds_process = "refunds:process"
 
     # Shipping and delivery
     shipping_read = "shipping:read"
@@ -180,30 +176,3 @@ class PayoutStatus(str, enum.Enum):
     rejected = "rejected"
     failed = "failed"
     cancelled = "cancelled"
-
-
-class RefundStatus(str, enum.Enum):
-    requested = "requested"
-    under_review = "under_review"
-    approved = "approved"
-    processing = "processing"
-    completed = "completed"
-    rejected = "rejected"
-    failed = "failed"
-    cancelled = "cancelled"
-
-
-class RefundReason(str, enum.Enum):
-    changed_mind = "changed_mind"
-    damaged = "damaged"
-    defective = "defective"
-    wrong_item = "wrong_item"
-    not_received = "not_received"
-    duplicate_payment = "duplicate_payment"
-    other = "other"
-
-
-class InventoryMovementType(str, enum.Enum):
-    refund_restock = "refund_restock"
-    refund_damaged = "refund_damaged"
-    manual_adjustment = "manual_adjustment"

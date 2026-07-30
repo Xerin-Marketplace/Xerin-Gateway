@@ -15,7 +15,7 @@ from decimal import Decimal
 from typing import Optional, List, Dict, Any, Literal
 import enum
 from api.enums import DayOfWeek, StoreStatus, ShippingRateType
-from api.enums import ShipmentStatus, WalletTransactionType, PayoutStatus, RefundStatus, RefundReason
+from api.enums import ShipmentStatus, WalletTransactionType, PayoutStatus
 
 
 class UserStatus(str, enum.Enum):
@@ -1523,7 +1523,6 @@ class SellerWalletResponse(BaseModel):
     reserved_balance: Decimal
     paid_out_balance: Decimal
     refunded_balance: Decimal
-    debt_balance: Decimal
     is_frozen: bool
     created_at: datetime
     updated_at: datetime | None = None
@@ -1572,75 +1571,3 @@ class WalletAdjustmentCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
     amount: Decimal = Field(max_digits=18, decimal_places=2)
     reason: str = Field(min_length=3, max_length=500)
-
-
-# Phase 3 Task 4: refund and reversal schemas
-class RefundItemCreate(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    order_item_id: UUID
-    quantity: int = Field(gt=0)
-    restock: bool = True
-
-class RefundCreate(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    order_id: UUID
-    reason: RefundReason
-    reason_details: str | None = Field(default=None, max_length=2000)
-    items: list[RefundItemCreate] = Field(min_length=1)
-    refund_shipping: bool = False
-    refund_tax: bool = False
-    idempotency_key: str = Field(min_length=8, max_length=180)
-
-class RefundReview(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    note: str | None = Field(default=None, max_length=2000)
-
-class RefundProcess(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    provider_reference: str | None = Field(default=None, max_length=180)
-    note: str | None = Field(default=None, max_length=2000)
-
-class RefundItemResponse(BaseModel):
-    model_config = ORM_CONFIG
-    id: UUID
-    order_item_id: UUID
-    seller_id: UUID
-    quantity: int
-    unit_amount: Decimal
-    refund_amount: Decimal
-    commission_reversal: Decimal
-    seller_reversal: Decimal
-    seller_debt_amount: Decimal
-    restock: bool
-    processed_at: datetime | None = None
-
-class RefundEventResponse(BaseModel):
-    model_config = ORM_CONFIG
-    id: UUID
-    status: RefundStatus
-    note: str | None = None
-    created_by_id: UUID | None = None
-    created_at: datetime
-
-class RefundResponse(BaseModel):
-    model_config = ORM_CONFIG
-    id: UUID
-    order_id: UUID
-    requested_by_id: UUID
-    status: RefundStatus
-    reason: RefundReason
-    reason_details: str | None = None
-    currency: str
-    items_amount: Decimal
-    shipping_amount: Decimal
-    tax_amount: Decimal
-    total_amount: Decimal
-    provider_reference: str | None = None
-    idempotency_key: str
-    admin_note: str | None = None
-    requested_at: datetime
-    reviewed_at: datetime | None = None
-    processed_at: datetime | None = None
-    completed_at: datetime | None = None
-    items: list[RefundItemResponse] = Field(default_factory=list)
-    events: list[RefundEventResponse] = Field(default_factory=list)

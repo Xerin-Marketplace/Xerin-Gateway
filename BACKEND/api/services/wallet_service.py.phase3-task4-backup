@@ -15,12 +15,7 @@ def credit_sale(db:Session,*,seller_id,amount,currency,order_id,order_item_id):
     ref=f"sale_credit:{order_item_id}"
     existing=db.query(WalletTransaction).filter(WalletTransaction.reference==ref).first()
     if existing:return existing
-    w=get_or_create_wallet(db,seller_id,currency); amount=money(amount)
-    debt_offset=min(money(w.debt_balance), amount)
-    if debt_offset:
-        w.debt_balance=money(w.debt_balance)-debt_offset
-        amount=money(amount)-debt_offset
-    w.pending_balance=money(w.pending_balance)+amount
+    w=get_or_create_wallet(db,seller_id,currency); amount=money(amount); w.pending_balance=money(w.pending_balance)+amount
     tx=WalletTransaction(wallet_id=w.id,transaction_type=WalletTransactionType.sale_credit,amount=amount,currency=currency,reference=ref,order_id=order_id,order_item_id=order_item_id,eligible_at=datetime.now(timezone.utc)+timedelta(days=settings.SELLER_SETTLEMENT_DAYS),description="Seller earning pending settlement")
     db.add(tx); db.flush(); return tx
 def release_eligible_funds(db:Session,limit=500):
@@ -55,27 +50,3 @@ def transition_payout(db:Session,payout,status,*,user_id=None,note=None,provider
         db.add(WalletTransaction(wallet_id=w.id,transaction_type=WalletTransactionType.payout_released,amount=amount,currency=w.currency,reference=f"payout_released:{payout.id}",payout_request_id=payout.id,description="Payout hold released"))
     payout.status=status; payout.admin_note=note or payout.admin_note; payout.provider_reference=provider_reference or payout.provider_reference; payout.processed_at=now
     db.add(PayoutEvent(payout_request_id=payout.id,status=status,note=note,created_by_id=user_id)); return payout
-
-
-def debit_refund(db: Session, *, seller_id, amount, currency, refund_id, refund_item_id, order_id, order_item_id):
-    """Reverse seller funds safely. Any uncovered amount becomes recoverable seller debt."""
-    ref=f"refund_debit:{refund_item_id}"
-    existing=db.query(WalletTransaction).filter(WalletTransaction.reference==ref).first()
-    if existing:
-        return existing, Decimal("0.00")
-    wallet=get_or_create_wallet(db,seller_id,currency)
-    remaining=money(amount)
-    for field in ("pending_balance", "available_balance", "reserved_balance"):
-        balance=money(getattr(wallet,field))
-        take=min(balance,remaining)
-        setattr(wallet,field,money(balance-take))
-        remaining=money(remaining-take)
-        if remaining == 0:
-            break
-    debt=remaining
-    if debt:
-        wallet.debt_balance=money(wallet.debt_balance)+debt
-    wallet.refunded_balance=money(wallet.refunded_balance)+money(amount)
-    tx=WalletTransaction(wallet_id=wallet.id,transaction_type=WalletTransactionType.refund_debit,amount=money(amount),currency=currency,reference=ref,order_id=order_id,order_item_id=order_item_id,description=f"Seller earning reversed for refund {refund_id}; debt created: {debt}")
-    db.add(tx); db.flush()
-    return tx,debt

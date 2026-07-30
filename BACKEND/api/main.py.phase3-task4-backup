@@ -26,7 +26,6 @@ from api.routers import (
     stores,
     users,
     wallets,
-    refunds,
 )
 
 
@@ -130,7 +129,6 @@ for router in (
     cart.router,
     commissions.router,
     wallets.router,
-    refunds.router,
     orders.router,
     payments.router,
     inventory.router,
