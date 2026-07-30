@@ -37,7 +37,6 @@ DEFAULT_ROLE_PERMISSIONS: dict[str, set[str]] = {
         PermissionCode.seller_products_delete.value,
         PermissionCode.seller_product_images_manage.value,
         PermissionCode.seller_products_submit.value,
-        PermissionCode.seller_product_variants_manage.value,
         PermissionCode.can_view_products.value,
         PermissionCode.can_view_public_stores.value,
         PermissionCode.shipping_track.value,

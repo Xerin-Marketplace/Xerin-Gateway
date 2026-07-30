@@ -793,88 +793,11 @@ class ProductImageResponse(BaseModel):
     model_config = ORM_CONFIG
 
 
-class ProductOptionValueInput(BaseModel):
-    value: str = Field(min_length=1, max_length=100)
-    display_order: int = Field(default=0, ge=0)
-
-
-class ProductOptionCreate(BaseModel):
-    name: str = Field(min_length=1, max_length=100)
-    display_order: int = Field(default=0, ge=0)
-    values: list[ProductOptionValueInput] = Field(min_length=1, max_length=50)
-
-
-class ProductOptionUpdate(BaseModel):
-    name: Optional[str] = Field(default=None, min_length=1, max_length=100)
-    display_order: Optional[int] = Field(default=None, ge=0)
-    values: Optional[list[ProductOptionValueInput]] = Field(default=None, min_length=1, max_length=50)
-
-
-class ProductOptionValueResponse(BaseModel):
-    id: UUID
-    value: str
-    display_order: int
-    model_config = ORM_CONFIG
-
-
-class ProductOptionResponse(BaseModel):
-    id: UUID
-    product_id: UUID
-    name: str
-    display_order: int
-    values: list[ProductOptionValueResponse]
-    created_at: datetime
-    updated_at: Optional[datetime] = None
-    model_config = ORM_CONFIG
-
-
 class ProductVariantCreate(BaseModel):
-    variant_name: str = Field(min_length=1, max_length=255)
-    sku: str = Field(min_length=1, max_length=100)
-    barcode: Optional[str] = Field(default=None, max_length=100)
-    price: Optional[Decimal] = Field(default=None, ge=0)
-    sale_price: Optional[Decimal] = Field(default=None, ge=0)
-    weight: Optional[Decimal] = Field(default=None, ge=0)
-    image_id: Optional[UUID] = None
+    variant_name: str
+    sku: str
+    price: Optional[Decimal] = None
     attributes: Optional[Dict[str, Any]] = None
-    option_value_ids: list[UUID] = Field(default_factory=list)
-    stock_quantity: int = Field(default=0, ge=0)
-    low_stock_threshold: int = Field(default=10, ge=0)
-    is_active: bool = True
-
-    @model_validator(mode="after")
-    def validate_variant_prices(self):
-        if self.sale_price is not None and self.price is not None and self.sale_price > self.price:
-            raise ValueError("sale_price cannot exceed price")
-        return self
-
-
-class ProductVariantUpdate(BaseModel):
-    variant_name: Optional[str] = Field(default=None, min_length=1, max_length=255)
-    sku: Optional[str] = Field(default=None, min_length=1, max_length=100)
-    barcode: Optional[str] = Field(default=None, max_length=100)
-    price: Optional[Decimal] = Field(default=None, ge=0)
-    sale_price: Optional[Decimal] = Field(default=None, ge=0)
-    weight: Optional[Decimal] = Field(default=None, ge=0)
-    image_id: Optional[UUID] = None
-    attributes: Optional[Dict[str, Any]] = None
-    stock_quantity: Optional[int] = Field(default=None, ge=0)
-    low_stock_threshold: Optional[int] = Field(default=None, ge=0)
-    is_active: Optional[bool] = None
-
-
-class ProductVariantGenerateRequest(BaseModel):
-    sku_prefix: str = Field(min_length=1, max_length=60)
-    default_price: Optional[Decimal] = Field(default=None, ge=0)
-    default_sale_price: Optional[Decimal] = Field(default=None, ge=0)
-    default_stock_quantity: int = Field(default=0, ge=0)
-    low_stock_threshold: int = Field(default=10, ge=0)
-
-    @model_validator(mode="after")
-    def validate_prices(self):
-        if self.default_sale_price is not None and self.default_price is not None and self.default_sale_price > self.default_price:
-            raise ValueError("default_sale_price cannot exceed default_price")
-        return self
 
 
 class ProductVariantResponse(BaseModel):
@@ -882,19 +805,9 @@ class ProductVariantResponse(BaseModel):
     product_id: UUID
     variant_name: str
     sku: str
-    barcode: Optional[str] = None
     price: Optional[Decimal]
-    sale_price: Optional[Decimal] = None
-    weight: Optional[Decimal] = None
-    image_id: Optional[UUID] = None
     attributes: Optional[Dict[str, Any]]
-    is_active: bool = True
-    stock_quantity: int = 0
-    reserved_quantity: int = 0
-    available_quantity: int = 0
-    low_stock_threshold: int = 10
     created_at: datetime
-    updated_at: Optional[datetime] = None
 
     model_config = ORM_CONFIG
 

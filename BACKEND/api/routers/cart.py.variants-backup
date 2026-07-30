@@ -46,11 +46,8 @@ def _inventory_query(db: Session, product_id: UUID, variant_id: UUID | None):
 
 
 def _resolve_price(product: Product, variant: ProductVariant | None) -> Decimal:
-    if variant is not None:
-        if variant.sale_price is not None:
-            return Decimal(variant.sale_price)
-        if variant.price is not None:
-            return Decimal(variant.price)
+    if variant is not None and variant.price is not None:
+        return Decimal(variant.price)
     if product.sale_price is not None:
         return Decimal(product.sale_price)
     return Decimal(product.price)
@@ -134,8 +131,8 @@ def add_cart_item(
                 ProductVariant.id == data.variant_id,
                 ProductVariant.product_id == product.id,
             ).first()
-            if not variant or not variant.is_active:
-                raise HTTPException(status_code=404, detail="Product variant not found or inactive")
+            if not variant:
+                raise HTTPException(status_code=404, detail="Product variant not found")
 
         inventory = _inventory_query(db, product.id, data.variant_id).with_for_update().first()
         if not inventory:
