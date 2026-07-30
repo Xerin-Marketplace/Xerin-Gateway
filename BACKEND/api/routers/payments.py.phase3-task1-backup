@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 from api.config import settings
 from api.deps import get_current_user, get_db
 from api.models import (
+    Inventory,
     Order,
     OrderStatus,
     OrderStatusHistory,
@@ -25,8 +26,6 @@ from api.models import (
 )
 from api.permissions import require_permission
 from api.schemas import PaymentCallbackRequest, PaymentInitiateRequest, PaymentResponse
-from api.enums import InventoryReservationStatus
-from api.services.inventory_reservations import commit_order_reservations, ensure_order_reservations_active, release_order_reservations
 
 router = APIRouter(prefix="/payments", tags=["Payments"])
 
@@ -66,7 +65,17 @@ def _record_transaction(
 
 
 def _deduct_reserved_inventory(db: Session, order: Order) -> None:
-    commit_order_reservations(db, order)
+    for item in order.items:
+        query = db.query(Inventory).filter(Inventory.product_id == item.product_id)
+        query = query.filter(Inventory.variant_id == item.variant_id) if item.variant_id else query.filter(Inventory.variant_id.is_(None))
+        inventory = query.with_for_update().first()
+        if not inventory:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=f"Inventory missing for product {item.product_id}")
+        if inventory.reserved_quantity < item.quantity or inventory.quantity < item.quantity:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=f"Reserved stock is inconsistent for product {item.product_id}")
+        inventory.quantity -= item.quantity
+        inventory.reserved_quantity -= item.quantity
+        inventory.available_quantity = inventory.quantity - inventory.reserved_quantity
 
 
 
@@ -117,7 +126,6 @@ def initiate_payment(data: PaymentInitiateRequest, db: Session = Depends(get_db)
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized to pay for this order")
     if order.status != OrderStatus.pending:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Only pending orders can be paid")
-    ensure_order_reservations_active(db, order)
 
     method = data.method if isinstance(data.method, PaymentMethod) else PaymentMethod(data.method)
     if method == PaymentMethod.mobile_money and (not data.provider or not data.phone_number):
@@ -223,20 +231,10 @@ def payment_callback(
         payment.provider_transaction_id = data.transaction_id
         payment.provider_response = callback_payload
         payment.failure_reason = callback_payload.get("reason")
-        order = db.query(Order).filter(Order.id == payment.order_id).with_for_update().first()
-        if order and order.status == OrderStatus.pending:
-            release_order_reservations(db, order, target_status=InventoryReservationStatus.released)
-            order.status = OrderStatus.cancelled
-            db.add(OrderStatusHistory(order_id=order.id, status=OrderStatus.cancelled.value, notes="Order cancelled after failed payment"))
     elif incoming_status in CANCELLED_STATUSES or incoming_status == PaymentStatus.cancelled.value:
         payment.status = PaymentStatus.cancelled
         payment.provider_transaction_id = data.transaction_id
         payment.provider_response = callback_payload
-        order = db.query(Order).filter(Order.id == payment.order_id).with_for_update().first()
-        if order and order.status == OrderStatus.pending:
-            release_order_reservations(db, order, target_status=InventoryReservationStatus.cancelled)
-            order.status = OrderStatus.cancelled
-            db.add(OrderStatusHistory(order_id=order.id, status=OrderStatus.cancelled.value, notes="Order cancelled by payment provider"))
     else:
         payment.status = PaymentStatus.processing
         payment.provider_response = callback_payload

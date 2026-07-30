@@ -136,6 +136,7 @@ def main() -> None:
     db = SessionLocal()
     try:
         seed_permissions(db)
+
         print("Permissions and default roles seeded successfully")
     finally:
         db.close()

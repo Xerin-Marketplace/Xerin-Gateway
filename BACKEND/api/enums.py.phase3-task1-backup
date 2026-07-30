@@ -116,11 +116,3 @@ class ShipmentStatus(str, enum.Enum):
     delivery_failed = "delivery_failed"
     returned_to_sender = "returned_to_sender"
     cancelled = "cancelled"
-
-
-class InventoryReservationStatus(str, enum.Enum):
-    active = "active"
-    committed = "committed"
-    released = "released"
-    expired = "expired"
-    cancelled = "cancelled"
