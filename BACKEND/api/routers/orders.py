@@ -1,131 +1,113 @@
-from uuid import UUID
-from decimal import Decimal
-from datetime import datetime, timezone
-from fastapi import APIRouter, Depends, HTTPException, status, Query
-from sqlalchemy.orm import Session
+from __future__ import annotations
 
-from api.deps import get_db, get_current_user
+from datetime import datetime, timezone
+from decimal import Decimal
+from uuid import UUID
+
+from fastapi import APIRouter, Depends, HTTPException, Query, status
+from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.orm import Session, selectinload
+
+from api.deps import get_current_user, get_db
 from api.models import (
-    User,
+    Address,
     Cart,
     CartItem,
+    Coupon,
+    Inventory,
     Order,
     OrderItem,
     OrderStatus,
     OrderStatusHistory,
-    Inventory,
-    Address,
-    Coupon,
     Payment,
     PaymentStatus,
+    ProductStatus,
+    User,
 )
-from api.schemas import (
-    OrderCreateRequest,
-    OrderResponse,
-    OrderStatusUpdateRequest,
-    PaginatedOrderResponse,
-)
-from api.permissions import require_permission
+from api.permissions import get_user_permissions, get_user_role_names, require_permission
+from api.schemas import OrderCreateRequest, OrderResponse, OrderStatusUpdateRequest, PaginatedOrderResponse
 
 router = APIRouter(prefix="/orders", tags=["Orders"])
 
-
-def _calculate_order_totals(cart: Cart) -> dict:
-    subtotal = Decimal("0.00")
-    for item in cart.items:
-        subtotal += Decimal(item.unit_price) * item.quantity
-
-    discount_amount = Decimal("0.00")
-    if cart.coupon_code:
-        coupon = cart.coupon_code  # placeholder; resolved in create_order
-
-    shipping_amount = Decimal("0.00")
-    tax_amount = Decimal("0.00")
-    total = subtotal - discount_amount + shipping_amount + tax_amount
-
-    return {
-        "subtotal": subtotal,
-        "discount_amount": discount_amount,
-        "shipping_amount": shipping_amount,
-        "tax_amount": tax_amount,
-        "total": total,
-    }
+ALLOWED_TRANSITIONS: dict[OrderStatus, set[OrderStatus]] = {
+    OrderStatus.pending: {OrderStatus.cancelled},
+    OrderStatus.paid: {OrderStatus.processing, OrderStatus.refunded},
+    OrderStatus.processing: {OrderStatus.shipped, OrderStatus.cancelled, OrderStatus.refunded},
+    OrderStatus.shipped: {OrderStatus.delivered},
+    OrderStatus.delivered: {OrderStatus.refunded},
+    OrderStatus.cancelled: set(),
+    OrderStatus.refunded: set(),
+}
 
 
-def _apply_coupon_to_subtotal(coupon: Coupon | None, subtotal: Decimal) -> Decimal:
-    if not coupon:
-        return Decimal("0.00")
+def _inventory_query(db: Session, product_id: UUID, variant_id: UUID | None):
+    query = db.query(Inventory).filter(Inventory.product_id == product_id)
+    return query.filter(
+        Inventory.variant_id == variant_id if variant_id is not None else Inventory.variant_id.is_(None)
+    )
 
+
+def _create_status_history(
+    db: Session,
+    order: Order,
+    status_value: OrderStatus,
+    notes: str | None,
+    user_id: UUID | None,
+) -> None:
+    db.add(OrderStatusHistory(
+        order_id=order.id,
+        status=status_value.value,
+        notes=notes,
+        created_by_id=user_id,
+    ))
+
+
+def _validate_coupon(coupon: Coupon, subtotal: Decimal) -> Decimal:
     now = datetime.now(timezone.utc)
+    if not coupon.is_active:
+        raise HTTPException(status_code=400, detail="Coupon is inactive")
     if coupon.valid_from and now < coupon.valid_from:
-        return Decimal("0.00")
+        raise HTTPException(status_code=400, detail="Coupon is not valid yet")
     if coupon.valid_until and now > coupon.valid_until:
-        return Decimal("0.00")
+        raise HTTPException(status_code=400, detail="Coupon has expired")
     if coupon.usage_limit is not None and coupon.usage_count >= coupon.usage_limit:
-        return Decimal("0.00")
-    if coupon.minimum_order_amount and subtotal < coupon.minimum_order_amount:
-        return Decimal("0.00")
+        raise HTTPException(status_code=400, detail="Coupon usage limit has been reached")
+    if coupon.minimum_order_amount is not None and subtotal < Decimal(coupon.minimum_order_amount):
+        raise HTTPException(status_code=400, detail=f"Minimum order amount is {coupon.minimum_order_amount}")
 
     if coupon.discount_type == "percentage":
-        discount = subtotal * (coupon.discount_value / Decimal("100"))
-        if coupon.maximum_discount_amount:
-            discount = min(discount, coupon.maximum_discount_amount)
+        discount = subtotal * (Decimal(coupon.discount_value) / Decimal("100"))
+        if coupon.maximum_discount_amount is not None:
+            discount = min(discount, Decimal(coupon.maximum_discount_amount))
+    elif coupon.discount_type == "fixed_amount":
+        discount = Decimal(coupon.discount_value)
     else:
-        discount = coupon.discount_value
-
+        raise HTTPException(status_code=500, detail="Coupon configuration is invalid")
     return min(discount, subtotal)
 
 
-def _reserve_inventory(db: Session, cart: Cart) -> None:
-    for item in cart.items:
-        inventory = db.query(Inventory).filter(
-            Inventory.product_id == item.product_id,
-            Inventory.variant_id == item.variant_id,
-        ).with_for_update().first()
-
-        if not inventory or inventory.available_quantity < item.quantity:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Insufficient stock for product {item.product_id}",
-            )
-
-        inventory.reserved_quantity += item.quantity
+def _release_reserved_inventory(db: Session, order: Order) -> None:
+    for item in order.items:
+        inventory = _inventory_query(db, item.product_id, item.variant_id).with_for_update().first()
+        if not inventory:
+            raise HTTPException(status_code=409, detail=f"Inventory missing for order item {item.id}")
+        if inventory.reserved_quantity < item.quantity:
+            raise HTTPException(status_code=409, detail=f"Reserved stock is inconsistent for order item {item.id}")
+        inventory.reserved_quantity -= item.quantity
         inventory.available_quantity = inventory.quantity - inventory.reserved_quantity
 
 
-def _release_inventory(db: Session, order: Order) -> None:
-    for item in order.items:
-        inventory = db.query(Inventory).filter(
-            Inventory.product_id == item.product_id,
-            Inventory.variant_id == item.variant_id,
-        ).with_for_update().first()
-
-        if inventory:
-            inventory.reserved_quantity = max(0, inventory.reserved_quantity - item.quantity)
-            inventory.available_quantity = inventory.quantity - inventory.reserved_quantity
+def _is_privileged_order_operator(db: Session, user: User) -> bool:
+    roles = get_user_role_names(user)
+    if "super_admin" in roles:
+        return True
+    permissions = get_user_permissions(db, user)
+    return "orders:write" in permissions or "can_update_orders" in permissions
 
 
-def _deduct_inventory(db: Session, order: Order) -> None:
-    for item in order.items:
-        inventory = db.query(Inventory).filter(
-            Inventory.product_id == item.product_id,
-            Inventory.variant_id == item.variant_id,
-        ).with_for_update().first()
-
-        if inventory:
-            inventory.quantity = max(0, inventory.quantity - item.quantity)
-            inventory.reserved_quantity = max(0, inventory.reserved_quantity - item.quantity)
-            inventory.available_quantity = inventory.quantity - inventory.reserved_quantity
-
-
-def _create_status_history(db: Session, order: Order, status_value: str, notes: str | None, user_id: UUID | None) -> None:
-    history = OrderStatusHistory(
-        order_id=order.id,
-        status=status_value,
-        notes=notes,
-        created_by_id=user_id,
-    )
-    db.add(history)
+def _is_order_seller(user: User, order: Order) -> bool:
+    seller = user.seller_profile
+    return bool(seller and any(item.seller_id == seller.id for item in order.items))
 
 
 @router.post("", response_model=OrderResponse, status_code=status.HTTP_201_CREATED)
@@ -134,82 +116,113 @@ def create_order(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    cart = db.query(Cart).filter(Cart.user_id == current_user.id).first()
-    if not cart or not cart.items:
-        raise HTTPException(status_code=400, detail="Cart is empty")
+    try:
+        cart = db.query(Cart).options(
+            selectinload(Cart.items).selectinload(CartItem.product),
+            selectinload(Cart.items).selectinload(CartItem.variant),
+        ).filter(Cart.user_id == current_user.id).with_for_update().first()
+        if not cart or not cart.items:
+            raise HTTPException(status_code=400, detail="Cart is empty")
 
-    if data.shipping_address_id:
-        address = db.query(Address).filter(
-            Address.id == data.shipping_address_id,
-            Address.user_id == current_user.id,
-        ).first()
-        if not address:
-            raise HTTPException(status_code=404, detail="Shipping address not found")
+        if data.shipping_address_id:
+            address = db.query(Address).filter(
+                Address.id == data.shipping_address_id,
+                Address.user_id == current_user.id,
+            ).first()
+            if not address:
+                raise HTTPException(status_code=404, detail="Shipping address not found")
 
-    # Validate stock and reserve inventory
-    _reserve_inventory(db, cart)
+        subtotal = Decimal("0.00")
+        prepared_items: list[dict] = []
+        for cart_item in cart.items:
+            product = cart_item.product
+            if not product or not product.is_active or product.status != ProductStatus.approved:
+                raise HTTPException(status_code=409, detail=f"Product {cart_item.product_id} is no longer available")
+            if cart_item.variant_id is not None and (
+                cart_item.variant is None or cart_item.variant.product_id != product.id
+            ):
+                raise HTTPException(status_code=409, detail=f"Variant for product {product.id} is invalid")
 
-    # Calculate totals
-    subtotal = Decimal("0.00")
-    for item in cart.items:
-        subtotal += Decimal(item.unit_price) * item.quantity
+            inventory = _inventory_query(db, product.id, cart_item.variant_id).with_for_update().first()
+            if not inventory or inventory.available_quantity < cart_item.quantity:
+                raise HTTPException(status_code=409, detail=f"Insufficient stock for {product.name}")
 
-    coupon = None
-    if data.coupon_code or cart.coupon_code:
-        code = data.coupon_code or cart.coupon_code
-        coupon = db.query(Coupon).filter(
-            Coupon.code == code,
-            Coupon.is_active == True,
-        ).first()
+            current_price = (
+                Decimal(cart_item.variant.price)
+                if cart_item.variant is not None and cart_item.variant.price is not None
+                else Decimal(product.sale_price if product.sale_price is not None else product.price)
+            )
+            line_total = current_price * cart_item.quantity
+            subtotal += line_total
+            prepared_items.append({
+                "cart_item": cart_item,
+                "inventory": inventory,
+                "unit_price": current_price,
+                "line_total": line_total,
+            })
 
-    discount_amount = _apply_coupon_to_subtotal(coupon, subtotal)
-    shipping_amount = Decimal("0.00")
-    tax_amount = Decimal("0.00")
-    total = subtotal - discount_amount + shipping_amount + tax_amount
+        coupon = None
+        requested_code = data.coupon_code or cart.coupon_code
+        discount_amount = Decimal("0.00")
+        if requested_code:
+            coupon = db.query(Coupon).filter(Coupon.code == requested_code).with_for_update().first()
+            if not coupon:
+                raise HTTPException(status_code=404, detail="Coupon not found")
+            discount_amount = _validate_coupon(coupon, subtotal)
 
-    order = Order(
-        user_id=current_user.id,
-        shipping_address_id=data.shipping_address_id,
-        status=OrderStatus.pending,
-        currency="TZS",
-        subtotal=subtotal,
-        discount_amount=discount_amount,
-        shipping_amount=shipping_amount,
-        tax_amount=tax_amount,
-        total=total,
-        coupon_code=coupon.code if coupon else None,
-        notes=data.notes,
-    )
-    db.add(order)
-    db.flush()
+        shipping_amount = Decimal("0.00")
+        tax_amount = Decimal("0.00")
+        total = subtotal - discount_amount + shipping_amount + tax_amount
 
-    for item in cart.items:
-        order_item = OrderItem(
-            order_id=order.id,
-            product_id=item.product_id,
-            variant_id=item.variant_id,
-            seller_id=item.product.seller_id,
-            product_name=item.product.name,
-            variant_name=item.variant.variant_name if item.variant else None,
-            quantity=item.quantity,
-            unit_price=item.unit_price,
-            total_price=Decimal(item.unit_price) * item.quantity,
+        order = Order(
+            user_id=current_user.id,
+            shipping_address_id=data.shipping_address_id,
+            status=OrderStatus.pending,
+            currency="TZS",
+            subtotal=subtotal,
+            discount_amount=discount_amount,
+            shipping_amount=shipping_amount,
+            tax_amount=tax_amount,
+            total=total,
+            coupon_code=coupon.code if coupon else None,
+            notes=data.notes,
         )
-        db.add(order_item)
+        db.add(order)
+        db.flush()
 
-    _create_status_history(db, order, OrderStatus.pending.value, "Order created", current_user.id)
+        for prepared in prepared_items:
+            cart_item = prepared["cart_item"]
+            inventory = prepared["inventory"]
+            inventory.reserved_quantity += cart_item.quantity
+            inventory.available_quantity = inventory.quantity - inventory.reserved_quantity
+            db.add(OrderItem(
+                order_id=order.id,
+                product_id=cart_item.product_id,
+                variant_id=cart_item.variant_id,
+                seller_id=cart_item.product.seller_id,
+                product_name=cart_item.product.name,
+                variant_name=cart_item.variant.variant_name if cart_item.variant else None,
+                quantity=cart_item.quantity,
+                unit_price=prepared["unit_price"],
+                total_price=prepared["line_total"],
+            ))
 
-    # Clear cart
-    for item in cart.items:
-        db.delete(item)
-    cart.coupon_code = None
+        _create_status_history(db, order, OrderStatus.pending, "Order created", current_user.id)
+        if coupon:
+            coupon.usage_count += 1
+        for cart_item in list(cart.items):
+            db.delete(cart_item)
+        cart.coupon_code = None
 
-    if coupon:
-        coupon.usage_count += 1
-
-    db.commit()
-    db.refresh(order)
-    return order
+        db.commit()
+        db.refresh(order)
+        return order
+    except HTTPException:
+        db.rollback()
+        raise
+    except SQLAlchemyError as exc:
+        db.rollback()
+        raise HTTPException(status_code=500, detail="Could not create order") from exc
 
 
 @router.get("/my-orders", response_model=PaginatedOrderResponse)
@@ -220,14 +233,31 @@ def get_my_orders(
     current_user: User = Depends(get_current_user),
 ):
     query = db.query(Order).filter(Order.user_id == current_user.id).order_by(Order.created_at.desc())
-    total = query.count()
-    orders = query.offset((page - 1) * page_size).limit(page_size).all()
-
     return {
-        "total": total,
+        "total": query.count(),
         "page": page,
         "page_size": page_size,
-        "results": orders,
+        "results": query.offset((page - 1) * page_size).limit(page_size).all(),
+    }
+
+
+@router.get("/admin/all", response_model=PaginatedOrderResponse)
+def list_all_orders(
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=100),
+    order_status: OrderStatus | None = Query(None, alias="status"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permission("orders:read")),
+):
+    query = db.query(Order)
+    if order_status is not None:
+        query = query.filter(Order.status == order_status)
+    query = query.order_by(Order.created_at.desc())
+    return {
+        "total": query.count(),
+        "page": page,
+        "page_size": page_size,
+        "results": query.offset((page - 1) * page_size).limit(page_size).all(),
     }
 
 
@@ -240,10 +270,8 @@ def get_order(
     order = db.query(Order).filter(Order.id == order_id).first()
     if not order:
         raise HTTPException(status_code=404, detail="Order not found")
-
-    if order.user_id != current_user.id:
+    if order.user_id != current_user.id and not _is_order_seller(current_user, order) and not _is_privileged_order_operator(db, current_user):
         raise HTTPException(status_code=403, detail="Not authorized to view this order")
-
     return order
 
 
@@ -254,62 +282,48 @@ def update_order_status(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    order = db.query(Order).filter(Order.id == order_id).first()
-    if not order:
-        raise HTTPException(status_code=404, detail="Order not found")
+    try:
+        order = db.query(Order).filter(Order.id == order_id).with_for_update().first()
+        if not order:
+            raise HTTPException(status_code=404, detail="Order not found")
 
-    # Only seller of any item, admin, or support can update status
-    is_seller = any(item.seller_id == current_user.seller_profile.id for item in order.items if current_user.seller_profile)
-    if not is_seller and current_user.id != order.user_id:
-        # For buyers, only allow cancellation of pending orders
-        if data.status != OrderStatus.cancelled.value or order.status != OrderStatus.pending:
+        new_status = data.status
+        is_buyer = order.user_id == current_user.id
+        is_operator = _is_privileged_order_operator(db, current_user)
+        is_seller = _is_order_seller(current_user, order)
+
+        if is_buyer:
+            if new_status != OrderStatus.cancelled or order.status != OrderStatus.pending:
+                raise HTTPException(status_code=403, detail="Buyers may only cancel pending orders")
+        elif not is_operator and not is_seller:
             raise HTTPException(status_code=403, detail="Not authorized to update this order")
 
-    try:
-        new_status = OrderStatus(data.status)
-    except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid order status")
+        # Payment callbacks own the pending -> paid transition.
+        if new_status == OrderStatus.paid:
+            raise HTTPException(status_code=409, detail="Paid status can only be set by a verified payment callback")
+        if new_status not in ALLOWED_TRANSITIONS.get(order.status, set()):
+            raise HTTPException(
+                status_code=409,
+                detail=f"Invalid order transition: {order.status.value} -> {new_status.value}",
+            )
+        if new_status in {OrderStatus.cancelled, OrderStatus.refunded}:
+            completed_payment = db.query(Payment.id).filter(
+                Payment.order_id == order.id,
+                Payment.status == PaymentStatus.completed,
+            ).first()
+            if new_status == OrderStatus.cancelled and completed_payment:
+                raise HTTPException(status_code=409, detail="A paid order must be refunded, not cancelled")
+            if order.status in {OrderStatus.pending, OrderStatus.processing}:
+                _release_reserved_inventory(db, order)
 
-    # State machine guards
-    if order.status == OrderStatus.delivered and new_status in (OrderStatus.cancelled,):
-        raise HTTPException(status_code=400, detail="Cannot cancel a delivered order")
-
-    if order.status == OrderStatus.cancelled:
-        raise HTTPException(status_code=400, detail="Order is already cancelled")
-
-    order.status = new_status
-
-    if new_status == OrderStatus.cancelled:
-        _release_inventory(db, order)
-
-    if new_status == OrderStatus.paid:
-        _deduct_inventory(db, order)
-
-    _create_status_history(db, order, new_status.value, data.notes, current_user.id)
-
-    db.commit()
-    db.refresh(order)
-    return order
-
-
-@router.get("/admin/all", response_model=PaginatedOrderResponse)
-def list_all_orders(
-    page: int = Query(1, ge=1),
-    page_size: int = Query(20, ge=1, le=100),
-    status: str | None = Query(None),
-    db: Session = Depends(get_db),
-    current_user: User = Depends(require_permission("orders:read")),
-):
-    query = db.query(Order)
-    if status:
-        query = query.filter(Order.status == status)
-    query = query.order_by(Order.created_at.desc())
-    total = query.count()
-    orders = query.offset((page - 1) * page_size).limit(page_size).all()
-
-    return {
-        "total": total,
-        "page": page,
-        "page_size": page_size,
-        "results": orders,
-    }
+        order.status = new_status
+        _create_status_history(db, order, new_status, data.notes, current_user.id)
+        db.commit()
+        db.refresh(order)
+        return order
+    except HTTPException:
+        db.rollback()
+        raise
+    except SQLAlchemyError as exc:
+        db.rollback()
+        raise HTTPException(status_code=500, detail="Could not update order status") from exc
