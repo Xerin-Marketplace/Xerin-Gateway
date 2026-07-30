@@ -71,11 +71,6 @@ class PermissionCode(str, enum.Enum):
     coupons_write = "coupons:write"
     coupons_read = "coupons:read"
 
-    # Shipping and delivery
-    shipping_read = "shipping:read"
-    shipping_write = "shipping:write"
-    shipping_track = "shipping:track"
-
     # Existing store permissions used by current routers.
     view_own_store = "view_own_store"
     update_own_store = "update_own_store"
@@ -96,21 +91,3 @@ class PermissionCode(str, enum.Enum):
     STORE_ADMIN_VERIFY = "store:admin_verify"
     STORE_ADMIN_FEATURE = "store:admin_feature"
     STORE_ADMIN_DELETE = "store:admin_delete"
-
-
-class ShippingRateType(str, enum.Enum):
-    flat = "flat"
-    weight_based = "weight_based"
-    free = "free"
-
-
-class ShipmentStatus(str, enum.Enum):
-    pending = "pending"
-    ready_for_dispatch = "ready_for_dispatch"
-    dispatched = "dispatched"
-    in_transit = "in_transit"
-    out_for_delivery = "out_for_delivery"
-    delivered = "delivered"
-    delivery_failed = "delivery_failed"
-    returned_to_sender = "returned_to_sender"
-    cancelled = "cancelled"

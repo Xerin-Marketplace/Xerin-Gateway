@@ -10,7 +10,7 @@ from sqlalchemy import Float, Time
 from sqlalchemy import Numeric, Integer
 from sqlalchemy.dialects.postgresql import JSONB
 from api.database import Base
-from api.enums import DayOfWeek, StoreStatus, ShippingRateType, ShipmentStatus
+from api.enums import DayOfWeek, StoreStatus
 
 
 class UserStatus(str, enum.Enum):
@@ -124,22 +124,13 @@ class Address(Base):
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
-    label = Column(String(50), nullable=True)
-    recipient_name = Column(String(150), nullable=True)
-    recipient_phone = Column(String(30), nullable=True)
-    country = Column(String(100), nullable=False, server_default="Tanzania")
-    region = Column(String(100), nullable=False)
-    district = Column(String(100), nullable=True)
-    ward = Column(String(100), nullable=True)
-    city = Column(String(100), nullable=False)
-    street = Column(Text, nullable=False)
-    landmark = Column(String(255), nullable=True)
-    postal_code = Column(String(50), nullable=True)
-    latitude = Column(Numeric(10, 7), nullable=True)
-    longitude = Column(Numeric(10, 7), nullable=True)
-    is_default = Column(Boolean, nullable=False, default=False, server_default="false")
-    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
-    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+    country = Column(String(100))
+    region = Column(String(100))
+    city = Column(String(100))
+    street = Column(Text)
+    postal_code = Column(String(50))
+    is_default = Column(Boolean, default=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     user = relationship("User", back_populates="addresses")
 
@@ -426,75 +417,6 @@ class CartItem(Base):
         CheckConstraint("unit_price >= 0", name="ck_cart_item_unit_price_nonnegative"),
     )
 
-
-
-# =========================================================
-# SHIPPING CONFIGURATION
-# =========================================================
-
-class ShippingZone(Base):
-    __tablename__ = "shipping_zones"
-
-    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    name = Column(String(120), nullable=False, unique=True)
-    country = Column(String(100), nullable=False, server_default="Tanzania")
-    regions = Column(JSONB, nullable=False, default=list, server_default="[]")
-    cities = Column(JSONB, nullable=False, default=list, server_default="[]")
-    is_active = Column(Boolean, nullable=False, default=True, server_default="true")
-    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
-    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
-
-    rates = relationship("ShippingRate", back_populates="zone", cascade="all, delete-orphan")
-
-
-class ShippingMethod(Base):
-    __tablename__ = "shipping_methods"
-
-    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    name = Column(String(120), nullable=False, unique=True)
-    description = Column(Text, nullable=True)
-    carrier_name = Column(String(120), nullable=True)
-    min_delivery_days = Column(Integer, nullable=False, default=1)
-    max_delivery_days = Column(Integer, nullable=False, default=7)
-    is_active = Column(Boolean, nullable=False, default=True, server_default="true")
-    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
-    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
-
-    rates = relationship("ShippingRate", back_populates="method", cascade="all, delete-orphan")
-
-    __table_args__ = (
-        CheckConstraint("min_delivery_days >= 0", name="ck_shipping_method_min_days_nonnegative"),
-        CheckConstraint("max_delivery_days >= min_delivery_days", name="ck_shipping_method_days_valid"),
-    )
-
-
-class ShippingRate(Base):
-    __tablename__ = "shipping_rates"
-
-    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    zone_id = Column(UUID(as_uuid=True), ForeignKey("shipping_zones.id", ondelete="CASCADE"), nullable=False, index=True)
-    method_id = Column(UUID(as_uuid=True), ForeignKey("shipping_methods.id", ondelete="CASCADE"), nullable=False, index=True)
-    rate_type = Column(Enum(ShippingRateType), nullable=False, default=ShippingRateType.flat)
-    base_amount = Column(Numeric(18, 2), nullable=False, default=0)
-    amount_per_kg = Column(Numeric(18, 2), nullable=False, default=0)
-    free_shipping_threshold = Column(Numeric(18, 2), nullable=True)
-    min_weight_kg = Column(Numeric(10, 3), nullable=True)
-    max_weight_kg = Column(Numeric(10, 3), nullable=True)
-    is_active = Column(Boolean, nullable=False, default=True, server_default="true")
-    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
-    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
-
-    zone = relationship("ShippingZone", back_populates="rates")
-    method = relationship("ShippingMethod", back_populates="rates")
-
-    __table_args__ = (
-        UniqueConstraint("zone_id", "method_id", name="uq_shipping_rate_zone_method"),
-        CheckConstraint("base_amount >= 0", name="ck_shipping_rate_base_nonnegative"),
-        CheckConstraint("amount_per_kg >= 0", name="ck_shipping_rate_perkg_nonnegative"),
-        CheckConstraint("free_shipping_threshold IS NULL OR free_shipping_threshold >= 0", name="ck_shipping_rate_threshold_nonnegative"),
-        CheckConstraint("min_weight_kg IS NULL OR min_weight_kg >= 0", name="ck_shipping_rate_min_weight_nonnegative"),
-        CheckConstraint("max_weight_kg IS NULL OR max_weight_kg >= min_weight_kg", name="ck_shipping_rate_weight_range"),
-    )
 
 # =========================================================
 # ORDERS
