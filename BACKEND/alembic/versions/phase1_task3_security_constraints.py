@@ -13,7 +13,7 @@ import sqlalchemy as sa
 
 
 revision = "phase1_task3"
-down_revision = "add_otp_purpose"
+down_revision = None
 branch_labels = None
 depends_on = None
 
