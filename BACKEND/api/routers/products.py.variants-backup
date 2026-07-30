@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from itertools import product as cartesian_product
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
@@ -16,13 +15,9 @@ from api.models import (
     Category,
     Product,
     ProductImage,
-    ProductOption,
-    ProductOptionValue,
     ProductStatus,
     ProductTag,
     ProductVariant,
-    ProductVariantValue,
-    Inventory,
     Seller,
     SellerStatus,
     User,
@@ -42,13 +37,8 @@ from api.schemas import (
     ProductTagCreate,
     ProductTagResponse,
     ProductUpdate,
-    ProductOptionCreate,
-    ProductOptionResponse,
-    ProductOptionUpdate,
     ProductVariantCreate,
-    ProductVariantGenerateRequest,
     ProductVariantResponse,
-    ProductVariantUpdate,
 )
 from api.services.product_image_service import (
     MAX_PRODUCT_IMAGES,
@@ -535,158 +525,39 @@ def delete_product_image(
     return {"message": "Product image deleted successfully"}
 
 
-def _variant_payload(db: Session, variant: ProductVariant) -> dict:
-    inventory = db.query(Inventory).filter(Inventory.product_id == variant.product_id, Inventory.variant_id == variant.id).first()
-    return {
-        "id": variant.id, "product_id": variant.product_id, "variant_name": variant.variant_name,
-        "sku": variant.sku, "barcode": variant.barcode, "price": variant.price,
-        "sale_price": variant.sale_price, "weight": variant.weight, "image_id": variant.image_id,
-        "attributes": variant.attributes, "is_active": variant.is_active,
-        "stock_quantity": inventory.quantity if inventory else 0,
-        "reserved_quantity": inventory.reserved_quantity if inventory else 0,
-        "available_quantity": inventory.available_quantity if inventory else 0,
-        "low_stock_threshold": inventory.low_stock_threshold if inventory else 10,
-        "created_at": variant.created_at, "updated_at": variant.updated_at,
-    }
-
-
-def _validate_variant_image(db: Session, product_id: UUID, image_id: UUID | None) -> None:
-    if image_id and not db.query(ProductImage).filter(ProductImage.id == image_id, ProductImage.product_id == product_id).first():
-        raise HTTPException(status_code=400, detail="Variant image must belong to this product")
-
-
-def _validate_option_values(db: Session, product_id: UUID, value_ids: list[UUID]) -> list[ProductOptionValue]:
-    if not value_ids:
-        return []
-    values = db.query(ProductOptionValue).join(ProductOption).filter(ProductOption.product_id == product_id, ProductOptionValue.id.in_(value_ids)).all()
-    if len(values) != len(set(value_ids)):
-        raise HTTPException(status_code=400, detail="One or more option values do not belong to this product")
-    option_ids = [value.option_id for value in values]
-    if len(option_ids) != len(set(option_ids)):
-        raise HTTPException(status_code=400, detail="Select only one value from each product option")
-    return values
-
-
-@router.post("/{product_id}/options", response_model=ProductOptionResponse, status_code=status.HTTP_201_CREATED)
-def create_product_option(product_id: UUID, data: ProductOptionCreate, db: Session = Depends(get_db), current_user: User = Depends(require_permission(PermissionCode.seller_product_variants_manage.value))):
-    seller = get_my_seller(db, current_user); product = get_seller_product(db, product_id, seller.id); _ensure_editable(product)
-    if db.query(ProductOption).filter(ProductOption.product_id == product.id, ProductOption.name.ilike(data.name.strip())).first():
-        raise HTTPException(status_code=409, detail="Product option already exists")
-    option = ProductOption(product_id=product.id, name=data.name.strip(), display_order=data.display_order)
-    db.add(option); db.flush()
-    seen=set()
-    for item in data.values:
-        key=item.value.strip().lower()
-        if key in seen: raise HTTPException(status_code=400, detail="Option values must be unique")
-        seen.add(key); db.add(ProductOptionValue(option_id=option.id, value=item.value.strip(), display_order=item.display_order))
-    _commit(db, conflict_detail="Option or value already exists"); db.refresh(option); return option
-
-
-@router.get("/{product_id}/options", response_model=list[ProductOptionResponse])
-def get_product_options(product_id: UUID, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    seller = get_my_seller(db, current_user); product = get_seller_product(db, product_id, seller.id)
-    return db.query(ProductOption).filter(ProductOption.product_id == product.id).order_by(ProductOption.display_order.asc()).all()
-
-
-@router.patch("/{product_id}/options/{option_id}", response_model=ProductOptionResponse)
-def update_product_option(product_id: UUID, option_id: UUID, data: ProductOptionUpdate, db: Session = Depends(get_db), current_user: User = Depends(require_permission(PermissionCode.seller_product_variants_manage.value))):
-    seller=get_my_seller(db,current_user); product=get_seller_product(db,product_id,seller.id); _ensure_editable(product)
-    option=db.query(ProductOption).filter(ProductOption.id==option_id,ProductOption.product_id==product.id).first()
-    if not option: raise HTTPException(status_code=404,detail="Product option not found")
-    payload=data.model_dump(exclude_unset=True); values=payload.pop("values",None)
-    for k,v in payload.items(): setattr(option,k,v.strip() if isinstance(v,str) else v)
-    if values is not None:
-        if db.query(ProductVariantValue).join(ProductOptionValue).filter(ProductOptionValue.option_id==option.id).first():
-            raise HTTPException(status_code=409,detail="Cannot replace values after variants use this option; delete variants first")
-        db.query(ProductOptionValue).filter(ProductOptionValue.option_id==option.id).delete(synchronize_session=False)
-        for item in values: db.add(ProductOptionValue(option_id=option.id,value=item["value"].strip(),display_order=item.get("display_order",0)))
-    _commit(db,conflict_detail="Option or value already exists"); db.refresh(option); return option
-
-
-@router.delete("/{product_id}/options/{option_id}")
-def delete_product_option(product_id: UUID, option_id: UUID, db: Session = Depends(get_db), current_user: User = Depends(require_permission(PermissionCode.seller_product_variants_manage.value))):
-    seller=get_my_seller(db,current_user); product=get_seller_product(db,product_id,seller.id); _ensure_editable(product)
-    option=db.query(ProductOption).filter(ProductOption.id==option_id,ProductOption.product_id==product.id).first()
-    if not option: raise HTTPException(status_code=404,detail="Product option not found")
-    if db.query(ProductVariantValue).join(ProductOptionValue).filter(ProductOptionValue.option_id==option.id).first():
-        raise HTTPException(status_code=409,detail="Delete variants using this option first")
-    db.delete(option); _commit(db); return {"message":"Product option deleted successfully"}
-
-
 @router.post("/{product_id}/variants", response_model=ProductVariantResponse, status_code=status.HTTP_201_CREATED)
-def add_product_variant(product_id: UUID, data: ProductVariantCreate, db: Session = Depends(get_db), current_user: User = Depends(require_permission(PermissionCode.seller_product_variants_manage.value))):
-    seller=get_my_seller(db,current_user); product=get_seller_product(db,product_id,seller.id); _ensure_editable(product)
-    _validate_variant_image(db,product.id,data.image_id); values=_validate_option_values(db,product.id,data.option_value_ids)
-    if db.query(ProductVariant).filter(ProductVariant.sku==data.sku).first(): raise HTTPException(status_code=409,detail="Variant SKU already exists")
-    variant=ProductVariant(product_id=product.id,variant_name=data.variant_name,sku=data.sku,barcode=data.barcode,price=data.price,sale_price=data.sale_price,weight=data.weight,image_id=data.image_id,attributes=data.attributes,is_active=data.is_active)
-    db.add(variant); db.flush()
-    for value in values: db.add(ProductVariantValue(variant_id=variant.id,option_value_id=value.id))
-    db.add(Inventory(product_id=product.id,variant_id=variant.id,quantity=data.stock_quantity,reserved_quantity=0,available_quantity=data.stock_quantity,low_stock_threshold=data.low_stock_threshold,updated_by_id=current_user.id))
-    _commit(db,conflict_detail="Variant SKU or barcode already exists"); db.refresh(variant); return _variant_payload(db,variant)
-
-
-@router.post("/{product_id}/variants/generate", response_model=list[ProductVariantResponse], status_code=status.HTTP_201_CREATED)
-def generate_product_variants(product_id: UUID, data: ProductVariantGenerateRequest, db: Session = Depends(get_db), current_user: User = Depends(require_permission(PermissionCode.seller_product_variants_manage.value))):
-    seller=get_my_seller(db,current_user); product=get_seller_product(db,product_id,seller.id); _ensure_editable(product)
-    options=db.query(ProductOption).filter(ProductOption.product_id==product.id).order_by(ProductOption.display_order.asc()).all()
-    if not options or any(not option.values for option in options): raise HTTPException(status_code=400,detail="Create options with values before generating variants")
-    combinations=list(cartesian_product(*[option.values for option in options]))
-    if len(combinations)>200: raise HTTPException(status_code=400,detail="A product cannot generate more than 200 variants")
-    created=[]
-    for index,combo in enumerate(combinations,1):
-        attributes={value.option.name:value.value for value in combo}; name=" / ".join(value.value for value in combo); sku=f"{data.sku_prefix.strip().upper()}-{index:03d}"
-        if db.query(ProductVariant).filter(ProductVariant.sku==sku).first(): raise HTTPException(status_code=409,detail=f"Generated SKU already exists: {sku}")
-        variant=ProductVariant(product_id=product.id,variant_name=name,sku=sku,price=data.default_price,sale_price=data.default_sale_price,attributes=attributes,is_active=True)
-        db.add(variant); db.flush()
-        for value in combo: db.add(ProductVariantValue(variant_id=variant.id,option_value_id=value.id))
-        db.add(Inventory(product_id=product.id,variant_id=variant.id,quantity=data.default_stock_quantity,reserved_quantity=0,available_quantity=data.default_stock_quantity,low_stock_threshold=data.low_stock_threshold,updated_by_id=current_user.id)); created.append(variant)
-    _commit(db,conflict_detail="Generated variant conflicts with an existing record")
-    return [_variant_payload(db,v) for v in created]
+def add_product_variant(product_id: UUID, data: ProductVariantCreate, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    seller = get_my_seller(db, current_user)
+    product = get_seller_product(db, product_id, seller.id)
+    _ensure_editable(product)
+    if db.query(ProductVariant).filter(ProductVariant.sku == data.sku).first():
+        raise HTTPException(status_code=409, detail="Variant SKU already exists")
+    variant = ProductVariant(product_id=product.id, variant_name=data.variant_name, sku=data.sku, price=data.price, attributes=data.attributes)
+    db.add(variant)
+    _commit(db, conflict_detail="Variant SKU already exists")
+    db.refresh(variant)
+    return variant
 
 
 @router.get("/{product_id}/variants", response_model=list[ProductVariantResponse])
 def get_product_variants(product_id: UUID, db: Session = Depends(get_db)):
-    product=db.query(Product).filter(Product.id==product_id,Product.is_active.is_(True),Product.status==ProductStatus.approved).first()
-    if not product: raise HTTPException(status_code=404,detail="Product not found")
-    variants=db.query(ProductVariant).filter(ProductVariant.product_id==product_id,ProductVariant.is_active.is_(True)).order_by(ProductVariant.created_at.asc()).all()
-    return [_variant_payload(db,v) for v in variants]
-
-
-@router.get("/my-products/{product_id}/variants", response_model=list[ProductVariantResponse])
-def get_my_product_variants(product_id: UUID, db: Session = Depends(get_db), current_user: User = Depends(require_permission(PermissionCode.seller_products_read.value))):
-    seller=get_my_seller(db,current_user); product=get_seller_product(db,product_id,seller.id)
-    return [_variant_payload(db,v) for v in db.query(ProductVariant).filter(ProductVariant.product_id==product.id).order_by(ProductVariant.created_at.asc()).all()]
-
-
-@router.patch("/{product_id}/variants/{variant_id}", response_model=ProductVariantResponse)
-def update_product_variant(product_id: UUID, variant_id: UUID, data: ProductVariantUpdate, db: Session = Depends(get_db), current_user: User = Depends(require_permission(PermissionCode.seller_product_variants_manage.value))):
-    seller=get_my_seller(db,current_user); product=get_seller_product(db,product_id,seller.id); _ensure_editable(product)
-    variant=db.query(ProductVariant).filter(ProductVariant.id==variant_id,ProductVariant.product_id==product.id).first()
-    if not variant: raise HTTPException(status_code=404,detail="Variant not found")
-    payload=data.model_dump(exclude_unset=True); stock=payload.pop("stock_quantity",None); threshold=payload.pop("low_stock_threshold",None)
-    _validate_variant_image(db,product.id,payload.get("image_id"))
-    final_price=payload.get("price",variant.price); final_sale=payload.get("sale_price",variant.sale_price)
-    if final_sale is not None and final_price is not None and final_sale>final_price: raise HTTPException(status_code=422,detail="sale_price cannot exceed price")
-    for k,v in payload.items(): setattr(variant,k,v)
-    inventory=db.query(Inventory).filter(Inventory.product_id==product.id,Inventory.variant_id==variant.id).with_for_update().first()
-    if not inventory:
-        inventory=Inventory(product_id=product.id,variant_id=variant.id,quantity=0,reserved_quantity=0,available_quantity=0,updated_by_id=current_user.id); db.add(inventory)
-    if stock is not None:
-        if stock<inventory.reserved_quantity: raise HTTPException(status_code=409,detail="Stock cannot be below reserved quantity")
-        inventory.quantity=stock; inventory.available_quantity=stock-inventory.reserved_quantity
-    if threshold is not None: inventory.low_stock_threshold=threshold
-    inventory.updated_by_id=current_user.id
-    _commit(db,conflict_detail="Variant SKU or barcode already exists"); db.refresh(variant); return _variant_payload(db,variant)
+    product = db.query(Product).filter(Product.id == product_id, Product.is_active.is_(True), Product.status == ProductStatus.approved).first()
+    if not product:
+        raise HTTPException(status_code=404, detail="Product not found")
+    return db.query(ProductVariant).filter(ProductVariant.product_id == product_id).order_by(ProductVariant.created_at.asc()).all()
 
 
 @router.delete("/{product_id}/variants/{variant_id}")
-def delete_product_variant(product_id: UUID, variant_id: UUID, db: Session = Depends(get_db), current_user: User = Depends(require_permission(PermissionCode.seller_product_variants_manage.value))):
-    seller=get_my_seller(db,current_user); product=get_seller_product(db,product_id,seller.id); _ensure_editable(product)
-    variant=db.query(ProductVariant).filter(ProductVariant.id==variant_id,ProductVariant.product_id==product.id).first()
-    if not variant: raise HTTPException(status_code=404,detail="Variant not found")
-    inventory=db.query(Inventory).filter(Inventory.variant_id==variant.id).first()
-    if inventory and inventory.reserved_quantity>0: raise HTTPException(status_code=409,detail="Variant has reserved inventory and cannot be deleted")
-    db.delete(variant); _commit(db,conflict_detail="Variant cannot be deleted because it is already referenced"); return {"message":"Product variant deleted successfully"}
+def delete_product_variant(product_id: UUID, variant_id: UUID, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    seller = get_my_seller(db, current_user)
+    product = get_seller_product(db, product_id, seller.id)
+    _ensure_editable(product)
+    variant = db.query(ProductVariant).filter(ProductVariant.id == variant_id, ProductVariant.product_id == product.id).first()
+    if not variant:
+        raise HTTPException(status_code=404, detail="Variant not found")
+    db.delete(variant)
+    _commit(db, conflict_detail="Variant cannot be deleted because it is already referenced")
+    return {"message": "Product variant deleted successfully"}
 
 
 @router.post("/{product_id}/tags", response_model=ProductTagResponse, status_code=status.HTTP_201_CREATED)

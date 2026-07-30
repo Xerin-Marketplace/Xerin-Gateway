@@ -174,7 +174,7 @@ def create_order(
             if not product or not product.is_active or product.status != ProductStatus.approved:
                 raise HTTPException(status_code=409, detail=f"Product {cart_item.product_id} is no longer available")
             if cart_item.variant_id is not None and (
-                cart_item.variant is None or cart_item.variant.product_id != product.id or not cart_item.variant.is_active
+                cart_item.variant is None or cart_item.variant.product_id != product.id
             ):
                 raise HTTPException(status_code=409, detail=f"Variant for product {product.id} is invalid")
 
@@ -183,14 +183,13 @@ def create_order(
                 raise HTTPException(status_code=409, detail=f"Insufficient stock for {product.name}")
 
             current_price = (
-                Decimal(cart_item.variant.sale_price) if cart_item.variant is not None and cart_item.variant.sale_price is not None
-                else Decimal(cart_item.variant.price) if cart_item.variant is not None and cart_item.variant.price is not None
+                Decimal(cart_item.variant.price)
+                if cart_item.variant is not None and cart_item.variant.price is not None
                 else Decimal(product.sale_price if product.sale_price is not None else product.price)
             )
             line_total = current_price * cart_item.quantity
             subtotal += line_total
-            item_weight = cart_item.variant.weight if cart_item.variant is not None and cart_item.variant.weight is not None else product.weight
-            total_weight_kg += Decimal(item_weight or 0) * cart_item.quantity
+            total_weight_kg += Decimal(product.weight or 0) * cart_item.quantity
             prepared_items.append({
                 "cart_item": cart_item,
                 "inventory": inventory,

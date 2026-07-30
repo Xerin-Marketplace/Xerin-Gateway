@@ -69,7 +69,6 @@ class PermissionCode(str, enum.Enum):
     seller_products_delete = "seller_products:delete"
     seller_product_images_manage = "seller_product_images:manage"
     seller_products_submit = "seller_products:submit"
-    seller_product_variants_manage = "seller_product_variants:manage"
 
     # Commerce
     orders_read = "orders:read"
