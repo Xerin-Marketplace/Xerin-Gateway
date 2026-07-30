@@ -13,7 +13,7 @@ import sqlalchemy as sa
 
 
 revision = "phase1_task3"
-down_revision = None
+down_revision = "add_otp_purpose"
 branch_labels = None
 depends_on = None
 
@@ -51,12 +51,12 @@ def upgrade() -> None:
         USING seller_business_categories b
         WHERE a.id > b.id
           AND a.seller_id = b.seller_id
-          AND a.business_category_id = b.business_category_id
+          AND a.category_id = b.category_id
     """))
     op.create_unique_constraint(
         "uq_seller_business_category",
         "seller_business_categories",
-        ["seller_id", "business_category_id"],
+        ["seller_id", "category_id"],
     )
 
     # Normalize calculated stock before enforcing consistency.
