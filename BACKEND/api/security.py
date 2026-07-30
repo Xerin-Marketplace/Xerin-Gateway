@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import hmac
 import secrets
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -89,3 +90,16 @@ def hash_token(token: str) -> str:
 
 def constant_time_compare(value_a: str, value_b: str) -> bool:
     return secrets.compare_digest(value_a, value_b)
+
+
+def hash_otp(otp: str) -> str:
+    """Return a keyed HMAC digest for an OTP so short codes are not reversible offline."""
+    return hmac.new(
+        settings.SECRET_KEY.encode("utf-8"),
+        otp.encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+
+
+def verify_otp_hash(otp: str, otp_hash: str) -> bool:
+    return constant_time_compare(hash_otp(otp), otp_hash)

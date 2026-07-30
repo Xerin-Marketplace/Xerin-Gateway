@@ -31,6 +31,9 @@ from api.security import (
     create_access_token,
     create_refresh_token,
     generate_otp,
+    hash_token,
+    hash_otp,
+    verify_otp_hash,
     ALGORITHM,
 )
 from api.config import settings
@@ -300,7 +303,7 @@ def register(data: RegisterRequest, db: Session = Depends(get_db)):
             OTPRequest(
                 user_id=user.id,
                 phone=phone,
-                otp_code=otp,
+                otp_hash=hash_otp(otp),
                 purpose="register",
                 expires_at=datetime.now(timezone.utc) + timedelta(minutes=5),
                 verified=False,
@@ -420,7 +423,7 @@ def register_seller(data: SellerRegisterRequest, db: Session = Depends(get_db)):
         otp_request = OTPRequest(
             user_id=user.id,
             phone=phone,
-            otp_code=otp,
+            otp_hash=hash_otp(otp),
             purpose="register_seller",
             expires_at=datetime.now(timezone.utc) + timedelta(minutes=5),
             verified=False,
@@ -544,7 +547,7 @@ def login(request: Request, data: LoginRequest, db: Session = Depends(get_db)):
 
     session = UserSession(
         user_id=user.id,
-        refresh_token=refresh_token,
+        token_hash=hash_token(refresh_token),
         expires_at=datetime.now(timezone.utc)
         + timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS),
     )
@@ -572,7 +575,7 @@ def logout(
         db.query(UserSession)
         .filter(
             UserSession.user_id == current_user.id,
-            UserSession.refresh_token == data.refresh_token,
+            UserSession.token_hash == hash_token(data.refresh_token),
         )
         .first()
     )
@@ -607,7 +610,7 @@ def refresh_token(data: RefreshRequest, db: Session = Depends(get_db)):
         db.query(UserSession)
         .filter(
             UserSession.user_id == user_id,
-            UserSession.refresh_token == data.refresh_token,
+            UserSession.token_hash == hash_token(data.refresh_token),
         )
         .first()
     )
@@ -636,7 +639,7 @@ def refresh_token(data: RefreshRequest, db: Session = Depends(get_db)):
     access_token = create_access_token({"sub": str(user_id)})
     new_refresh_token = create_refresh_token({"sub": str(user_id)})
 
-    session.refresh_token = new_refresh_token
+    session.token_hash = hash_token(new_refresh_token)
     session.expires_at = datetime.now(timezone.utc) + timedelta(
         days=settings.REFRESH_TOKEN_EXPIRE_DAYS
     )
@@ -667,7 +670,7 @@ def send_otp(request: Request, data: SendOTPRequest, db: Session = Depends(get_d
 
     otp_request = OTPRequest(
         phone=phone,
-        otp_code=otp,
+        otp_hash=hash_otp(otp),
         purpose=purpose,
         expires_at=datetime.now(timezone.utc) + timedelta(minutes=5),
         verified=False,
@@ -714,7 +717,6 @@ def verify_otp(data: VerifyOTPRequest, db: Session = Depends(get_db)):
 
     query = db.query(OTPRequest).filter(
         OTPRequest.phone == phone,
-        OTPRequest.otp_code == data.otp_code,
         OTPRequest.verified.is_(False),
     )
     if purpose:
@@ -722,7 +724,7 @@ def verify_otp(data: VerifyOTPRequest, db: Session = Depends(get_db)):
 
     otp_request = query.order_by(OTPRequest.created_at.desc()).first()
 
-    if not otp_request:
+    if not otp_request or not verify_otp_hash(data.otp_code, otp_request.otp_hash):
         _record_otp_failure(phone)
         raise HTTPException(status_code=400, detail="Invalid OTP")
 
@@ -763,7 +765,7 @@ def forgot_password(request: Request, data: ForgotPasswordRequest, db: Session =
     otp_request = OTPRequest(
         user_id=user.id,
         phone=user.phone,
-        otp_code=otp,
+        otp_hash=hash_otp(otp),
         purpose="password_reset",
         expires_at=datetime.now(timezone.utc) + timedelta(minutes=5),
         verified=False,
@@ -804,7 +806,6 @@ def reset_password(data: ResetPasswordRequest, db: Session = Depends(get_db)):
         db.query(OTPRequest)
         .filter(
             OTPRequest.user_id == user.id,
-            OTPRequest.otp_code == data.otp_code,
             OTPRequest.purpose == "password_reset",
             OTPRequest.verified.is_(False),
         )
@@ -812,7 +813,7 @@ def reset_password(data: ResetPasswordRequest, db: Session = Depends(get_db)):
         .first()
     )
 
-    if not otp_request:
+    if not otp_request or not verify_otp_hash(data.otp_code, otp_request.otp_hash):
         raise HTTPException(status_code=400, detail="Invalid OTP")
 
     if otp_request.expires_at < datetime.now(timezone.utc):

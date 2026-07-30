@@ -1,7 +1,7 @@
 import uuid
 import enum
 
-from sqlalchemy import Column, String, Boolean, DateTime, ForeignKey, Enum, Text, UniqueConstraint
+from sqlalchemy import Column, String, Boolean, DateTime, ForeignKey, Enum, Text, UniqueConstraint, CheckConstraint, Index
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.sql import func
 from sqlalchemy.orm import relationship
@@ -97,9 +97,9 @@ class Session(Base):
     __tablename__ = "sessions"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id"))
-    refresh_token = Column(Text, nullable=False)
-    expires_at = Column(DateTime(timezone=True))
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    token_hash = Column(String(64), nullable=False, unique=True, index=True)
+    expires_at = Column(DateTime(timezone=True), nullable=False, index=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
 
@@ -107,14 +107,14 @@ class OTPRequest(Base):
     __tablename__ = "otp_requests"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
-    phone = Column(String(30))
-    otp_code = Column(String(10))
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=True, index=True)
+    phone = Column(String(30), nullable=False, index=True)
+    otp_hash = Column(String(64), nullable=False)
     # What this OTP is for: "register", "password_reset", "phone_verify", etc.
     # Prevents an OTP issued for one flow (e.g. forgot-password) from being
     # accepted in an unrelated flow (e.g. account verification).
     purpose = Column(String(50), nullable=False, server_default="generic")
-    expires_at = Column(DateTime(timezone=True))
+    expires_at = Column(DateTime(timezone=True), nullable=False, index=True)
     verified = Column(Boolean, default=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
@@ -123,7 +123,7 @@ class Address(Base):
     __tablename__ = "addresses"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id"))
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
     country = Column(String(100))
     region = Column(String(100))
     city = Column(String(100))
@@ -208,7 +208,7 @@ class SellerKYCDocument(Base):
     __tablename__ = "seller_kyc_documents"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    seller_id = Column(UUID(as_uuid=True), ForeignKey("sellers.id"), nullable=False)
+    seller_id = Column(UUID(as_uuid=True), ForeignKey("sellers.id", ondelete="CASCADE"), nullable=False, index=True)
 
     document_type = Column(String(100), nullable=False)
     document_url = Column(Text, nullable=False)
@@ -224,7 +224,7 @@ class SellerPayoutAccount(Base):
     __tablename__ = "seller_payout_accounts"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    seller_id = Column(UUID(as_uuid=True), ForeignKey("sellers.id"), nullable=False)
+    seller_id = Column(UUID(as_uuid=True), ForeignKey("sellers.id", ondelete="CASCADE"), nullable=False, index=True)
 
     account_type = Column(String(50), nullable=False)
     provider = Column(String(100), nullable=False)
@@ -245,18 +245,24 @@ class SellerBusinessCategory(Base):
 
     seller_id = Column(
         UUID(as_uuid=True),
-        ForeignKey("sellers.id"),
-        nullable=False
+        ForeignKey("sellers.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True
     )
 
     business_category_id = Column(
         UUID(as_uuid=True),
-        ForeignKey("business_categories.id"),
-        nullable=False
+        ForeignKey("business_categories.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True
     )
 
     seller = relationship("Seller", back_populates="business_categories")
     business_category = relationship("BusinessCategory")
+
+    __table_args__ = (
+        UniqueConstraint("seller_id", "business_category_id", name="uq_seller_business_category"),
+    )
 
 
 class ProductStatus(str, enum.Enum):
@@ -329,6 +335,12 @@ class Product(Base):
     variants = relationship("ProductVariant", back_populates="product", cascade="all, delete-orphan")
     tags = relationship("ProductTag", back_populates="product", cascade="all, delete-orphan")
 
+    __table_args__ = (
+        CheckConstraint("price >= 0", name="ck_product_price_nonnegative"),
+        CheckConstraint("sale_price IS NULL OR sale_price >= 0", name="ck_product_sale_price_nonnegative"),
+        CheckConstraint("sale_price IS NULL OR sale_price <= price", name="ck_product_sale_price_lte_price"),
+    )
+
 
 class ProductImage(Base):
     __tablename__ = "product_images"
@@ -387,7 +399,7 @@ class CartItem(Base):
     __tablename__ = "cart_items"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    cart_id = Column(UUID(as_uuid=True), ForeignKey("carts.id"), nullable=False)
+    cart_id = Column(UUID(as_uuid=True), ForeignKey("carts.id", ondelete="CASCADE"), nullable=False, index=True)
     product_id = Column(UUID(as_uuid=True), ForeignKey("products.id"), nullable=False)
     variant_id = Column(UUID(as_uuid=True), ForeignKey("product_variants.id"), nullable=True)
     quantity = Column(Integer, nullable=False, default=1)
@@ -398,6 +410,12 @@ class CartItem(Base):
     cart = relationship("Cart", back_populates="items")
     product = relationship("Product")
     variant = relationship("ProductVariant")
+
+    __table_args__ = (
+        UniqueConstraint("cart_id", "product_id", "variant_id", name="uq_cart_item_product_variant"),
+        CheckConstraint("quantity > 0", name="ck_cart_item_quantity_positive"),
+        CheckConstraint("unit_price >= 0", name="ck_cart_item_unit_price_nonnegative"),
+    )
 
 
 # =========================================================
@@ -446,7 +464,7 @@ class OrderItem(Base):
     __tablename__ = "order_items"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    order_id = Column(UUID(as_uuid=True), ForeignKey("orders.id"), nullable=False)
+    order_id = Column(UUID(as_uuid=True), ForeignKey("orders.id", ondelete="CASCADE"), nullable=False, index=True)
     product_id = Column(UUID(as_uuid=True), ForeignKey("products.id"), nullable=False)
     variant_id = Column(UUID(as_uuid=True), ForeignKey("product_variants.id"), nullable=True)
     seller_id = Column(UUID(as_uuid=True), ForeignKey("sellers.id"), nullable=False)
@@ -462,12 +480,18 @@ class OrderItem(Base):
     variant = relationship("ProductVariant")
     seller = relationship("Seller")
 
+    __table_args__ = (
+        CheckConstraint("quantity > 0", name="ck_order_item_quantity_positive"),
+        CheckConstraint("unit_price >= 0", name="ck_order_item_unit_price_nonnegative"),
+        CheckConstraint("total_price >= 0", name="ck_order_item_total_price_nonnegative"),
+    )
+
 
 class OrderStatusHistory(Base):
     __tablename__ = "order_status_history"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    order_id = Column(UUID(as_uuid=True), ForeignKey("orders.id"), nullable=False)
+    order_id = Column(UUID(as_uuid=True), ForeignKey("orders.id", ondelete="CASCADE"), nullable=False, index=True)
     status = Column(String(50), nullable=False)
     notes = Column(Text, nullable=True)
     created_by_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
@@ -485,8 +509,8 @@ class Inventory(Base):
     __tablename__ = "inventory"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    product_id = Column(UUID(as_uuid=True), ForeignKey("products.id"), nullable=False)
-    variant_id = Column(UUID(as_uuid=True), ForeignKey("product_variants.id"), nullable=True, unique=True)
+    product_id = Column(UUID(as_uuid=True), ForeignKey("products.id"), nullable=False, index=True)
+    variant_id = Column(UUID(as_uuid=True), ForeignKey("product_variants.id"), nullable=True)
 
     quantity = Column(Integer, nullable=False, default=0)
     reserved_quantity = Column(Integer, nullable=False, default=0)
@@ -502,6 +526,20 @@ class Inventory(Base):
     product = relationship("Product")
     variant = relationship("ProductVariant")
     updated_by = relationship("User")
+
+    __table_args__ = (
+        CheckConstraint("quantity >= 0", name="ck_inventory_quantity_nonnegative"),
+        CheckConstraint("reserved_quantity >= 0", name="ck_inventory_reserved_nonnegative"),
+        CheckConstraint("reserved_quantity <= quantity", name="ck_inventory_reserved_lte_quantity"),
+        CheckConstraint("available_quantity = quantity - reserved_quantity", name="ck_inventory_available_consistent"),
+        Index("ix_inventory_product_variant", "product_id", "variant_id", unique=True),
+        Index(
+            "uq_inventory_product_without_variant",
+            "product_id",
+            unique=True,
+            postgresql_where=(variant_id.is_(None)),
+        ),
+    )
 
 
 # =========================================================
@@ -529,7 +567,7 @@ class Payment(Base):
     __tablename__ = "payments"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    order_id = Column(UUID(as_uuid=True), ForeignKey("orders.id"), nullable=False)
+    order_id = Column(UUID(as_uuid=True), ForeignKey("orders.id", ondelete="CASCADE"), nullable=False, index=True)
     user_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
 
     amount = Column(Numeric(18, 2), nullable=False)
@@ -538,7 +576,7 @@ class Payment(Base):
     provider = Column(String(100), nullable=True)  # e.g. "mpesa", "airtel_money"
     status = Column(Enum(PaymentStatus), default=PaymentStatus.pending, nullable=False)
 
-    provider_transaction_id = Column(String(255), nullable=True)
+    provider_transaction_id = Column(String(255), nullable=True, unique=True, index=True)
     provider_response = Column(JSONB, nullable=True)
     failure_reason = Column(Text, nullable=True)
 
@@ -550,12 +588,16 @@ class Payment(Base):
     user = relationship("User")
     transactions = relationship("PaymentTransaction", back_populates="payment", cascade="all, delete-orphan")
 
+    __table_args__ = (
+        CheckConstraint("amount >= 0", name="ck_payment_amount_nonnegative"),
+    )
+
 
 class PaymentTransaction(Base):
     __tablename__ = "payment_transactions"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    payment_id = Column(UUID(as_uuid=True), ForeignKey("payments.id"), nullable=False)
+    payment_id = Column(UUID(as_uuid=True), ForeignKey("payments.id", ondelete="CASCADE"), nullable=False, index=True)
     transaction_type = Column(String(50), nullable=False)  # initiate, callback, refund, etc.
     status = Column(String(50), nullable=False)
     amount = Column(Numeric(18, 2), nullable=True)
@@ -592,6 +634,13 @@ class Coupon(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     created_by = relationship("User")
+
+    __table_args__ = (
+        CheckConstraint("discount_value > 0", name="ck_coupon_discount_value_positive"),
+        CheckConstraint("usage_limit IS NULL OR usage_limit >= 0", name="ck_coupon_usage_limit_nonnegative"),
+        CheckConstraint("usage_count >= 0", name="ck_coupon_usage_count_nonnegative"),
+        CheckConstraint("valid_until IS NULL OR valid_from IS NULL OR valid_until > valid_from", name="ck_coupon_valid_range"),
+    )
     
     
 class Store(Base):
