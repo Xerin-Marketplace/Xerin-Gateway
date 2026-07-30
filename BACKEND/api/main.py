@@ -65,6 +65,7 @@ if settings.trusted_hosts:
         TrustedHostMiddleware,
         allowed_hosts=[
         "127.0.0.1",
+        "testserver",
         "localhost",
         "api.xerinmarketplace.com",
     ],

@@ -516,12 +516,6 @@ class Order(Base):
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     user_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
     shipping_address_id = Column(UUID(as_uuid=True), ForeignKey("addresses.id"), nullable=True)
-    shipping_rate_id = Column(UUID(as_uuid=True), ForeignKey("shipping_rates.id", ondelete="RESTRICT"), nullable=True, index=True)
-    shipping_method_id = Column(UUID(as_uuid=True), ForeignKey("shipping_methods.id", ondelete="RESTRICT"), nullable=True, index=True)
-    shipping_method_name = Column(String(120), nullable=True)
-    shipping_carrier = Column(String(120), nullable=True)
-    estimated_delivery_from = Column(DateTime(timezone=True), nullable=True)
-    estimated_delivery_to = Column(DateTime(timezone=True), nullable=True)
 
     status = Column(Enum(OrderStatus), default=OrderStatus.pending, nullable=False)
     currency = Column(String(10), default="TZS", nullable=False)
@@ -542,9 +536,6 @@ class Order(Base):
     items = relationship("OrderItem", back_populates="order", cascade="all, delete-orphan")
     status_history = relationship("OrderStatusHistory", back_populates="order", cascade="all, delete-orphan")
     payments = relationship("Payment", back_populates="order")
-    shipping_rate = relationship("ShippingRate")
-    shipping_method = relationship("ShippingMethod")
-    shipments = relationship("Shipment", back_populates="order", cascade="all, delete-orphan")
 
 
 class OrderItem(Base):
@@ -587,67 +578,6 @@ class OrderStatusHistory(Base):
     order = relationship("Order", back_populates="status_history")
     created_by = relationship("User")
 
-
-
-# =========================================================
-# SHIPMENTS AND TRACKING
-# =========================================================
-
-class Shipment(Base):
-    __tablename__ = "shipments"
-
-    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    order_id = Column(UUID(as_uuid=True), ForeignKey("orders.id", ondelete="CASCADE"), nullable=False, index=True)
-    seller_id = Column(UUID(as_uuid=True), ForeignKey("sellers.id", ondelete="RESTRICT"), nullable=False, index=True)
-    shipping_method_id = Column(UUID(as_uuid=True), ForeignKey("shipping_methods.id", ondelete="RESTRICT"), nullable=True)
-    status = Column(Enum(ShipmentStatus), nullable=False, default=ShipmentStatus.pending, server_default="pending", index=True)
-    carrier_name = Column(String(120), nullable=True)
-    tracking_number = Column(String(150), nullable=True, unique=True, index=True)
-    estimated_delivery_from = Column(DateTime(timezone=True), nullable=True)
-    estimated_delivery_to = Column(DateTime(timezone=True), nullable=True)
-    dispatched_at = Column(DateTime(timezone=True), nullable=True)
-    delivered_at = Column(DateTime(timezone=True), nullable=True)
-    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
-    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
-
-    order = relationship("Order", back_populates="shipments")
-    seller = relationship("Seller")
-    shipping_method = relationship("ShippingMethod")
-    items = relationship("ShipmentItem", back_populates="shipment", cascade="all, delete-orphan")
-    tracking_events = relationship("ShipmentTrackingEvent", back_populates="shipment", cascade="all, delete-orphan", order_by="ShipmentTrackingEvent.created_at")
-
-    __table_args__ = (
-        UniqueConstraint("order_id", "seller_id", name="uq_shipment_order_seller"),
-    )
-
-
-class ShipmentItem(Base):
-    __tablename__ = "shipment_items"
-
-    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    shipment_id = Column(UUID(as_uuid=True), ForeignKey("shipments.id", ondelete="CASCADE"), nullable=False, index=True)
-    order_item_id = Column(UUID(as_uuid=True), ForeignKey("order_items.id", ondelete="CASCADE"), nullable=False, unique=True, index=True)
-    quantity = Column(Integer, nullable=False)
-
-    shipment = relationship("Shipment", back_populates="items")
-    order_item = relationship("OrderItem")
-
-    __table_args__ = (CheckConstraint("quantity > 0", name="ck_shipment_item_quantity_positive"),)
-
-
-class ShipmentTrackingEvent(Base):
-    __tablename__ = "shipment_tracking_events"
-
-    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    shipment_id = Column(UUID(as_uuid=True), ForeignKey("shipments.id", ondelete="CASCADE"), nullable=False, index=True)
-    status = Column(Enum(ShipmentStatus), nullable=False)
-    location = Column(String(255), nullable=True)
-    notes = Column(Text, nullable=True)
-    created_by_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
-    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
-
-    shipment = relationship("Shipment", back_populates="tracking_events")
-    created_by = relationship("User")
 
 # =========================================================
 # INVENTORY

@@ -75,8 +75,6 @@ class PermissionCode(str, enum.Enum):
     shipping_read = "shipping:read"
     shipping_write = "shipping:write"
     shipping_track = "shipping:track"
-    shipping_manage_own = "shipping:manage_own"
-    shipping_manage_all = "shipping:manage_all"
 
     # Existing store permissions used by current routers.
     view_own_store = "view_own_store"
