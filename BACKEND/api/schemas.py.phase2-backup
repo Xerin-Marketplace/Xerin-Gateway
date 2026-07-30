@@ -13,8 +13,8 @@ from datetime import datetime, time as Time
 from decimal import Decimal
 from typing import Optional, List, Dict, Any, Literal
 import enum
-from api.enums import DayOfWeek, StoreStatus, ShippingRateType
-
+from api.enums import DayOfWeek, StoreStatus
+from pydantic import BaseModel, ConfigDict
 
 class UserStatus(str, enum.Enum):
     active = "active"
@@ -212,51 +212,16 @@ class UpdateUserRequest(BaseModel):
 
 
 class AddressCreate(BaseModel):
-    label: Optional[str] = Field(default=None, max_length=50)
-    recipient_name: Optional[str] = Field(default=None, max_length=150)
-    recipient_phone: Optional[str] = Field(default=None, max_length=30)
-    country: str = Field(default="Tanzania", min_length=2, max_length=100)
-    region: str = Field(min_length=2, max_length=100)
-    district: Optional[str] = Field(default=None, max_length=100)
-    ward: Optional[str] = Field(default=None, max_length=100)
-    city: str = Field(min_length=2, max_length=100)
-    street: str = Field(min_length=3, max_length=1000)
-    landmark: Optional[str] = Field(default=None, max_length=255)
-    postal_code: Optional[str] = Field(default=None, max_length=50)
-    latitude: Optional[Decimal] = Field(default=None, ge=Decimal("-90"), le=Decimal("90"))
-    longitude: Optional[Decimal] = Field(default=None, ge=Decimal("-180"), le=Decimal("180"))
+    country: str
+    region: str
+    city: str
+    street: str
+    postal_code: Optional[str] = None
     is_default: bool = False
-
-    @field_validator("label", "recipient_name", "recipient_phone", "country", "region", "district", "ward", "city", "street", "landmark", "postal_code", mode="before")
-    @classmethod
-    def clean_address_text(cls, value):
-        if value is None:
-            return None
-        cleaned = str(value).strip()
-        return cleaned or None
-
-
-class AddressUpdate(BaseModel):
-    label: Optional[str] = Field(default=None, max_length=50)
-    recipient_name: Optional[str] = Field(default=None, max_length=150)
-    recipient_phone: Optional[str] = Field(default=None, max_length=30)
-    country: Optional[str] = Field(default=None, min_length=2, max_length=100)
-    region: Optional[str] = Field(default=None, min_length=2, max_length=100)
-    district: Optional[str] = Field(default=None, max_length=100)
-    ward: Optional[str] = Field(default=None, max_length=100)
-    city: Optional[str] = Field(default=None, min_length=2, max_length=100)
-    street: Optional[str] = Field(default=None, min_length=3, max_length=1000)
-    landmark: Optional[str] = Field(default=None, max_length=255)
-    postal_code: Optional[str] = Field(default=None, max_length=50)
-    latitude: Optional[Decimal] = Field(default=None, ge=Decimal("-90"), le=Decimal("90"))
-    longitude: Optional[Decimal] = Field(default=None, ge=Decimal("-180"), le=Decimal("180"))
-    is_default: Optional[bool] = None
 
 
 class AddressResponse(AddressCreate):
     id: UUID
-    created_at: Optional[datetime] = None
-    updated_at: Optional[datetime] = None
 
     model_config = ORM_CONFIG
 
@@ -864,8 +829,7 @@ class RoleResponse(BaseModel):
     name: str
     description: str | None
 
-    class Config:
-        from_attributes = True  
+    model_config = ConfigDict(from_attributes=True)
         
 class PermissionResponse(BaseModel):
     id: UUID
@@ -1262,119 +1226,4 @@ class CouponResponse(BaseModel):
     valid_until: Optional[datetime]
     created_at: datetime
 
-    class Config:
-        from_attributes = True
-
-# =========================================================
-# SHIPPING SCHEMAS
-# =========================================================
-
-class ShippingZoneCreate(BaseModel):
-    name: str = Field(min_length=2, max_length=120)
-    country: str = Field(default="Tanzania", min_length=2, max_length=100)
-    regions: list[str] = Field(default_factory=list)
-    cities: list[str] = Field(default_factory=list)
-    is_active: bool = True
-
-    @field_validator("regions", "cities")
-    @classmethod
-    def normalise_places(cls, values: list[str]) -> list[str]:
-        cleaned = []
-        seen = set()
-        for value in values:
-            item = value.strip()
-            key = item.lower()
-            if item and key not in seen:
-                seen.add(key)
-                cleaned.append(item)
-        return cleaned
-
-
-class ShippingZoneUpdate(BaseModel):
-    name: Optional[str] = Field(default=None, min_length=2, max_length=120)
-    country: Optional[str] = Field(default=None, min_length=2, max_length=100)
-    regions: Optional[list[str]] = None
-    cities: Optional[list[str]] = None
-    is_active: Optional[bool] = None
-
-
-class ShippingZoneResponse(ShippingZoneCreate):
-    id: UUID
-    created_at: datetime
-    updated_at: Optional[datetime] = None
-    model_config = ORM_CONFIG
-
-
-class ShippingMethodCreate(BaseModel):
-    name: str = Field(min_length=2, max_length=120)
-    description: Optional[str] = None
-    carrier_name: Optional[str] = Field(default=None, max_length=120)
-    min_delivery_days: int = Field(default=1, ge=0, le=365)
-    max_delivery_days: int = Field(default=7, ge=0, le=365)
-    is_active: bool = True
-
-    @model_validator(mode="after")
-    def validate_days(self):
-        if self.max_delivery_days < self.min_delivery_days:
-            raise ValueError("max_delivery_days must be greater than or equal to min_delivery_days")
-        return self
-
-
-class ShippingMethodUpdate(BaseModel):
-    name: Optional[str] = Field(default=None, min_length=2, max_length=120)
-    description: Optional[str] = None
-    carrier_name: Optional[str] = Field(default=None, max_length=120)
-    min_delivery_days: Optional[int] = Field(default=None, ge=0, le=365)
-    max_delivery_days: Optional[int] = Field(default=None, ge=0, le=365)
-    is_active: Optional[bool] = None
-
-
-class ShippingMethodResponse(ShippingMethodCreate):
-    id: UUID
-    created_at: datetime
-    updated_at: Optional[datetime] = None
-    model_config = ORM_CONFIG
-
-
-class ShippingRateCreate(BaseModel):
-    zone_id: UUID
-    method_id: UUID
-    rate_type: ShippingRateType = ShippingRateType.flat
-    base_amount: Decimal = Field(default=Decimal("0.00"), ge=0)
-    amount_per_kg: Decimal = Field(default=Decimal("0.00"), ge=0)
-    free_shipping_threshold: Optional[Decimal] = Field(default=None, ge=0)
-    min_weight_kg: Optional[Decimal] = Field(default=None, ge=0)
-    max_weight_kg: Optional[Decimal] = Field(default=None, ge=0)
-    is_active: bool = True
-
-    @model_validator(mode="after")
-    def validate_weight_range(self):
-        if self.min_weight_kg is not None and self.max_weight_kg is not None and self.max_weight_kg < self.min_weight_kg:
-            raise ValueError("max_weight_kg must be greater than or equal to min_weight_kg")
-        return self
-
-
-class ShippingRateResponse(ShippingRateCreate):
-    id: UUID
-    zone: ShippingZoneResponse
-    method: ShippingMethodResponse
-    created_at: datetime
-    updated_at: Optional[datetime] = None
-    model_config = ORM_CONFIG
-
-
-class ShippingQuoteRequest(BaseModel):
-    address_id: UUID
-    subtotal: Decimal = Field(ge=0)
-    weight_kg: Decimal = Field(default=Decimal("0.00"), ge=0)
-
-
-class ShippingQuoteOption(BaseModel):
-    rate_id: UUID
-    method_id: UUID
-    method_name: str
-    carrier_name: Optional[str]
-    amount: Decimal
-    currency: str = "TZS"
-    min_delivery_days: int
-    max_delivery_days: int
+    model_config = ConfigDict(from_attributes=True)

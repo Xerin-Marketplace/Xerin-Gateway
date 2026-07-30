@@ -21,7 +21,6 @@ from api.routers import (
     payments,
     products,
     sellers,
-    shipping,
     stores,
     users,
 )
@@ -124,7 +123,6 @@ for router in (
     payments.router,
     inventory.router,
     coupons.router,
-    shipping.router,
     admin.router,
     stores.router,
 ):

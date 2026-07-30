@@ -9,7 +9,6 @@ from api.models import Address, Seller, User, UserRole
 from api.permissions import require_permission
 from api.schemas import (
     AddressCreate,
-    AddressUpdate,
     AddressResponse,
     PaginatedAddressResponse,
     UpdateUserRequest,
@@ -131,10 +130,12 @@ def create_address(
 
     address = Address(
         user_id=current_user.id,
-        label=data.label, recipient_name=data.recipient_name, recipient_phone=data.recipient_phone,
-        country=data.country, region=data.region, district=data.district, ward=data.ward,
-        city=data.city, street=data.street, landmark=data.landmark, postal_code=data.postal_code,
-        latitude=data.latitude, longitude=data.longitude, is_default=data.is_default,
+        country=data.country,
+        region=data.region,
+        city=data.city,
+        street=data.street,
+        postal_code=data.postal_code,
+        is_default=data.is_default,
     )
 
     db.add(address)
@@ -175,7 +176,7 @@ def get_my_addresses(
 @router.patch("/addresses/{address_id}", response_model=AddressResponse)
 def update_address(
     address_id: UUID,
-    data: AddressUpdate,
+    data: AddressCreate,
     db: Session = Depends(get_db),
     current_user: User = Depends(
         require_permission(PermissionCode.manage_addresses.value)
@@ -198,31 +199,16 @@ def update_address(
             Address.id != address.id,
         ).update({"is_default": False})
 
-    update_data = data.model_dump(exclude_unset=True)
-    if update_data.get("is_default"):
-        db.query(Address).filter(Address.user_id == current_user.id, Address.id != address.id).update({"is_default": False})
-    for field, value in update_data.items():
-        setattr(address, field, value)
+    address.country = data.country
+    address.region = data.region
+    address.city = data.city
+    address.street = data.street
+    address.postal_code = data.postal_code
+    address.is_default = data.is_default
 
     db.commit()
     db.refresh(address)
 
-    return address
-
-
-@router.post("/addresses/{address_id}/default", response_model=AddressResponse)
-def set_default_address(
-    address_id: UUID,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(require_permission(PermissionCode.manage_addresses.value)),
-):
-    address = db.query(Address).filter(Address.id == address_id, Address.user_id == current_user.id).first()
-    if not address:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Address not found")
-    db.query(Address).filter(Address.user_id == current_user.id).update({"is_default": False})
-    address.is_default = True
-    db.commit()
-    db.refresh(address)
     return address
 
 

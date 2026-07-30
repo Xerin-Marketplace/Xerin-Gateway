@@ -18,7 +18,6 @@ DEFAULT_ROLE_PERMISSIONS: dict[str, set[str]] = {
         PermissionCode.manage_addresses.value,
         PermissionCode.can_view_products.value,
         PermissionCode.can_view_public_stores.value,
-        PermissionCode.shipping_track.value,
     },
     "seller": {
         PermissionCode.view_profile.value,
@@ -31,7 +30,6 @@ DEFAULT_ROLE_PERMISSIONS: dict[str, set[str]] = {
         PermissionCode.manage_products.value,
         PermissionCode.can_view_products.value,
         PermissionCode.can_view_public_stores.value,
-        PermissionCode.shipping_track.value,
         # Legacy permissions currently used by store profile/media routes.
         PermissionCode.view_own_store.value,
         PermissionCode.update_own_store.value,
@@ -63,9 +61,6 @@ DEFAULT_ROLE_PERMISSIONS: dict[str, set[str]] = {
         PermissionCode.orders_read.value,
         PermissionCode.payments_read.value,
         PermissionCode.coupons_read.value,
-        PermissionCode.shipping_read.value,
-        PermissionCode.shipping_write.value,
-        PermissionCode.shipping_track.value,
         PermissionCode.STORE_ADMIN_VIEW.value,
     },
     "super_admin": {permission.value for permission in PermissionCode},
