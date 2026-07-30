@@ -13,7 +13,6 @@ from api.database import Base
 from api.enums import (
     DayOfWeek, StoreStatus, ShippingRateType, ShipmentStatus, InventoryReservationStatus,
     CommissionScope, CommissionRuleType, MarketplaceTransactionType,
-    WalletTransactionType, PayoutStatus,
 )
 
 
@@ -184,7 +183,6 @@ class Seller(Base):
     )
     commission_rules = relationship("CommissionRule", back_populates="seller")
     commission_records = relationship("OrderItemCommission", back_populates="seller")
-    wallet = relationship("SellerWallet", back_populates="seller", uselist=False, cascade="all, delete-orphan")
     profile = relationship(
     "SellerProfile",
     back_populates="seller",
@@ -1122,75 +1120,3 @@ class StoreOpeningHour(Base):
             name="uq_store_opening_hours_store_day",
         ),
     )
-
-# =========================================================
-# SELLER WALLETS AND PAYOUTS
-# =========================================================
-
-class SellerWallet(Base):
-    __tablename__ = "seller_wallets"
-    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    seller_id = Column(UUID(as_uuid=True), ForeignKey("sellers.id", ondelete="CASCADE"), nullable=False, unique=True, index=True)
-    currency = Column(String(10), nullable=False, default="TZS", server_default="TZS")
-    pending_balance = Column(Numeric(18,2), nullable=False, default=0, server_default="0")
-    available_balance = Column(Numeric(18,2), nullable=False, default=0, server_default="0")
-    reserved_balance = Column(Numeric(18,2), nullable=False, default=0, server_default="0")
-    paid_out_balance = Column(Numeric(18,2), nullable=False, default=0, server_default="0")
-    refunded_balance = Column(Numeric(18,2), nullable=False, default=0, server_default="0")
-    is_frozen = Column(Boolean, nullable=False, default=False, server_default="false", index=True)
-    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
-    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
-    seller = relationship("Seller", back_populates="wallet")
-    transactions = relationship("WalletTransaction", back_populates="wallet", cascade="all, delete-orphan")
-    payouts = relationship("PayoutRequest", back_populates="wallet")
-    __table_args__ = (CheckConstraint("pending_balance >= 0 AND available_balance >= 0 AND reserved_balance >= 0 AND paid_out_balance >= 0 AND refunded_balance >= 0", name="ck_wallet_balances_nonnegative"),)
-
-class WalletTransaction(Base):
-    __tablename__ = "wallet_transactions"
-    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    wallet_id = Column(UUID(as_uuid=True), ForeignKey("seller_wallets.id", ondelete="CASCADE"), nullable=False, index=True)
-    transaction_type = Column(Enum(WalletTransactionType), nullable=False, index=True)
-    amount = Column(Numeric(18,2), nullable=False)
-    currency = Column(String(10), nullable=False)
-    reference = Column(String(180), nullable=False, unique=True, index=True)
-    order_id = Column(UUID(as_uuid=True), ForeignKey("orders.id", ondelete="SET NULL"), nullable=True, index=True)
-    order_item_id = Column(UUID(as_uuid=True), ForeignKey("order_items.id", ondelete="SET NULL"), nullable=True)
-    payout_request_id = Column(UUID(as_uuid=True), nullable=True, index=True)
-    eligible_at = Column(DateTime(timezone=True), nullable=True, index=True)
-    released_at = Column(DateTime(timezone=True), nullable=True)
-    description = Column(Text, nullable=True)
-    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
-    wallet = relationship("SellerWallet", back_populates="transactions")
-    __table_args__ = (CheckConstraint("amount >= 0", name="ck_wallet_transaction_amount_nonnegative"),)
-
-class PayoutRequest(Base):
-    __tablename__ = "payout_requests"
-    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    wallet_id = Column(UUID(as_uuid=True), ForeignKey("seller_wallets.id", ondelete="RESTRICT"), nullable=False, index=True)
-    seller_id = Column(UUID(as_uuid=True), ForeignKey("sellers.id", ondelete="RESTRICT"), nullable=False, index=True)
-    payout_account_id = Column(UUID(as_uuid=True), ForeignKey("seller_payout_accounts.id", ondelete="RESTRICT"), nullable=False)
-    amount = Column(Numeric(18,2), nullable=False)
-    currency = Column(String(10), nullable=False)
-    status = Column(Enum(PayoutStatus), nullable=False, default=PayoutStatus.pending, server_default="pending", index=True)
-    provider_reference = Column(String(180), nullable=True, unique=True)
-    seller_note = Column(Text, nullable=True)
-    admin_note = Column(Text, nullable=True)
-    requested_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
-    processed_at = Column(DateTime(timezone=True), nullable=True)
-    completed_at = Column(DateTime(timezone=True), nullable=True)
-    wallet = relationship("SellerWallet", back_populates="payouts")
-    seller = relationship("Seller")
-    payout_account = relationship("SellerPayoutAccount")
-    events = relationship("PayoutEvent", back_populates="payout", cascade="all, delete-orphan")
-    __table_args__ = (CheckConstraint("amount > 0", name="ck_payout_amount_positive"),)
-
-class PayoutEvent(Base):
-    __tablename__ = "payout_events"
-    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    payout_request_id = Column(UUID(as_uuid=True), ForeignKey("payout_requests.id", ondelete="CASCADE"), nullable=False, index=True)
-    status = Column(Enum(PayoutStatus), nullable=False)
-    note = Column(Text, nullable=True)
-    created_by_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
-    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
-    payout = relationship("PayoutRequest", back_populates="events")
-    created_by = relationship("User")

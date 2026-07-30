@@ -15,7 +15,7 @@ from decimal import Decimal
 from typing import Optional, List, Dict, Any, Literal
 import enum
 from api.enums import DayOfWeek, StoreStatus, ShippingRateType
-from api.enums import ShipmentStatus, WalletTransactionType, PayoutStatus
+from api.enums import ShipmentStatus
 
 
 class UserStatus(str, enum.Enum):
@@ -1511,63 +1511,3 @@ class SellerEarningsSummary(BaseModel):
     commission_deducted: Decimal
     net_earnings: Decimal
     transaction_count: int
-
-
-class SellerWalletResponse(BaseModel):
-    model_config = ORM_CONFIG
-    id: UUID
-    seller_id: UUID
-    currency: str
-    pending_balance: Decimal
-    available_balance: Decimal
-    reserved_balance: Decimal
-    paid_out_balance: Decimal
-    refunded_balance: Decimal
-    is_frozen: bool
-    created_at: datetime
-    updated_at: datetime | None = None
-
-class WalletTransactionResponse(BaseModel):
-    model_config = ORM_CONFIG
-    id: UUID
-    transaction_type: WalletTransactionType
-    amount: Decimal
-    currency: str
-    reference: str
-    order_id: UUID | None = None
-    eligible_at: datetime | None = None
-    released_at: datetime | None = None
-    description: str | None = None
-    created_at: datetime
-
-class PayoutRequestCreate(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    payout_account_id: UUID
-    amount: Decimal = Field(gt=0, max_digits=18, decimal_places=2)
-    note: str | None = Field(default=None, max_length=1000)
-
-class PayoutRequestResponse(BaseModel):
-    model_config = ORM_CONFIG
-    id: UUID
-    seller_id: UUID
-    payout_account_id: UUID
-    amount: Decimal
-    currency: str
-    status: PayoutStatus
-    provider_reference: str | None = None
-    seller_note: str | None = None
-    admin_note: str | None = None
-    requested_at: datetime
-    processed_at: datetime | None = None
-    completed_at: datetime | None = None
-
-class PayoutAdminUpdate(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    status: PayoutStatus
-    provider_reference: str | None = Field(default=None, max_length=180)
-    note: str | None = Field(default=None, max_length=1000)
-
-class WalletAdjustmentCreate(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    amount: Decimal = Field(max_digits=18, decimal_places=2)
-    reason: str = Field(min_length=3, max_length=500)

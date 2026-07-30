@@ -7,7 +7,6 @@ from sqlalchemy.orm import Session
 
 from api.enums import CommissionRuleType, CommissionScope, MarketplaceTransactionType
 from api.models import CommissionRule, MarketplaceTransaction, Order, OrderItemCommission, Product
-from api.services.wallet_service import credit_sale
 
 MONEY = Decimal("0.01")
 
@@ -61,6 +60,5 @@ def calculate_order_commissions(db: Session, order: Order) -> list[OrderItemComm
         ]
         for typ,amount,ref in txs:
             db.add(MarketplaceTransaction(order_id=order.id, order_item_id=item.id, seller_id=item.seller_id, commission_record_id=record.id, transaction_type=typ, currency=order.currency, amount=amount, reference=ref, description=f"{typ.value.replace('_',' ').title()} for order item {item.id}"))
-        credit_sale(db, seller_id=item.seller_id, amount=net, currency=order.currency, order_id=order.id, order_item_id=item.id)
         records.append(record)
     return records

@@ -76,10 +76,6 @@ class PermissionCode(str, enum.Enum):
     commissions_write = "commissions:write"
     commissions_manage = "commissions:manage"
     seller_earnings_read = "seller_earnings:read"
-    wallet_read = "wallet:read"
-    wallet_payout = "wallet:payout"
-    wallet_manage = "wallet:manage"
-    wallet_adjust = "wallet:adjust"
 
     # Shipping and delivery
     shipping_read = "shipping:read"
@@ -156,23 +152,3 @@ class MarketplaceTransactionType(str, enum.Enum):
     refund = "refund"
     adjustment = "adjustment"
     payout = "payout"
-
-
-class WalletTransactionType(str, enum.Enum):
-    sale_credit = "sale_credit"
-    funds_release = "funds_release"
-    payout_hold = "payout_hold"
-    payout_completed = "payout_completed"
-    payout_released = "payout_released"
-    refund_debit = "refund_debit"
-    adjustment = "adjustment"
-
-
-class PayoutStatus(str, enum.Enum):
-    pending = "pending"
-    approved = "approved"
-    processing = "processing"
-    completed = "completed"
-    rejected = "rejected"
-    failed = "failed"
-    cancelled = "cancelled"
