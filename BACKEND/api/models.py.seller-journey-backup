@@ -338,12 +338,9 @@ class Product(Base):
     currency = Column(String(10), default="TZS")
     weight = Column(Numeric(10, 2), nullable=True)
 
-    status = Column(Enum(ProductStatus), default=ProductStatus.draft, nullable=False)
+    status = Column(Enum(ProductStatus), default=ProductStatus.pending_review)
     rejection_reason = Column(Text, nullable=True)
     is_active = Column(Boolean, default=True)
-    submitted_at = Column(DateTime(timezone=True), nullable=True)
-    approved_at = Column(DateTime(timezone=True), nullable=True)
-    approved_by_user_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
 
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
@@ -366,33 +363,12 @@ class ProductImage(Base):
     __tablename__ = "product_images"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    product_id = Column(
-        UUID(as_uuid=True),
-        ForeignKey("products.id", ondelete="CASCADE"),
-        nullable=False,
-        index=True,
-    )
+    product_id = Column(UUID(as_uuid=True), ForeignKey("products.id"), nullable=False)
     image_url = Column(Text, nullable=False)
-    thumbnail_url = Column(Text, nullable=True)
-    storage_key = Column(Text, nullable=True, unique=True)
-    original_filename = Column(String(255), nullable=True)
-    mime_type = Column(String(100), nullable=True)
-    file_size = Column(Integer, nullable=True)
-    width = Column(Integer, nullable=True)
-    height = Column(Integer, nullable=True)
-    alt_text = Column(String(255), nullable=True)
-    display_order = Column(Integer, nullable=False, default=0)
-    is_primary = Column(Boolean, nullable=False, default=False)
-    uploaded_by_user_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
+    is_primary = Column(Boolean, default=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
-    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
 
     product = relationship("Product", back_populates="images")
-
-    __table_args__ = (
-        CheckConstraint("display_order >= 0", name="ck_product_image_display_order_nonnegative"),
-        CheckConstraint("file_size IS NULL OR file_size >= 0", name="ck_product_image_file_size_nonnegative"),
-    )
 
 
 class ProductVariant(Base):

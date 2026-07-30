@@ -955,7 +955,7 @@ def get_pending_products(
      
 
     return db.query(Product).filter(
-        Product.status == ProductStatus.pending_review
+        Product.status == ProductStatus.pending_recan_can_view
     ).order_by(Product.created_at.desc()).all()
 
 
@@ -974,16 +974,9 @@ def approve_product(
     if not product:
         raise HTTPException(status_code=404, detail="Product not found")
 
-    if product.status != ProductStatus.pending_review:
-        raise HTTPException(status_code=409, detail="Only products pending review can be approved")
-    if not product.images:
-        raise HTTPException(status_code=400, detail="A product must have at least one image before approval")
-
     product.status = ProductStatus.approved
     product.rejection_reason = None
     product.is_active = True
-    product.approved_at = datetime.now(timezone.utc)
-    product.approved_by_user_id = current_user.id
 
     db.commit()
     db.refresh(product)
@@ -1007,14 +1000,9 @@ def reject_product(
     if not product:
         raise HTTPException(status_code=404, detail="Product not found")
 
-    if product.status != ProductStatus.pending_review:
-        raise HTTPException(status_code=409, detail="Only products pending review can be rejected")
-
     product.status = ProductStatus.rejected
-    product.rejection_reason = reason.strip()
-    product.is_active = True
-    product.approved_at = None
-    product.approved_by_user_id = None
+    product.rejection_reason = reason
+    product.is_active = False
 
     db.commit()
     db.refresh(product)
