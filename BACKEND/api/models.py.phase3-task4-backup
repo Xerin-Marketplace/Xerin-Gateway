@@ -13,7 +13,7 @@ from api.database import Base
 from api.enums import (
     DayOfWeek, StoreStatus, ShippingRateType, ShipmentStatus, InventoryReservationStatus,
     CommissionScope, CommissionRuleType, MarketplaceTransactionType,
-    WalletTransactionType, PayoutStatus, RefundStatus, RefundReason, InventoryMovementType,
+    WalletTransactionType, PayoutStatus,
 )
 
 
@@ -553,7 +553,6 @@ class Order(Base):
     shipping_method = relationship("ShippingMethod")
     shipments = relationship("Shipment", back_populates="order", cascade="all, delete-orphan")
     inventory_reservations = relationship("InventoryReservation", back_populates="order", cascade="all, delete-orphan")
-    refunds = relationship("Refund", back_populates="order", cascade="all, delete-orphan")
 
 
 class OrderItem(Base):
@@ -576,7 +575,6 @@ class OrderItem(Base):
     variant = relationship("ProductVariant")
     seller = relationship("Seller")
     commission = relationship("OrderItemCommission", back_populates="order_item", uselist=False, cascade="all, delete-orphan")
-    refund_items = relationship("RefundItem", back_populates="order_item")
 
     __table_args__ = (
         CheckConstraint("quantity > 0", name="ck_order_item_quantity_positive"),
@@ -1139,14 +1137,13 @@ class SellerWallet(Base):
     reserved_balance = Column(Numeric(18,2), nullable=False, default=0, server_default="0")
     paid_out_balance = Column(Numeric(18,2), nullable=False, default=0, server_default="0")
     refunded_balance = Column(Numeric(18,2), nullable=False, default=0, server_default="0")
-    debt_balance = Column(Numeric(18,2), nullable=False, default=0, server_default="0")
     is_frozen = Column(Boolean, nullable=False, default=False, server_default="false", index=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
     seller = relationship("Seller", back_populates="wallet")
     transactions = relationship("WalletTransaction", back_populates="wallet", cascade="all, delete-orphan")
     payouts = relationship("PayoutRequest", back_populates="wallet")
-    __table_args__ = (CheckConstraint("pending_balance >= 0 AND available_balance >= 0 AND reserved_balance >= 0 AND paid_out_balance >= 0 AND refunded_balance >= 0 AND debt_balance >= 0", name="ck_wallet_balances_nonnegative"),)
+    __table_args__ = (CheckConstraint("pending_balance >= 0 AND available_balance >= 0 AND reserved_balance >= 0 AND paid_out_balance >= 0 AND refunded_balance >= 0", name="ck_wallet_balances_nonnegative"),)
 
 class WalletTransaction(Base):
     __tablename__ = "wallet_transactions"
@@ -1197,82 +1194,3 @@ class PayoutEvent(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     payout = relationship("PayoutRequest", back_populates="events")
     created_by = relationship("User")
-
-
-# =========================================================
-# REFUNDS AND REVERSALS
-# =========================================================
-
-class Refund(Base):
-    __tablename__ = "refunds"
-    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    order_id = Column(UUID(as_uuid=True), ForeignKey("orders.id", ondelete="RESTRICT"), nullable=False, index=True)
-    requested_by_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="RESTRICT"), nullable=False, index=True)
-    status = Column(Enum(RefundStatus), nullable=False, default=RefundStatus.requested, server_default="requested", index=True)
-    reason = Column(Enum(RefundReason), nullable=False)
-    reason_details = Column(Text, nullable=True)
-    currency = Column(String(10), nullable=False)
-    items_amount = Column(Numeric(18,2), nullable=False, default=0, server_default="0")
-    shipping_amount = Column(Numeric(18,2), nullable=False, default=0, server_default="0")
-    tax_amount = Column(Numeric(18,2), nullable=False, default=0, server_default="0")
-    total_amount = Column(Numeric(18,2), nullable=False)
-    provider_reference = Column(String(180), nullable=True, unique=True, index=True)
-    idempotency_key = Column(String(180), nullable=False, unique=True, index=True)
-    admin_note = Column(Text, nullable=True)
-    requested_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
-    reviewed_at = Column(DateTime(timezone=True), nullable=True)
-    processed_at = Column(DateTime(timezone=True), nullable=True)
-    completed_at = Column(DateTime(timezone=True), nullable=True)
-    order = relationship("Order", back_populates="refunds")
-    requested_by = relationship("User")
-    items = relationship("RefundItem", back_populates="refund", cascade="all, delete-orphan")
-    events = relationship("RefundEvent", back_populates="refund", cascade="all, delete-orphan", order_by="RefundEvent.created_at")
-    __table_args__ = (CheckConstraint("items_amount >= 0 AND shipping_amount >= 0 AND tax_amount >= 0 AND total_amount > 0", name="ck_refund_amounts_valid"),)
-
-class RefundItem(Base):
-    __tablename__ = "refund_items"
-    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    refund_id = Column(UUID(as_uuid=True), ForeignKey("refunds.id", ondelete="CASCADE"), nullable=False, index=True)
-    order_item_id = Column(UUID(as_uuid=True), ForeignKey("order_items.id", ondelete="RESTRICT"), nullable=False, index=True)
-    seller_id = Column(UUID(as_uuid=True), ForeignKey("sellers.id", ondelete="RESTRICT"), nullable=False, index=True)
-    quantity = Column(Integer, nullable=False)
-    unit_amount = Column(Numeric(18,2), nullable=False)
-    refund_amount = Column(Numeric(18,2), nullable=False)
-    commission_reversal = Column(Numeric(18,2), nullable=False, default=0, server_default="0")
-    seller_reversal = Column(Numeric(18,2), nullable=False, default=0, server_default="0")
-    seller_debt_amount = Column(Numeric(18,2), nullable=False, default=0, server_default="0")
-    restock = Column(Boolean, nullable=False, default=True, server_default="true")
-    processed_at = Column(DateTime(timezone=True), nullable=True)
-    refund = relationship("Refund", back_populates="items")
-    order_item = relationship("OrderItem", back_populates="refund_items")
-    seller = relationship("Seller")
-    __table_args__ = (CheckConstraint("quantity > 0 AND unit_amount >= 0 AND refund_amount > 0 AND commission_reversal >= 0 AND seller_reversal >= 0 AND seller_debt_amount >= 0", name="ck_refund_item_values_valid"), UniqueConstraint("refund_id","order_item_id",name="uq_refund_item_per_refund"))
-
-class RefundEvent(Base):
-    __tablename__ = "refund_events"
-    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    refund_id = Column(UUID(as_uuid=True), ForeignKey("refunds.id", ondelete="CASCADE"), nullable=False, index=True)
-    status = Column(Enum(RefundStatus), nullable=False)
-    note = Column(Text, nullable=True)
-    created_by_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
-    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
-    refund = relationship("Refund", back_populates="events")
-    created_by = relationship("User")
-
-class InventoryMovement(Base):
-    __tablename__ = "inventory_movements"
-    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    inventory_id = Column(UUID(as_uuid=True), ForeignKey("inventory.id", ondelete="RESTRICT"), nullable=False, index=True)
-    order_item_id = Column(UUID(as_uuid=True), ForeignKey("order_items.id", ondelete="SET NULL"), nullable=True)
-    refund_item_id = Column(UUID(as_uuid=True), ForeignKey("refund_items.id", ondelete="SET NULL"), nullable=True, unique=True)
-    movement_type = Column(Enum(InventoryMovementType), nullable=False, index=True)
-    quantity = Column(Integer, nullable=False)
-    before_quantity = Column(Integer, nullable=False)
-    after_quantity = Column(Integer, nullable=False)
-    note = Column(Text, nullable=True)
-    created_by_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
-    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
-    inventory = relationship("Inventory")
-    refund_item = relationship("RefundItem")
-    created_by = relationship("User")
-    __table_args__ = (CheckConstraint("quantity > 0 AND before_quantity >= 0 AND after_quantity >= 0", name="ck_inventory_movement_values_valid"),)
