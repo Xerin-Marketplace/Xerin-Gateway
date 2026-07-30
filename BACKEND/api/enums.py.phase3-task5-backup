@@ -84,8 +84,6 @@ class PermissionCode(str, enum.Enum):
     refunds_create = "refunds:create"
     refunds_review = "refunds:review"
     refunds_process = "refunds:process"
-    analytics_admin_read = "analytics:admin_read"
-    analytics_seller_read = "analytics:seller_read"
 
     # Shipping and delivery
     shipping_read = "shipping:read"
