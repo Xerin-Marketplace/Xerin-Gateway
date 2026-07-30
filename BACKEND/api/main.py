@@ -63,7 +63,12 @@ api = FastAPI(
 if settings.trusted_hosts:
     api.add_middleware(
         TrustedHostMiddleware,
-        allowed_hosts=settings.trusted_hosts,
+        allowed_hosts=[
+        "127.0.0.1",
+        "localhost",
+        "api.xerinmarketplace.com",
+    ],
+)
     )
 
 api.add_middleware(
