@@ -12,7 +12,7 @@ branch_labels = None
 depends_on = None
 
 def upgrade():
-    shipping_rate_type = postgresql.ENUM("flat", "weight_based", "free", name="shippingratetype")
+    shipping_rate_type = postgresql.ENUM("flat", "weight_based", "free", name="shippingratetype", create_type=False,)
     shipping_rate_type.create(op.get_bind(), checkfirst=True)
     for name, typ in [
         ("label", sa.String(50)), ("recipient_name", sa.String(150)), ("recipient_phone", sa.String(30)),
