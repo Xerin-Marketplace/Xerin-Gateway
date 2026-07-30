@@ -39,7 +39,6 @@ DEFAULT_ROLE_PERMISSIONS: dict[str, set[str]] = {
         PermissionCode.wallet_read.value,
         PermissionCode.wallet_payout.value,
         PermissionCode.refunds_create.value,
-        PermissionCode.analytics_seller_read.value,
         # Legacy permissions currently used by store profile/media routes.
         PermissionCode.view_own_store.value,
         PermissionCode.update_own_store.value,
@@ -84,7 +83,6 @@ DEFAULT_ROLE_PERMISSIONS: dict[str, set[str]] = {
         PermissionCode.refunds_read.value,
         PermissionCode.refunds_review.value,
         PermissionCode.refunds_process.value,
-        PermissionCode.analytics_admin_read.value,
         PermissionCode.STORE_ADMIN_VIEW.value,
     },
     "super_admin": {permission.value for permission in PermissionCode},
