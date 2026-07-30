@@ -1,258 +1,303 @@
 {
   "version": "2.0.0",
-  "darkMode": true,
+  "darkMode": false,
   "gridEnabling": false,
   "currentViewName": null,
   "defaultView": {
     "detailLevel": "All",
     "tablePositions": [
       {
-        "name": "follows",
-        "schemaName": "public",
-        "x": 455.01025390625,
-        "y": 282
-      },
-      {
         "name": "users",
         "schemaName": "public",
-        "x": 12,
-        "y": 12
-      },
-      {
-        "name": "posts",
-        "schemaName": "public",
-        "x": 455.01025390625,
-        "y": 12
+        "x": 1344,
+        "y": 16
       },
       {
         "name": "roles",
         "schemaName": "public",
-        "x": 12,
-        "y": 446
+        "x": 1344,
+        "y": 568
       },
       {
         "name": "user_roles",
         "schemaName": "public",
-        "x": 353.279296875,
-        "y": 446
+        "x": 1976,
+        "y": 56
       },
       {
         "name": "sessions",
         "schemaName": "public",
-        "x": 626.740234375,
-        "y": 446
+        "x": 1976,
+        "y": 192
       },
       {
         "name": "otp_requests",
         "schemaName": "public",
-        "x": 896.84619140625,
-        "y": 446
+        "x": 1976,
+        "y": 432
       },
       {
         "name": "addresses",
         "schemaName": "public",
-        "x": 1218.33349609375,
-        "y": 446
+        "x": 1976,
+        "y": 736
       },
       {
         "name": "categories",
         "schemaName": "public",
-        "x": 12,
-        "y": 656
+        "x": 1344,
+        "y": 800
       },
       {
         "name": "brands",
         "schemaName": "public",
-        "x": 353.279296875,
-        "y": 592
+        "x": 1344,
+        "y": 1032
       },
       {
         "name": "products",
         "schemaName": "public",
-        "x": 626.740234375,
-        "y": 688
+        "x": 2696,
+        "y": 744
       },
       {
         "name": "product_images",
         "schemaName": "public",
-        "x": 896.84619140625,
-        "y": 752
+        "x": 3368,
+        "y": 824
       },
       {
         "name": "product_variants",
         "schemaName": "public",
-        "x": 1218.33349609375,
-        "y": 816
+        "x": 3368,
+        "y": 1064
       },
       {
         "name": "warehouses",
         "schemaName": "public",
-        "x": 12,
-        "y": 898
+        "x": 1344,
+        "y": 1240
       },
       {
         "name": "inventory",
         "schemaName": "public",
-        "x": 353.279296875,
-        "y": 802
+        "x": 3368,
+        "y": 1328
       },
       {
         "name": "carts",
         "schemaName": "public",
-        "x": 626.740234375,
-        "y": 1186
+        "x": 1976,
+        "y": 2040
       },
       {
         "name": "cart_items",
         "schemaName": "public",
-        "x": 896.84619140625,
-        "y": 994
+        "x": 3368,
+        "y": 2936
       },
       {
         "name": "coupons",
         "schemaName": "public",
-        "x": 1218.33349609375,
-        "y": 1090
+        "x": 992,
+        "y": 16
       },
       {
         "name": "orders",
         "schemaName": "public",
-        "x": 12,
-        "y": 1108
+        "x": 2696,
+        "y": 1792
       },
       {
         "name": "order_items",
         "schemaName": "public",
-        "x": 353.279296875,
-        "y": 1076
+        "x": 3368,
+        "y": 3176
       },
       {
         "name": "order_status_history",
         "schemaName": "public",
-        "x": 626.740234375,
-        "y": 1364
+        "x": 3368,
+        "y": 3448
       },
       {
         "name": "payment_methods",
         "schemaName": "public",
-        "x": 896.84619140625,
-        "y": 1236
+        "x": 1344,
+        "y": 1688
       },
       {
         "name": "payments",
         "schemaName": "public",
-        "x": 1218.33349609375,
-        "y": 1396
+        "x": 3368,
+        "y": 3680
       },
       {
         "name": "payment_transactions",
         "schemaName": "public",
-        "x": 12,
-        "y": 1574
+        "x": 3984,
+        "y": 520
       },
       {
         "name": "payment_callbacks",
         "schemaName": "public",
-        "x": 353.279296875,
-        "y": 1350
+        "x": 3984,
+        "y": 856
       },
       {
         "name": "refunds",
         "schemaName": "public",
-        "x": 626.740234375,
-        "y": 1606
+        "x": 3984,
+        "y": 1064
       },
       {
         "name": "sms_messages",
         "schemaName": "public",
-        "x": 896.84619140625,
-        "y": 1446
+        "x": 1976,
+        "y": 2312
       },
       {
         "name": "email_messages",
         "schemaName": "public",
-        "x": 1218.33349609375,
-        "y": 1734
+        "x": 1976,
+        "y": 2640
       },
       {
         "name": "notifications",
         "schemaName": "public",
-        "x": 12,
-        "y": 1912
+        "x": 1976,
+        "y": 2968
       },
       {
         "name": "reviews",
         "schemaName": "public",
-        "x": 353.279296875,
-        "y": 1560
+        "x": 3368,
+        "y": 4016
       },
       {
         "name": "audit_logs",
         "schemaName": "public",
-        "x": 626.740234375,
-        "y": 1848
+        "x": 1976,
+        "y": 3272
       },
       {
         "name": "system_events",
         "schemaName": "public",
-        "x": 896.84619140625,
-        "y": 1784
+        "x": 328,
+        "y": 16
       },
       {
         "name": "jobs",
         "schemaName": "public",
-        "x": 1218.33349609375,
-        "y": 2040
+        "x": 656,
+        "y": 16
+      },
+      {
+        "name": "oauth_accounts",
+        "schemaName": "public",
+        "x": 1976,
+        "y": 1104
+      },
+      {
+        "name": "two_factor_secrets",
+        "schemaName": "public",
+        "x": 1976,
+        "y": 1368
+      },
+      {
+        "name": "sellers",
+        "schemaName": "public",
+        "x": 1976,
+        "y": 1608
+      },
+      {
+        "name": "seller_kyc_documents",
+        "schemaName": "public",
+        "x": 2696,
+        "y": 72
+      },
+      {
+        "name": "seller_reviews",
+        "schemaName": "public",
+        "x": 3368,
+        "y": 16
+      },
+      {
+        "name": "review_votes",
+        "schemaName": "public",
+        "x": 3984,
+        "y": 16
+      },
+      {
+        "name": "seller_payout_accounts",
+        "schemaName": "public",
+        "x": 2696,
+        "y": 376
+      },
+      {
+        "name": "product_tags",
+        "schemaName": "public",
+        "x": 3368,
+        "y": 376
+      },
+      {
+        "name": "product_moderation_logs",
+        "schemaName": "public",
+        "x": 3368,
+        "y": 552
+      },
+      {
+        "name": "wishlists",
+        "schemaName": "public",
+        "x": 16,
+        "y": 16
+      },
+      {
+        "name": "shipping_methods",
+        "schemaName": "public",
+        "x": 1344,
+        "y": 1448
+      },
+      {
+        "name": "shipments",
+        "schemaName": "public",
+        "x": 3368,
+        "y": 1600
+      },
+      {
+        "name": "shipment_tracking_events",
+        "schemaName": "public",
+        "x": 3984,
+        "y": 248
+      },
+      {
+        "name": "returns",
+        "schemaName": "public",
+        "x": 3368,
+        "y": 2032
+      },
+      {
+        "name": "disputes",
+        "schemaName": "public",
+        "x": 3368,
+        "y": 2336
+      },
+      {
+        "name": "commissions",
+        "schemaName": "public",
+        "x": 3368,
+        "y": 2664
+      },
+      {
+        "name": "payouts",
+        "schemaName": "public",
+        "x": 2696,
+        "y": 1368
       }
     ],
     "tableGroupCollapseStates": [],
     "stickyNoteLayouts": [],
     "referencePaths": [
-      {
-        "firstFieldNames": [
-          "user_id"
-        ],
-        "firstTableName": "posts",
-        "firstSchemaName": "public",
-        "firstRelation": "*",
-        "secondFieldNames": [
-          "id"
-        ],
-        "secondTableName": "users",
-        "secondSchemaName": "public",
-        "secondRelation": "1",
-        "checkPoints": []
-      },
-      {
-        "firstFieldNames": [
-          "id"
-        ],
-        "firstTableName": "users",
-        "firstSchemaName": "public",
-        "firstRelation": "1",
-        "secondFieldNames": [
-          "following_user_id"
-        ],
-        "secondTableName": "follows",
-        "secondSchemaName": "public",
-        "secondRelation": "*",
-        "checkPoints": []
-      },
-      {
-        "firstFieldNames": [
-          "id"
-        ],
-        "firstTableName": "users",
-        "firstSchemaName": "public",
-        "firstRelation": "1",
-        "secondFieldNames": [
-          "followed_user_id"
-        ],
-        "secondTableName": "follows",
-        "secondSchemaName": "public",
-        "secondRelation": "*",
-        "checkPoints": []
-      },
       {
         "firstFieldNames": [
           "user_id"
@@ -708,6 +753,381 @@
           "user_id"
         ],
         "firstTableName": "audit_logs",
+        "firstSchemaName": "public",
+        "firstRelation": "*",
+        "secondFieldNames": [
+          "id"
+        ],
+        "secondTableName": "users",
+        "secondSchemaName": "public",
+        "secondRelation": "1",
+        "checkPoints": []
+      },
+      {
+        "firstFieldNames": [
+          "user_id"
+        ],
+        "firstTableName": "oauth_accounts",
+        "firstSchemaName": "public",
+        "firstRelation": "*",
+        "secondFieldNames": [
+          "id"
+        ],
+        "secondTableName": "users",
+        "secondSchemaName": "public",
+        "secondRelation": "1",
+        "checkPoints": []
+      },
+      {
+        "firstFieldNames": [
+          "user_id"
+        ],
+        "firstTableName": "two_factor_secrets",
+        "firstSchemaName": "public",
+        "firstRelation": "*",
+        "secondFieldNames": [
+          "id"
+        ],
+        "secondTableName": "users",
+        "secondSchemaName": "public",
+        "secondRelation": "1",
+        "checkPoints": []
+      },
+      {
+        "firstFieldNames": [
+          "user_id"
+        ],
+        "firstTableName": "sellers",
+        "firstSchemaName": "public",
+        "firstRelation": "*",
+        "secondFieldNames": [
+          "id"
+        ],
+        "secondTableName": "users",
+        "secondSchemaName": "public",
+        "secondRelation": "1",
+        "checkPoints": []
+      },
+      {
+        "firstFieldNames": [
+          "seller_id"
+        ],
+        "firstTableName": "seller_kyc_documents",
+        "firstSchemaName": "public",
+        "firstRelation": "*",
+        "secondFieldNames": [
+          "id"
+        ],
+        "secondTableName": "sellers",
+        "secondSchemaName": "public",
+        "secondRelation": "1",
+        "checkPoints": []
+      },
+      {
+        "firstFieldNames": [
+          "seller_id"
+        ],
+        "firstTableName": "seller_payout_accounts",
+        "firstSchemaName": "public",
+        "firstRelation": "*",
+        "secondFieldNames": [
+          "id"
+        ],
+        "secondTableName": "sellers",
+        "secondSchemaName": "public",
+        "secondRelation": "1",
+        "checkPoints": []
+      },
+      {
+        "firstFieldNames": [
+          "seller_id"
+        ],
+        "firstTableName": "products",
+        "firstSchemaName": "public",
+        "firstRelation": "*",
+        "secondFieldNames": [
+          "id"
+        ],
+        "secondTableName": "sellers",
+        "secondSchemaName": "public",
+        "secondRelation": "1",
+        "checkPoints": []
+      },
+      {
+        "firstFieldNames": [
+          "product_id"
+        ],
+        "firstTableName": "product_tags",
+        "firstSchemaName": "public",
+        "firstRelation": "*",
+        "secondFieldNames": [
+          "id"
+        ],
+        "secondTableName": "products",
+        "secondSchemaName": "public",
+        "secondRelation": "1",
+        "checkPoints": []
+      },
+      {
+        "firstFieldNames": [
+          "product_id"
+        ],
+        "firstTableName": "product_moderation_logs",
+        "firstSchemaName": "public",
+        "firstRelation": "*",
+        "secondFieldNames": [
+          "id"
+        ],
+        "secondTableName": "products",
+        "secondSchemaName": "public",
+        "secondRelation": "1",
+        "checkPoints": []
+      },
+      {
+        "firstFieldNames": [
+          "admin_id"
+        ],
+        "firstTableName": "product_moderation_logs",
+        "firstSchemaName": "public",
+        "firstRelation": "*",
+        "secondFieldNames": [
+          "id"
+        ],
+        "secondTableName": "users",
+        "secondSchemaName": "public",
+        "secondRelation": "1",
+        "checkPoints": []
+      },
+      {
+        "firstFieldNames": [
+          "order_id"
+        ],
+        "firstTableName": "shipments",
+        "firstSchemaName": "public",
+        "firstRelation": "*",
+        "secondFieldNames": [
+          "id"
+        ],
+        "secondTableName": "orders",
+        "secondSchemaName": "public",
+        "secondRelation": "1",
+        "checkPoints": []
+      },
+      {
+        "firstFieldNames": [
+          "logistics_partner_id"
+        ],
+        "firstTableName": "shipments",
+        "firstSchemaName": "public",
+        "firstRelation": "*",
+        "secondFieldNames": [
+          "id"
+        ],
+        "secondTableName": "users",
+        "secondSchemaName": "public",
+        "secondRelation": "1",
+        "checkPoints": []
+      },
+      {
+        "firstFieldNames": [
+          "shipping_method_id"
+        ],
+        "firstTableName": "shipments",
+        "firstSchemaName": "public",
+        "firstRelation": "*",
+        "secondFieldNames": [
+          "id"
+        ],
+        "secondTableName": "shipping_methods",
+        "secondSchemaName": "public",
+        "secondRelation": "1",
+        "checkPoints": []
+      },
+      {
+        "firstFieldNames": [
+          "shipment_id"
+        ],
+        "firstTableName": "shipment_tracking_events",
+        "firstSchemaName": "public",
+        "firstRelation": "*",
+        "secondFieldNames": [
+          "id"
+        ],
+        "secondTableName": "shipments",
+        "secondSchemaName": "public",
+        "secondRelation": "1",
+        "checkPoints": []
+      },
+      {
+        "firstFieldNames": [
+          "order_id"
+        ],
+        "firstTableName": "returns",
+        "firstSchemaName": "public",
+        "firstRelation": "*",
+        "secondFieldNames": [
+          "id"
+        ],
+        "secondTableName": "orders",
+        "secondSchemaName": "public",
+        "secondRelation": "1",
+        "checkPoints": []
+      },
+      {
+        "firstFieldNames": [
+          "user_id"
+        ],
+        "firstTableName": "returns",
+        "firstSchemaName": "public",
+        "firstRelation": "*",
+        "secondFieldNames": [
+          "id"
+        ],
+        "secondTableName": "users",
+        "secondSchemaName": "public",
+        "secondRelation": "1",
+        "checkPoints": []
+      },
+      {
+        "firstFieldNames": [
+          "order_id"
+        ],
+        "firstTableName": "disputes",
+        "firstSchemaName": "public",
+        "firstRelation": "*",
+        "secondFieldNames": [
+          "id"
+        ],
+        "secondTableName": "orders",
+        "secondSchemaName": "public",
+        "secondRelation": "1",
+        "checkPoints": []
+      },
+      {
+        "firstFieldNames": [
+          "opened_by"
+        ],
+        "firstTableName": "disputes",
+        "firstSchemaName": "public",
+        "firstRelation": "*",
+        "secondFieldNames": [
+          "id"
+        ],
+        "secondTableName": "users",
+        "secondSchemaName": "public",
+        "secondRelation": "1",
+        "checkPoints": []
+      },
+      {
+        "firstFieldNames": [
+          "seller_id"
+        ],
+        "firstTableName": "commissions",
+        "firstSchemaName": "public",
+        "firstRelation": "*",
+        "secondFieldNames": [
+          "id"
+        ],
+        "secondTableName": "sellers",
+        "secondSchemaName": "public",
+        "secondRelation": "1",
+        "checkPoints": []
+      },
+      {
+        "firstFieldNames": [
+          "order_id"
+        ],
+        "firstTableName": "commissions",
+        "firstSchemaName": "public",
+        "firstRelation": "*",
+        "secondFieldNames": [
+          "id"
+        ],
+        "secondTableName": "orders",
+        "secondSchemaName": "public",
+        "secondRelation": "1",
+        "checkPoints": []
+      },
+      {
+        "firstFieldNames": [
+          "seller_id"
+        ],
+        "firstTableName": "payouts",
+        "firstSchemaName": "public",
+        "firstRelation": "*",
+        "secondFieldNames": [
+          "id"
+        ],
+        "secondTableName": "sellers",
+        "secondSchemaName": "public",
+        "secondRelation": "1",
+        "checkPoints": []
+      },
+      {
+        "firstFieldNames": [
+          "user_id"
+        ],
+        "firstTableName": "seller_reviews",
+        "firstSchemaName": "public",
+        "firstRelation": "*",
+        "secondFieldNames": [
+          "id"
+        ],
+        "secondTableName": "users",
+        "secondSchemaName": "public",
+        "secondRelation": "1",
+        "checkPoints": []
+      },
+      {
+        "firstFieldNames": [
+          "seller_id"
+        ],
+        "firstTableName": "seller_reviews",
+        "firstSchemaName": "public",
+        "firstRelation": "*",
+        "secondFieldNames": [
+          "id"
+        ],
+        "secondTableName": "sellers",
+        "secondSchemaName": "public",
+        "secondRelation": "1",
+        "checkPoints": []
+      },
+      {
+        "firstFieldNames": [
+          "order_id"
+        ],
+        "firstTableName": "seller_reviews",
+        "firstSchemaName": "public",
+        "firstRelation": "*",
+        "secondFieldNames": [
+          "id"
+        ],
+        "secondTableName": "orders",
+        "secondSchemaName": "public",
+        "secondRelation": "1",
+        "checkPoints": []
+      },
+      {
+        "firstFieldNames": [
+          "review_id"
+        ],
+        "firstTableName": "review_votes",
+        "firstSchemaName": "public",
+        "firstRelation": "*",
+        "secondFieldNames": [
+          "id"
+        ],
+        "secondTableName": "reviews",
+        "secondSchemaName": "public",
+        "secondRelation": "1",
+        "checkPoints": []
+      },
+      {
+        "firstFieldNames": [
+          "user_id"
+        ],
+        "firstTableName": "review_votes",
         "firstSchemaName": "public",
         "firstRelation": "*",
         "secondFieldNames": [
