@@ -15,7 +15,7 @@ from api.enums import (
     CommissionScope, CommissionRuleType, MarketplaceTransactionType,
     WalletTransactionType, PayoutStatus, RefundStatus, RefundReason, InventoryMovementType,
     AuditSeverity, SecurityEventType, SellerOrderStatus, DeliveryStatus, ReviewStatus, ReviewReportReason,
-    NotificationChannel, NotificationDeliveryStatus, NotificationEvent,
+    NotificationChannel, NotificationDeliveryStatus, NotificationEvent, QuestionStatus, QuestionReportReason,
 )
 
 
@@ -1829,3 +1829,90 @@ class DeviceToken(Base):
     created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
 
     user = relationship("User", back_populates="device_tokens")
+
+
+# Phase 3 Task 16: Product Questions and Answers
+class ProductQuestion(Base):
+    __tablename__ = "product_questions"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    product_id = Column(UUID(as_uuid=True), ForeignKey("products.id", ondelete="CASCADE"), nullable=False, index=True)
+    customer_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    question = Column(Text, nullable=False)
+    status = Column(Enum(QuestionStatus), nullable=False, default=QuestionStatus.published, server_default="published", index=True)
+    helpful_count = Column(Integer, nullable=False, default=0, server_default="0")
+    answer_count = Column(Integer, nullable=False, default=0, server_default="0")
+    moderated_by_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    moderated_at = Column(DateTime(timezone=True), nullable=True)
+    moderation_note = Column(Text, nullable=True)
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), nullable=True, onupdate=func.now())
+
+    product = relationship("Product")
+    customer = relationship("User", foreign_keys=[customer_id])
+    moderated_by = relationship("User", foreign_keys=[moderated_by_id])
+    answers = relationship("ProductAnswer", back_populates="question", cascade="all, delete-orphan")
+    votes = relationship("QuestionVote", back_populates="question", cascade="all, delete-orphan")
+    reports = relationship("QuestionReport", back_populates="question", cascade="all, delete-orphan")
+
+    __table_args__ = (
+        CheckConstraint("char_length(question) >= 5", name="ck_product_question_min_length"),
+        CheckConstraint("helpful_count >= 0", name="ck_product_question_helpful_count"),
+        CheckConstraint("answer_count >= 0", name="ck_product_question_answer_count"),
+    )
+
+
+class ProductAnswer(Base):
+    __tablename__ = "product_answers"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    question_id = Column(UUID(as_uuid=True), ForeignKey("product_questions.id", ondelete="CASCADE"), nullable=False, index=True)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    answer = Column(Text, nullable=False)
+    is_seller_answer = Column(Boolean, nullable=False, default=False, server_default="false")
+    is_official = Column(Boolean, nullable=False, default=False, server_default="false")
+    status = Column(Enum(QuestionStatus), nullable=False, default=QuestionStatus.published, server_default="published", index=True)
+    helpful_count = Column(Integer, nullable=False, default=0, server_default="0")
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), nullable=True, onupdate=func.now())
+
+    question = relationship("ProductQuestion", back_populates="answers")
+    user = relationship("User")
+    votes = relationship("AnswerVote", back_populates="answer", cascade="all, delete-orphan")
+    __table_args__ = (
+        CheckConstraint("char_length(answer) >= 2", name="ck_product_answer_min_length"),
+        CheckConstraint("helpful_count >= 0", name="ck_product_answer_helpful_count"),
+    )
+
+
+class QuestionVote(Base):
+    __tablename__ = "question_votes"
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    question_id = Column(UUID(as_uuid=True), ForeignKey("product_questions.id", ondelete="CASCADE"), nullable=False, index=True)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    question = relationship("ProductQuestion", back_populates="votes")
+    __table_args__ = (UniqueConstraint("question_id", "user_id", name="uq_question_vote_question_user"),)
+
+
+class AnswerVote(Base):
+    __tablename__ = "answer_votes"
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    answer_id = Column(UUID(as_uuid=True), ForeignKey("product_answers.id", ondelete="CASCADE"), nullable=False, index=True)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    answer = relationship("ProductAnswer", back_populates="votes")
+    __table_args__ = (UniqueConstraint("answer_id", "user_id", name="uq_answer_vote_answer_user"),)
+
+
+class QuestionReport(Base):
+    __tablename__ = "question_reports"
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    question_id = Column(UUID(as_uuid=True), ForeignKey("product_questions.id", ondelete="CASCADE"), nullable=False, index=True)
+    reported_by_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    reason = Column(Enum(QuestionReportReason), nullable=False)
+    details = Column(Text, nullable=True)
+    resolved = Column(Boolean, nullable=False, default=False, server_default="false")
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    question = relationship("ProductQuestion", back_populates="reports")
+    __table_args__ = (UniqueConstraint("question_id", "reported_by_id", name="uq_question_report_question_user"),)

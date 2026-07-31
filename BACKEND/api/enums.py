@@ -102,6 +102,16 @@ class PermissionCode(str, enum.Enum):
     admin_notifications_manage = "admin_notifications:manage"
     admin_notification_templates_manage = "admin_notification_templates:manage"
 
+    product_questions_read = "product_questions:read"
+    product_questions_create = "product_questions:create"
+    product_questions_update = "product_questions:update"
+    product_questions_delete = "product_questions:delete"
+    product_answers_create = "product_answers:create"
+    product_answers_update = "product_answers:update"
+    seller_questions_read = "seller_questions:read"
+    seller_questions_answer = "seller_questions:answer"
+    product_questions_moderate = "product_questions:moderate"
+
     # Commerce
     orders_read = "orders:read"
     payments_read = "payments:read"
@@ -348,3 +358,18 @@ class NotificationEvent(str, enum.Enum):
     seller_approval_required = "seller_approval_required"
     product_approval_required = "product_approval_required"
     system_alert = "system_alert"
+
+
+class QuestionStatus(str, enum.Enum):
+    pending = "pending"
+    published = "published"
+    hidden = "hidden"
+    rejected = "rejected"
+
+
+class QuestionReportReason(str, enum.Enum):
+    spam = "spam"
+    abusive = "abusive"
+    misleading = "misleading"
+    inappropriate = "inappropriate"
+    other = "other"
