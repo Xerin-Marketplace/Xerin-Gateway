@@ -50,6 +50,7 @@ from api.schemas import (
     ProductVariantResponse,
     ProductVariantUpdate,
 )
+from api.services.category_image_service import delete_category_image_files, store_category_image
 from api.services.product_image_service import (
     MAX_PRODUCT_IMAGES,
     delete_product_image_files,
@@ -125,6 +126,86 @@ def create_category(
     category = Category(parent_id=data.parent_id, name=data.name, slug=data.slug)
     db.add(category)
     _commit(db, conflict_detail="Category name or slug conflicts with an existing category")
+    db.refresh(category)
+    return category
+
+
+@router.post("/categories/with-image", response_model=CategoryResponse, status_code=status.HTTP_201_CREATED)
+async def create_category_with_image(
+    name: str = Form(...),
+    slug: str = Form(...),
+    parent_id: UUID | None = Form(None),
+    image: UploadFile | None = File(None),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permission("can_create_product_categories")),
+):
+    del current_user
+    if db.query(Category).filter(Category.slug == slug).first():
+        raise HTTPException(status_code=409, detail="Category slug already exists")
+    if parent_id and not db.query(Category).filter(Category.id == parent_id).first():
+        raise HTTPException(status_code=404, detail="Parent category not found")
+
+    category = Category(parent_id=parent_id, name=name.strip(), slug=slug.strip())
+    db.add(category)
+    db.flush()
+
+    try:
+        if image is not None and image.filename:
+            stored = await store_category_image(image, category_id=category.id)
+            category.image_url = stored.image_url
+            category.thumbnail_url = stored.thumbnail_url
+            category.image_storage_key = stored.storage_key
+        _commit(db, conflict_detail="Category name or slug conflicts with an existing category")
+    except Exception:
+        db.rollback()
+        if category.image_storage_key:
+            delete_category_image_files(category.image_storage_key)
+        raise
+
+    db.refresh(category)
+    return category
+
+
+@router.post("/categories/{category_id}/image", response_model=CategoryResponse)
+async def upload_category_image(
+    category_id: UUID,
+    image: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permission("can_create_product_categories")),
+):
+    del current_user
+    category = db.query(Category).filter(Category.id == category_id).first()
+    if not category:
+        raise HTTPException(status_code=404, detail="Category not found")
+
+    old_storage_key = category.image_storage_key
+    stored = await store_category_image(image, category_id=category.id)
+    category.image_url = stored.image_url
+    category.thumbnail_url = stored.thumbnail_url
+    category.image_storage_key = stored.storage_key
+    _commit(db)
+    if old_storage_key and old_storage_key != stored.storage_key:
+        delete_category_image_files(old_storage_key)
+    db.refresh(category)
+    return category
+
+
+@router.delete("/categories/{category_id}/image", response_model=CategoryResponse)
+def remove_category_image(
+    category_id: UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permission("can_create_product_categories")),
+):
+    del current_user
+    category = db.query(Category).filter(Category.id == category_id).first()
+    if not category:
+        raise HTTPException(status_code=404, detail="Category not found")
+    storage_key = category.image_storage_key
+    category.image_url = None
+    category.thumbnail_url = None
+    category.image_storage_key = None
+    _commit(db)
+    delete_category_image_files(storage_key)
     db.refresh(category)
     return category
 

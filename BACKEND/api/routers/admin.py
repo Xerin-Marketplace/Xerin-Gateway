@@ -3,7 +3,7 @@ from datetime import datetime, timezone
 from fastapi import Query
 from sqlalchemy import or_
 from api.security import hash_password
-from fastapi import APIRouter, Depends, HTTPException, status, Form
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status, Form
 from sqlalchemy.orm import Session
 from api.models import Role, UserRole, UserStatus
 from api.routers.email import send_email
@@ -49,6 +49,7 @@ from api.schemas import (
 )
 
 from api.models import Permission, UserPermission
+from api.services.category_image_service import delete_category_image_files, store_category_image
 
 
 router = APIRouter(prefix="/admin", tags=["Admin"])
@@ -713,6 +714,40 @@ def create_product_category(
     return category
 
 
+@router.post("/product-categories/with-image", response_model=CategoryResponse, status_code=status.HTTP_201_CREATED)
+async def create_product_category_with_image(
+    name: str = Form(...),
+    slug: str = Form(...),
+    parent_id: UUID | None = Form(None),
+    image: UploadFile | None = File(None),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permission(PermissionCode.can_create_product_categories.value)),
+):
+    del current_user
+    if db.query(Category).filter(Category.slug == slug).first():
+        raise HTTPException(status_code=409, detail="Product category already exists")
+    if parent_id and not db.query(Category).filter(Category.id == parent_id).first():
+        raise HTTPException(status_code=404, detail="Parent category not found")
+
+    category = Category(parent_id=parent_id, name=name.strip(), slug=slug.strip())
+    db.add(category)
+    db.flush()
+    try:
+        if image is not None and image.filename:
+            stored = await store_category_image(image, category_id=category.id)
+            category.image_url = stored.image_url
+            category.thumbnail_url = stored.thumbnail_url
+            category.image_storage_key = stored.storage_key
+        db.commit()
+    except Exception:
+        db.rollback()
+        if category.image_storage_key:
+            delete_category_image_files(category.image_storage_key)
+        raise
+    db.refresh(category)
+    return category
+
+
 @router.get("/product-categories", response_model=list[CategoryResponse])
 def get_product_categories(
     db: Session = Depends(get_db),
@@ -740,8 +775,10 @@ def delete_product_category(
     if not category:
         raise HTTPException(status_code=404, detail="Product category not found")
 
+    storage_key = category.image_storage_key
     db.delete(category)
     db.commit()
+    delete_category_image_files(storage_key)
 
     return {"message": "Product category deleted successfully"}
 
