@@ -1637,3 +1637,98 @@ class FavoriteStore(Base):
         UniqueConstraint("user_id", "store_id", name="uq_favorite_store_user_store"),
         Index("ix_favorite_stores_user_created", "user_id", "created_at"),
     )
+
+
+# =========================================================
+# PHASE 3 TASK 14: PROMOTIONS AND CAMPAIGNS
+# =========================================================
+
+class Promotion(Base):
+    __tablename__ = "promotions"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    seller_id = Column(UUID(as_uuid=True), ForeignKey("sellers.id", ondelete="CASCADE"), nullable=True, index=True)
+    name = Column(String(180), nullable=False)
+    code = Column(String(50), unique=True, nullable=True, index=True)
+    description = Column(Text, nullable=True)
+    promotion_type = Column(String(40), nullable=False)
+    discount_value = Column(Numeric(18, 2), nullable=False, default=0)
+    minimum_order_amount = Column(Numeric(18, 2), nullable=True)
+    maximum_discount_amount = Column(Numeric(18, 2), nullable=True)
+    usage_limit = Column(Integer, nullable=True)
+    usage_per_customer = Column(Integer, nullable=True)
+    usage_count = Column(Integer, nullable=False, default=0, server_default="0")
+    stackable = Column(Boolean, nullable=False, default=False, server_default="false")
+    automatic = Column(Boolean, nullable=False, default=False, server_default="false")
+    is_active = Column(Boolean, nullable=False, default=True, server_default="true")
+    starts_at = Column(DateTime(timezone=True), nullable=True)
+    ends_at = Column(DateTime(timezone=True), nullable=True)
+    created_by_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+    rules = relationship("PromotionRule", back_populates="promotion", cascade="all, delete-orphan")
+    usages = relationship("PromotionUsage", back_populates="promotion", cascade="all, delete-orphan")
+
+    __table_args__ = (
+        CheckConstraint("discount_value >= 0", name="ck_promotion_discount_nonnegative"),
+        CheckConstraint("usage_limit IS NULL OR usage_limit >= 0", name="ck_promotion_usage_limit_nonnegative"),
+        CheckConstraint("usage_per_customer IS NULL OR usage_per_customer > 0", name="ck_promotion_customer_limit_positive"),
+        CheckConstraint("ends_at IS NULL OR starts_at IS NULL OR ends_at > starts_at", name="ck_promotion_valid_range"),
+    )
+
+
+class PromotionRule(Base):
+    __tablename__ = "promotion_rules"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    promotion_id = Column(UUID(as_uuid=True), ForeignKey("promotions.id", ondelete="CASCADE"), nullable=False, index=True)
+    rule_type = Column(String(40), nullable=False)
+    product_id = Column(UUID(as_uuid=True), ForeignKey("products.id", ondelete="CASCADE"), nullable=True, index=True)
+    category_id = Column(UUID(as_uuid=True), ForeignKey("categories.id", ondelete="CASCADE"), nullable=True, index=True)
+    store_id = Column(UUID(as_uuid=True), ForeignKey("stores.id", ondelete="CASCADE"), nullable=True, index=True)
+    value = Column(JSONB, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    promotion = relationship("Promotion", back_populates="rules")
+
+
+class PromotionUsage(Base):
+    __tablename__ = "promotion_usages"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    promotion_id = Column(UUID(as_uuid=True), ForeignKey("promotions.id", ondelete="CASCADE"), nullable=False, index=True)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    order_id = Column(UUID(as_uuid=True), ForeignKey("orders.id", ondelete="SET NULL"), nullable=True, index=True)
+    discount_amount = Column(Numeric(18, 2), nullable=False)
+    used_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    promotion = relationship("Promotion", back_populates="usages")
+
+    __table_args__ = (CheckConstraint("discount_amount >= 0", name="ck_promotion_usage_discount_nonnegative"),)
+
+
+class Campaign(Base):
+    __tablename__ = "campaigns"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    name = Column(String(180), nullable=False)
+    slug = Column(String(180), unique=True, nullable=False, index=True)
+    description = Column(Text, nullable=True)
+    banner_url = Column(Text, nullable=True)
+    starts_at = Column(DateTime(timezone=True), nullable=True)
+    ends_at = Column(DateTime(timezone=True), nullable=True)
+    is_active = Column(Boolean, nullable=False, default=True, server_default="true")
+    created_by_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+    __table_args__ = (CheckConstraint("ends_at IS NULL OR starts_at IS NULL OR ends_at > starts_at", name="ck_campaign_valid_range"),)
+
+
+class CampaignPromotion(Base):
+    __tablename__ = "campaign_promotions"
+
+    campaign_id = Column(UUID(as_uuid=True), ForeignKey("campaigns.id", ondelete="CASCADE"), primary_key=True)
+    promotion_id = Column(UUID(as_uuid=True), ForeignKey("promotions.id", ondelete="CASCADE"), primary_key=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
