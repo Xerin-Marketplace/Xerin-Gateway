@@ -37,6 +37,7 @@ from api.routers import (
     refunds,
     reviews,
     wishlist,
+    notifications,
 )
 
 
@@ -161,5 +162,6 @@ for router in (
     storefront.router,
     reviews.router,
     wishlist.router,
+    notifications.router,
 ):
     api.include_router(router, prefix=settings.API_PREFIX)

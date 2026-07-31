@@ -96,6 +96,12 @@ class PermissionCode(str, enum.Enum):
     promotions_delete = "promotions:delete"
     campaigns_manage = "campaigns:manage"
 
+    notifications_read = "notifications:read"
+    notifications_manage = "notifications:manage"
+    admin_notifications_read = "admin_notifications:read"
+    admin_notifications_manage = "admin_notifications:manage"
+    admin_notification_templates_manage = "admin_notification_templates:manage"
+
     # Commerce
     orders_read = "orders:read"
     payments_read = "payments:read"
@@ -306,3 +312,39 @@ class SecurityEventType(str, enum.Enum):
     authorization_denied = "authorization_denied"
     suspicious_request = "suspicious_request"
     sensitive_action = "sensitive_action"
+
+
+class NotificationChannel(str, enum.Enum):
+    in_app = "in_app"
+    email = "email"
+    sms = "sms"
+    push = "push"
+
+
+class NotificationDeliveryStatus(str, enum.Enum):
+    pending = "pending"
+    processing = "processing"
+    sent = "sent"
+    delivered = "delivered"
+    failed = "failed"
+    cancelled = "cancelled"
+
+
+class NotificationEvent(str, enum.Enum):
+    order_placed = "order_placed"
+    payment_confirmed = "payment_confirmed"
+    order_accepted = "order_accepted"
+    order_dispatched = "order_dispatched"
+    delivery_updated = "delivery_updated"
+    order_delivered = "order_delivered"
+    refund_updated = "refund_updated"
+    promotion_available = "promotion_available"
+    review_reply = "review_reply"
+    new_order = "new_order"
+    low_stock = "low_stock"
+    product_reviewed = "product_reviewed"
+    cancellation_requested = "cancellation_requested"
+    payout_updated = "payout_updated"
+    seller_approval_required = "seller_approval_required"
+    product_approval_required = "product_approval_required"
+    system_alert = "system_alert"

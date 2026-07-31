@@ -1,3 +1,4 @@
+from api.enums import NotificationChannel, NotificationDeliveryStatus, NotificationEvent
 from api.enums import DeliveryStatus, ReviewStatus, ReviewReportReason
 from api.enums import CommissionScope, CommissionRuleType
 from pydantic import (
@@ -2341,4 +2342,107 @@ class CampaignResponse(BaseModel):
     is_active: bool
     created_at: datetime
     updated_at: datetime | None
+    model_config = ConfigDict(from_attributes=True)
+
+
+class NotificationResponse(BaseModel):
+    id: UUID
+    event: NotificationEvent
+    title: str
+    message: str
+    data: dict[str, Any] = Field(default_factory=dict)
+    action_url: str | None = None
+    is_read: bool
+    read_at: datetime | None = None
+    expires_at: datetime | None = None
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class NotificationSummary(BaseModel):
+    total: int
+    unread: int
+    read: int
+
+
+class NotificationPreferenceUpdate(BaseModel):
+    in_app_enabled: bool | None = None
+    email_enabled: bool | None = None
+    sms_enabled: bool | None = None
+    push_enabled: bool | None = None
+    event_preferences: dict[str, dict[str, bool]] | None = None
+    quiet_hours_start: Time | None = None
+    quiet_hours_end: Time | None = None
+    timezone: str | None = Field(default=None, min_length=1, max_length=64)
+
+    @field_validator("event_preferences")
+    @classmethod
+    def validate_events(cls, value):
+        if value is None:
+            return value
+        valid_events = {item.value for item in NotificationEvent}
+        valid_channels = {item.value for item in NotificationChannel}
+        for event, channels in value.items():
+            if event not in valid_events:
+                raise ValueError(f"Unknown notification event: {event}")
+            unknown = set(channels) - valid_channels
+            if unknown:
+                raise ValueError(f"Unknown notification channels: {sorted(unknown)}")
+        return value
+
+
+class NotificationPreferenceResponse(BaseModel):
+    in_app_enabled: bool
+    email_enabled: bool
+    sms_enabled: bool
+    push_enabled: bool
+    event_preferences: dict[str, Any] = Field(default_factory=dict)
+    quiet_hours_start: Time | None = None
+    quiet_hours_end: Time | None = None
+    timezone: str
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class NotificationTemplateCreate(BaseModel):
+    event: NotificationEvent
+    channel: NotificationChannel
+    subject_template: str | None = Field(default=None, max_length=255)
+    body_template: str = Field(min_length=1)
+    is_active: bool = True
+
+
+class NotificationTemplateUpdate(BaseModel):
+    subject_template: str | None = Field(default=None, max_length=255)
+    body_template: str | None = Field(default=None, min_length=1)
+    is_active: bool | None = None
+
+
+class NotificationTemplateResponse(BaseModel):
+    id: UUID
+    event: NotificationEvent
+    channel: NotificationChannel
+    subject_template: str | None
+    body_template: str
+    is_active: bool
+    created_at: datetime
+    updated_at: datetime | None = None
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class DeviceTokenCreate(BaseModel):
+    token: str = Field(min_length=10)
+    platform: str = Field(pattern="^(android|ios|web)$")
+    device_name: str | None = Field(default=None, max_length=120)
+
+
+class DeviceTokenResponse(BaseModel):
+    id: UUID
+    platform: str
+    device_name: str | None
+    is_active: bool
+    created_at: datetime
+
     model_config = ConfigDict(from_attributes=True)

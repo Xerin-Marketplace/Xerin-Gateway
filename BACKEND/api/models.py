@@ -15,6 +15,7 @@ from api.enums import (
     CommissionScope, CommissionRuleType, MarketplaceTransactionType,
     WalletTransactionType, PayoutStatus, RefundStatus, RefundReason, InventoryMovementType,
     AuditSeverity, SecurityEventType, SellerOrderStatus, DeliveryStatus, ReviewStatus, ReviewReportReason,
+    NotificationChannel, NotificationDeliveryStatus, NotificationEvent,
 )
 
 
@@ -53,6 +54,9 @@ class User(Base):
     roles = relationship("UserRole", back_populates="user")
     wishlist_products = relationship("WishlistProduct", back_populates="user", cascade="all, delete-orphan")
     favorite_stores = relationship("FavoriteStore", back_populates="user", cascade="all, delete-orphan")
+    notifications = relationship("Notification", back_populates="user", cascade="all, delete-orphan")
+    notification_preference = relationship("NotificationPreference", back_populates="user", uselist=False, cascade="all, delete-orphan")
+    device_tokens = relationship("DeviceToken", back_populates="user", cascade="all, delete-orphan")
     
 class Role(Base):
     __tablename__ = "roles"
@@ -1732,3 +1736,96 @@ class CampaignPromotion(Base):
     campaign_id = Column(UUID(as_uuid=True), ForeignKey("campaigns.id", ondelete="CASCADE"), primary_key=True)
     promotion_id = Column(UUID(as_uuid=True), ForeignKey("promotions.id", ondelete="CASCADE"), primary_key=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
+class Notification(Base):
+    __tablename__ = "notifications"
+    __table_args__ = (
+        Index("ix_notifications_user_read_created", "user_id", "is_read", "created_at"),
+    )
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    event = Column(Enum(NotificationEvent, name="notificationevent"), nullable=False, default=NotificationEvent.system_alert)
+    title = Column(String(180), nullable=False)
+    message = Column(Text, nullable=False)
+    data = Column(JSONB, nullable=False, default=dict)
+    action_url = Column(Text, nullable=True)
+    is_read = Column(Boolean, nullable=False, default=False)
+    read_at = Column(DateTime(timezone=True), nullable=True)
+    expires_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+    user = relationship("User", back_populates="notifications")
+    deliveries = relationship("NotificationDelivery", back_populates="notification", cascade="all, delete-orphan")
+
+
+class NotificationPreference(Base):
+    __tablename__ = "notification_preferences"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, unique=True, index=True)
+    in_app_enabled = Column(Boolean, nullable=False, default=True)
+    email_enabled = Column(Boolean, nullable=False, default=True)
+    sms_enabled = Column(Boolean, nullable=False, default=False)
+    push_enabled = Column(Boolean, nullable=False, default=False)
+    event_preferences = Column(JSONB, nullable=False, default=dict)
+    quiet_hours_start = Column(Time, nullable=True)
+    quiet_hours_end = Column(Time, nullable=True)
+    timezone = Column(String(64), nullable=False, default="UTC")
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), nullable=True, onupdate=func.now())
+
+    user = relationship("User", back_populates="notification_preference")
+
+
+class NotificationTemplate(Base):
+    __tablename__ = "notification_templates"
+    __table_args__ = (UniqueConstraint("event", "channel", name="uq_notification_template_event_channel"),)
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    event = Column(Enum(NotificationEvent, name="notificationevent", create_type=False), nullable=False)
+    channel = Column(Enum(NotificationChannel, name="notificationchannel"), nullable=False)
+    subject_template = Column(String(255), nullable=True)
+    body_template = Column(Text, nullable=False)
+    is_active = Column(Boolean, nullable=False, default=True)
+    created_by_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), nullable=True, onupdate=func.now())
+
+
+class NotificationDelivery(Base):
+    __tablename__ = "notification_deliveries"
+    __table_args__ = (UniqueConstraint("notification_id", "channel", name="uq_notification_delivery_channel"),)
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    notification_id = Column(UUID(as_uuid=True), ForeignKey("notifications.id", ondelete="CASCADE"), nullable=False, index=True)
+    channel = Column(Enum(NotificationChannel, name="notificationchannel", create_type=False), nullable=False)
+    status = Column(Enum(NotificationDeliveryStatus, name="notificationdeliverystatus"), nullable=False, default=NotificationDeliveryStatus.pending)
+    provider = Column(String(100), nullable=True)
+    provider_reference = Column(String(255), nullable=True)
+    attempts = Column(Integer, nullable=False, default=0)
+    sent_at = Column(DateTime(timezone=True), nullable=True)
+    delivered_at = Column(DateTime(timezone=True), nullable=True)
+    failed_at = Column(DateTime(timezone=True), nullable=True)
+    failure_reason = Column(Text, nullable=True)
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), nullable=True, onupdate=func.now())
+
+    notification = relationship("Notification", back_populates="deliveries")
+
+
+class DeviceToken(Base):
+    __tablename__ = "device_tokens"
+    __table_args__ = (UniqueConstraint("token", name="uq_device_tokens_token"),)
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    token = Column(Text, nullable=False)
+    platform = Column(String(30), nullable=False)
+    device_name = Column(String(120), nullable=True)
+    is_active = Column(Boolean, nullable=False, default=True)
+    last_used_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+    user = relationship("User", back_populates="device_tokens")
