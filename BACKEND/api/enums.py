@@ -76,6 +76,9 @@ class PermissionCode(str, enum.Enum):
     seller_inventory_manage = "seller_inventory:manage"
     seller_delivery_read = "seller_delivery:read"
     seller_delivery_request = "seller_delivery:request"
+    seller_store_read = "seller_store:read"
+    seller_store_update = "seller_store:update"
+    seller_store_branding = "seller_store:branding"
 
     # Commerce
     orders_read = "orders:read"

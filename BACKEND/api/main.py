@@ -30,6 +30,7 @@ from api.routers import (
     delivery_integration,
     shipping,
     stores,
+    storefront,
     users,
     wallets,
     refunds,
@@ -152,5 +153,6 @@ for router in (
     shipping.router,
     admin.router,
     stores.router,
+    storefront.router,
 ):
     api.include_router(router, prefix=settings.API_PREFIX)
