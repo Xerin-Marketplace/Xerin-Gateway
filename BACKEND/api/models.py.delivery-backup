@@ -14,7 +14,7 @@ from api.enums import (
     DayOfWeek, StoreStatus, ShippingRateType, ShipmentStatus, InventoryReservationStatus,
     CommissionScope, CommissionRuleType, MarketplaceTransactionType,
     WalletTransactionType, PayoutStatus, RefundStatus, RefundReason, InventoryMovementType,
-    AuditSeverity, SecurityEventType, SellerOrderStatus, DeliveryStatus,
+    AuditSeverity, SecurityEventType, SellerOrderStatus,
 )
 
 
@@ -781,43 +781,6 @@ class ShipmentTrackingEvent(Base):
 
     shipment = relationship("Shipment", back_populates="tracking_events")
     created_by = relationship("User")
-
-# =========================================================
-# EXTERNAL DELIVERY INTEGRATION
-# =========================================================
-
-class DeliveryJob(Base):
-    __tablename__ = "delivery_jobs"
-
-    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    shipment_id = Column(UUID(as_uuid=True), ForeignKey("shipments.id", ondelete="CASCADE"), nullable=False, unique=True, index=True)
-    seller_order_id = Column(UUID(as_uuid=True), ForeignKey("seller_orders.id", ondelete="CASCADE"), nullable=False, index=True)
-    provider = Column(String(100), nullable=False, index=True)
-    external_delivery_id = Column(String(255), nullable=False, index=True)
-    status = Column(Enum(DeliveryStatus), nullable=False, default=DeliveryStatus.created, server_default="created", index=True)
-    tracking_number = Column(String(150), nullable=True, index=True)
-    tracking_url = Column(Text, nullable=True)
-    delivery_fee = Column(Numeric(18, 2), nullable=True)
-    currency = Column(String(10), nullable=False, default="TZS", server_default="TZS")
-    courier_name = Column(String(150), nullable=True)
-    courier_phone = Column(String(50), nullable=True)
-    estimated_pickup_at = Column(DateTime(timezone=True), nullable=True)
-    estimated_delivery_at = Column(DateTime(timezone=True), nullable=True)
-    failure_reason = Column(Text, nullable=True)
-    request_payload = Column(JSONB, nullable=True)
-    provider_response = Column(JSONB, nullable=True)
-    last_synced_at = Column(DateTime(timezone=True), nullable=True)
-    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
-    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
-
-    shipment = relationship("Shipment")
-    seller_order = relationship("SellerOrder")
-
-    __table_args__ = (
-        UniqueConstraint("provider", "external_delivery_id", name="uq_delivery_job_provider_external_id"),
-        CheckConstraint("delivery_fee IS NULL OR delivery_fee >= 0", name="ck_delivery_job_fee_nonnegative"),
-    )
-
 
 # =========================================================
 # INVENTORY
