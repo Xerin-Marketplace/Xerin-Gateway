@@ -38,6 +38,7 @@ from api.routers import (
     reviews,
     wishlist,
     notifications,
+    product_qa,
 )
 
 
@@ -163,5 +164,6 @@ for router in (
     reviews.router,
     wishlist.router,
     notifications.router,
+    product_qa.router,
 ):
     api.include_router(router, prefix=settings.API_PREFIX)

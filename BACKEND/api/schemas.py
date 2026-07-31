@@ -1,4 +1,4 @@
-from api.enums import NotificationChannel, NotificationDeliveryStatus, NotificationEvent
+from api.enums import NotificationChannel, NotificationDeliveryStatus, NotificationEvent, QuestionStatus, QuestionReportReason
 from api.enums import DeliveryStatus, ReviewStatus, ReviewReportReason
 from api.enums import CommissionScope, CommissionRuleType
 from pydantic import (
@@ -2446,3 +2446,75 @@ class DeviceTokenResponse(BaseModel):
     created_at: datetime
 
     model_config = ConfigDict(from_attributes=True)
+
+
+# Phase 3 Task 16: Product Questions and Answers schemas
+class ProductQuestionCreate(BaseModel):
+    question: str = Field(min_length=5, max_length=2000)
+
+    @field_validator("question")
+    @classmethod
+    def clean_question(cls, value: str) -> str:
+        return _clean_required_text(value)
+
+
+class ProductQuestionUpdate(ProductQuestionCreate):
+    pass
+
+
+class ProductAnswerCreate(BaseModel):
+    answer: str = Field(min_length=2, max_length=4000)
+
+    @field_validator("answer")
+    @classmethod
+    def clean_answer(cls, value: str) -> str:
+        return _clean_required_text(value)
+
+
+class ProductAnswerUpdate(ProductAnswerCreate):
+    pass
+
+
+class QuestionReportCreate(BaseModel):
+    reason: QuestionReportReason
+    details: Optional[str] = Field(default=None, max_length=2000)
+
+
+class QuestionModerationRequest(BaseModel):
+    status: QuestionStatus
+    note: Optional[str] = Field(default=None, max_length=2000)
+
+
+class ProductAnswerResponse(BaseModel):
+    model_config = ORM_CONFIG
+    id: UUID
+    question_id: UUID
+    user_id: UUID
+    answer: str
+    is_seller_answer: bool
+    is_official: bool
+    status: QuestionStatus
+    helpful_count: int
+    created_at: datetime
+    updated_at: Optional[datetime] = None
+
+
+class ProductQuestionResponse(BaseModel):
+    model_config = ORM_CONFIG
+    id: UUID
+    product_id: UUID
+    customer_id: UUID
+    question: str
+    status: QuestionStatus
+    helpful_count: int
+    answer_count: int
+    created_at: datetime
+    updated_at: Optional[datetime] = None
+    answers: List[ProductAnswerResponse] = Field(default_factory=list)
+
+
+class ProductQuestionListResponse(BaseModel):
+    total: int
+    page: int
+    page_size: int
+    results: List[ProductQuestionResponse]
