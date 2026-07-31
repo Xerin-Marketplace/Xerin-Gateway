@@ -9,3 +9,8 @@ venv/
 
 # Frontend dependencies/build
 Frontend/
+.env.test
+.env/test/*
+
+API_FEATURES.md
+API_FEATURES.md/*
