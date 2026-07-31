@@ -15,7 +15,7 @@ from decimal import Decimal
 from typing import Optional, List, Dict, Any, Literal
 import enum
 from api.enums import DayOfWeek, StoreStatus, ShippingRateType
-from api.enums import ShipmentStatus, WalletTransactionType, PayoutStatus, RefundStatus, RefundReason, SellerOrderStatus, InventoryMovementType
+from api.enums import ShipmentStatus, WalletTransactionType, PayoutStatus, RefundStatus, RefundReason, SellerOrderStatus
 
 
 class UserStatus(str, enum.Enum):
@@ -1182,87 +1182,6 @@ class InventoryResponse(BaseModel):
     updated_at: Optional[datetime]
 
     model_config = ORM_CONFIG
-
-
-class SellerInventoryAdjustmentRequest(BaseModel):
-    adjustment: int
-    reason: InventoryMovementType
-    reference: Optional[str] = Field(default=None, max_length=255)
-    note: Optional[str] = Field(default=None, max_length=2000)
-
-    @model_validator(mode="after")
-    def validate_adjustment(self):
-        if self.adjustment == 0:
-            raise ValueError("Adjustment cannot be zero")
-        return self
-
-
-class SellerInventoryRestockRequest(BaseModel):
-    quantity: int = Field(gt=0)
-    reference: Optional[str] = Field(default=None, max_length=255)
-    note: Optional[str] = Field(default=None, max_length=2000)
-    warehouse_location: Optional[str] = Field(default=None, max_length=255)
-
-
-class SellerInventorySettingsUpdate(BaseModel):
-    low_stock_threshold: Optional[int] = Field(default=None, ge=0)
-    warehouse_location: Optional[str] = Field(default=None, max_length=255)
-    restock_date: Optional[datetime] = None
-
-
-class SellerInventoryItemResponse(BaseModel):
-    inventory_id: UUID
-    product_id: UUID
-    product_name: str
-    product_sku: str
-    variant_id: Optional[UUID]
-    variant_name: Optional[str]
-    variant_sku: Optional[str]
-    quantity: int
-    reserved_quantity: int
-    available_quantity: int
-    low_stock_threshold: int
-    warehouse_location: Optional[str]
-    restock_date: Optional[datetime]
-    unit_price: Decimal
-    inventory_value: Decimal
-    is_low_stock: bool
-    is_out_of_stock: bool
-    updated_at: Optional[datetime]
-
-
-class SellerInventorySummaryResponse(BaseModel):
-    total_products: int
-    total_variants: int
-    total_stock_units: int
-    reserved_units: int
-    available_units: int
-    low_stock_variants: int
-    out_of_stock_variants: int
-    inventory_value: Decimal
-
-
-class SellerInventoryListResponse(BaseModel):
-    total: int
-    page: int
-    page_size: int
-    results: list[SellerInventoryItemResponse]
-
-
-class SellerInventoryMovementResponse(BaseModel):
-    id: UUID
-    inventory_id: UUID
-    product_id: UUID
-    product_name: str
-    variant_id: Optional[UUID]
-    variant_name: Optional[str]
-    movement_type: InventoryMovementType
-    adjustment: int
-    before_quantity: int
-    after_quantity: int
-    reference: Optional[str]
-    note: Optional[str]
-    created_at: datetime
 
 
 # =========================================================
