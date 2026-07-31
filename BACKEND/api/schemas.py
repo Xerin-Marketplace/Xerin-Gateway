@@ -2203,3 +2203,142 @@ class WishlistSummaryResponse(BaseModel):
 
 class WishlistMutationResponse(BaseModel):
     message: str
+
+
+# =========================================================
+# PHASE 3 TASK 14: PROMOTION SCHEMAS
+# =========================================================
+
+PromotionTypeLiteral = Literal[
+    "percentage", "fixed_amount", "free_shipping", "buy_x_get_y",
+    "flash_sale", "category_discount", "store_wide", "first_order",
+    "loyalty", "referral",
+]
+
+class PromotionRuleInput(BaseModel):
+    rule_type: Literal["product", "category", "store", "customer_group", "minimum_quantity"]
+    product_id: UUID | None = None
+    category_id: UUID | None = None
+    store_id: UUID | None = None
+    value: dict[str, Any] | None = None
+
+
+class PromotionCreate(BaseModel):
+    name: str = Field(min_length=2, max_length=180)
+    code: str | None = Field(default=None, min_length=2, max_length=50)
+    description: str | None = None
+    promotion_type: PromotionTypeLiteral
+    discount_value: Decimal = Field(default=0, ge=0)
+    minimum_order_amount: Decimal | None = Field(default=None, ge=0)
+    maximum_discount_amount: Decimal | None = Field(default=None, ge=0)
+    usage_limit: int | None = Field(default=None, ge=0)
+    usage_per_customer: int | None = Field(default=None, gt=0)
+    stackable: bool = False
+    automatic: bool = False
+    is_active: bool = True
+    starts_at: datetime | None = None
+    ends_at: datetime | None = None
+    rules: list[PromotionRuleInput] = Field(default_factory=list)
+
+    @field_validator("code")
+    @classmethod
+    def normalise_promotion_code(cls, value):
+        return value.strip().upper() if value else value
+
+    @model_validator(mode="after")
+    def validate_promotion(self):
+        if self.promotion_type == "percentage" and self.discount_value > 100:
+            raise ValueError("Percentage discount cannot exceed 100")
+        if self.promotion_type not in {"free_shipping", "buy_x_get_y"} and self.discount_value <= 0:
+            raise ValueError("discount_value must be greater than zero")
+        if self.starts_at and self.ends_at and self.ends_at <= self.starts_at:
+            raise ValueError("ends_at must be later than starts_at")
+        return self
+
+
+class PromotionUpdate(BaseModel):
+    name: str | None = Field(default=None, min_length=2, max_length=180)
+    description: str | None = None
+    discount_value: Decimal | None = Field(default=None, ge=0)
+    minimum_order_amount: Decimal | None = Field(default=None, ge=0)
+    maximum_discount_amount: Decimal | None = Field(default=None, ge=0)
+    usage_limit: int | None = Field(default=None, ge=0)
+    usage_per_customer: int | None = Field(default=None, gt=0)
+    stackable: bool | None = None
+    automatic: bool | None = None
+    is_active: bool | None = None
+    starts_at: datetime | None = None
+    ends_at: datetime | None = None
+
+
+class PromotionResponse(BaseModel):
+    id: UUID
+    seller_id: UUID | None
+    name: str
+    code: str | None
+    description: str | None
+    promotion_type: str
+    discount_value: Decimal
+    minimum_order_amount: Decimal | None
+    maximum_discount_amount: Decimal | None
+    usage_limit: int | None
+    usage_per_customer: int | None
+    usage_count: int
+    stackable: bool
+    automatic: bool
+    is_active: bool
+    starts_at: datetime | None
+    ends_at: datetime | None
+    created_at: datetime
+    updated_at: datetime | None
+    model_config = ConfigDict(from_attributes=True)
+
+
+class PromotionApplyRequest(BaseModel):
+    code: str = Field(min_length=2, max_length=50)
+    subtotal: Decimal = Field(gt=0)
+
+    @field_validator("code")
+    @classmethod
+    def normalise_code(cls, value):
+        return value.strip().upper()
+
+
+class PromotionApplyResponse(BaseModel):
+    promotion_id: UUID
+    code: str | None
+    subtotal: Decimal
+    discount_amount: Decimal
+    total_after_discount: Decimal
+    promotion_type: str
+
+
+class CampaignCreate(BaseModel):
+    name: str = Field(min_length=2, max_length=180)
+    slug: str = Field(min_length=2, max_length=180, pattern=r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
+    description: str | None = None
+    banner_url: str | None = None
+    starts_at: datetime | None = None
+    ends_at: datetime | None = None
+    is_active: bool = True
+    promotion_ids: list[UUID] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def validate_dates(self):
+        if self.starts_at and self.ends_at and self.ends_at <= self.starts_at:
+            raise ValueError("ends_at must be later than starts_at")
+        return self
+
+
+class CampaignResponse(BaseModel):
+    id: UUID
+    name: str
+    slug: str
+    description: str | None
+    banner_url: str | None
+    starts_at: datetime | None
+    ends_at: datetime | None
+    is_active: bool
+    created_at: datetime
+    updated_at: datetime | None
+    model_config = ConfigDict(from_attributes=True)

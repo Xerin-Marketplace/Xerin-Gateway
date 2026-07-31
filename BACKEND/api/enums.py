@@ -90,6 +90,11 @@ class PermissionCode(str, enum.Enum):
     admin_reviews_moderate = "admin_reviews:moderate"
     wishlist_read = "wishlist:read"
     wishlist_manage = "wishlist:manage"
+    promotions_read = "promotions:read"
+    promotions_create = "promotions:create"
+    promotions_update = "promotions:update"
+    promotions_delete = "promotions:delete"
+    campaigns_manage = "campaigns:manage"
 
     # Commerce
     orders_read = "orders:read"
