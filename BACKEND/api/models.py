@@ -14,7 +14,7 @@ from api.enums import (
     DayOfWeek, StoreStatus, ShippingRateType, ShipmentStatus, InventoryReservationStatus,
     CommissionScope, CommissionRuleType, MarketplaceTransactionType,
     WalletTransactionType, PayoutStatus, RefundStatus, RefundReason, InventoryMovementType,
-    AuditSeverity, SecurityEventType, SellerOrderStatus, DeliveryStatus,
+    AuditSeverity, SecurityEventType, SellerOrderStatus, DeliveryStatus, ReviewStatus, ReviewReportReason,
 )
 
 
@@ -1497,3 +1497,104 @@ class SecurityEvent(Base):
 
     actor = relationship("User", foreign_keys=[actor_user_id])
     resolved_by = relationship("User", foreign_keys=[resolved_by_id])
+
+
+# Phase 3 Task 12: customer reviews and seller ratings
+class ProductReview(Base):
+    __tablename__ = "product_reviews"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    product_id = Column(UUID(as_uuid=True), ForeignKey("products.id", ondelete="CASCADE"), nullable=False, index=True)
+    order_item_id = Column(UUID(as_uuid=True), ForeignKey("order_items.id", ondelete="RESTRICT"), nullable=False, unique=True, index=True)
+    customer_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    seller_id = Column(UUID(as_uuid=True), ForeignKey("sellers.id", ondelete="CASCADE"), nullable=False, index=True)
+    rating = Column(Integer, nullable=False)
+    title = Column(String(150), nullable=True)
+    comment = Column(Text, nullable=True)
+    verified_purchase = Column(Boolean, nullable=False, default=True, server_default="true")
+    status = Column(Enum(ReviewStatus), nullable=False, default=ReviewStatus.pending, server_default="pending", index=True)
+    seller_reply = Column(Text, nullable=True)
+    seller_replied_at = Column(DateTime(timezone=True), nullable=True)
+    helpful_count = Column(Integer, nullable=False, default=0, server_default="0")
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), nullable=True, onupdate=func.now())
+
+    product = relationship("Product")
+    order_item = relationship("OrderItem")
+    customer = relationship("User")
+    seller = relationship("Seller")
+    images = relationship("ReviewImage", back_populates="product_review", cascade="all, delete-orphan")
+    votes = relationship("ReviewVote", back_populates="product_review", cascade="all, delete-orphan")
+    reports = relationship("ReviewReport", back_populates="product_review", cascade="all, delete-orphan")
+
+    __table_args__ = (
+        CheckConstraint("rating >= 1 AND rating <= 5", name="ck_product_review_rating"),
+        CheckConstraint("helpful_count >= 0", name="ck_product_review_helpful_count"),
+        UniqueConstraint("customer_id", "order_item_id", name="uq_product_review_customer_order_item"),
+    )
+
+
+class StoreReview(Base):
+    __tablename__ = "store_reviews"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    store_id = Column(UUID(as_uuid=True), ForeignKey("stores.id", ondelete="CASCADE"), nullable=False, index=True)
+    seller_order_id = Column(UUID(as_uuid=True), ForeignKey("seller_orders.id", ondelete="RESTRICT"), nullable=False, unique=True, index=True)
+    customer_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    rating = Column(Integer, nullable=False)
+    title = Column(String(150), nullable=True)
+    comment = Column(Text, nullable=True)
+    verified_purchase = Column(Boolean, nullable=False, default=True, server_default="true")
+    status = Column(Enum(ReviewStatus), nullable=False, default=ReviewStatus.pending, server_default="pending", index=True)
+    seller_reply = Column(Text, nullable=True)
+    seller_replied_at = Column(DateTime(timezone=True), nullable=True)
+    helpful_count = Column(Integer, nullable=False, default=0, server_default="0")
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), nullable=True, onupdate=func.now())
+
+    store = relationship("Store")
+    seller_order = relationship("SellerOrder")
+    customer = relationship("User")
+    reports = relationship("ReviewReport", back_populates="store_review", cascade="all, delete-orphan")
+
+    __table_args__ = (
+        CheckConstraint("rating >= 1 AND rating <= 5", name="ck_store_review_rating"),
+        CheckConstraint("helpful_count >= 0", name="ck_store_review_helpful_count"),
+        UniqueConstraint("customer_id", "seller_order_id", name="uq_store_review_customer_seller_order"),
+    )
+
+
+class ReviewImage(Base):
+    __tablename__ = "review_images"
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    product_review_id = Column(UUID(as_uuid=True), ForeignKey("product_reviews.id", ondelete="CASCADE"), nullable=False, index=True)
+    image_url = Column(Text, nullable=False)
+    display_order = Column(Integer, nullable=False, default=0, server_default="0")
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    product_review = relationship("ProductReview", back_populates="images")
+
+
+class ReviewVote(Base):
+    __tablename__ = "review_votes"
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    product_review_id = Column(UUID(as_uuid=True), ForeignKey("product_reviews.id", ondelete="CASCADE"), nullable=False, index=True)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    is_helpful = Column(Boolean, nullable=False, default=True, server_default="true")
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    product_review = relationship("ProductReview", back_populates="votes")
+    __table_args__ = (UniqueConstraint("product_review_id", "user_id", name="uq_review_vote_review_user"),)
+
+
+class ReviewReport(Base):
+    __tablename__ = "review_reports"
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    product_review_id = Column(UUID(as_uuid=True), ForeignKey("product_reviews.id", ondelete="CASCADE"), nullable=True, index=True)
+    store_review_id = Column(UUID(as_uuid=True), ForeignKey("store_reviews.id", ondelete="CASCADE"), nullable=True, index=True)
+    reported_by_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    reason = Column(Enum(ReviewReportReason), nullable=False)
+    details = Column(Text, nullable=True)
+    resolved = Column(Boolean, nullable=False, default=False, server_default="false")
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    product_review = relationship("ProductReview", back_populates="reports")
+    store_review = relationship("StoreReview", back_populates="reports")
+    __table_args__ = (CheckConstraint("(product_review_id IS NOT NULL) <> (store_review_id IS NOT NULL)", name="ck_review_report_single_target"),)
