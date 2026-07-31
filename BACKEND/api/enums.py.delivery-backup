@@ -74,8 +74,6 @@ class PermissionCode(str, enum.Enum):
     seller_orders_manage = "seller_orders:manage"
     seller_inventory_read = "seller_inventory:read"
     seller_inventory_manage = "seller_inventory:manage"
-    seller_delivery_read = "seller_delivery:read"
-    seller_delivery_request = "seller_delivery:request"
 
     # Commerce
     orders_read = "orders:read"
@@ -147,19 +145,6 @@ class ShippingRateType(str, enum.Enum):
     weight_based = "weight_based"
     free = "free"
 
-
-
-class DeliveryStatus(str, enum.Enum):
-    created = "created"
-    awaiting_pickup = "awaiting_pickup"
-    courier_assigned = "courier_assigned"
-    picked_up = "picked_up"
-    in_transit = "in_transit"
-    out_for_delivery = "out_for_delivery"
-    delivered = "delivered"
-    delivery_failed = "delivery_failed"
-    cancelled = "cancelled"
-    returned = "returned"
 
 class ShipmentStatus(str, enum.Enum):
     pending = "pending"

@@ -73,16 +73,6 @@ class Settings(BaseSettings):
     # Payment webhook security
     PAYMENT_WEBHOOK_SECRET: str | None = None
 
-    # External delivery provider
-    DELIVERY_PROVIDER_NAME: str = "dependent-delivery"
-    DELIVERY_API_BASE_URL: str | None = None
-    DELIVERY_API_KEY: str | None = None
-    DELIVERY_API_KEY_HEADER: str = "Authorization"
-    DELIVERY_WEBHOOK_SECRET: str | None = None
-    DELIVERY_QUOTE_PATH: str = "/quotes"
-    DELIVERY_CREATE_PATH: str = "/deliveries"
-    DELIVERY_API_TIMEOUT_SECONDS: int = Field(default=30, ge=1, le=120)
-
     # Initial super-admin bootstrap
     SUPER_ADMIN_EMAIL: str | None = None
     SUPER_ADMIN_PHONE: str | None = None

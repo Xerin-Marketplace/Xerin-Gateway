@@ -2,8 +2,20 @@ from pathlib import Path
 
 
 def test_seller_inventory_router_exists():
-    text = Path("api/routers/seller_inventory.py").read_text()
-    for route in ('@router.get("")', '@router.get("/summary")', '@router.get("/low-stock")', '@router.get("/history")', '@router.post("/{inventory_id}/adjust")', '@router.post("/{inventory_id}/restock")'):
+    text = Path("api/routers/seller_inventory.py").read_text(
+        encoding="utf-8"
+    )
+
+    routes = (
+        '@router.get(""',
+        '@router.get("/summary"',
+        '@router.get("/low-stock"',
+        '@router.get("/history"',
+        '@router.post("/{inventory_id}/adjust"',
+        '@router.post("/{inventory_id}/restock"',
+    )
+
+    for route in routes:
         assert route in text
 
 

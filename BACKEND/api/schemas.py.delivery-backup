@@ -1,4 +1,3 @@
-from api.enums import DeliveryStatus
 from api.enums import CommissionScope, CommissionRuleType
 from pydantic import (
     AliasChoices,
@@ -2026,44 +2025,3 @@ class SellerOrderSummaryResponse(BaseModel):
     cancellation_requests: int
     gross_sales: Decimal
     units_sold: int
-
-
-# Phase 3 Task 10: external delivery integration
-class DeliveryQuoteRequest(BaseModel):
-    pickup: dict
-    dropoff: dict
-    package: dict
-    currency: str = "TZS"
-
-class DeliveryQuoteResponse(BaseModel):
-    provider: str
-    quote_id: str | None = None
-    fee: Decimal
-    currency: str
-    estimated_pickup_at: datetime | None = None
-    estimated_delivery_at: datetime | None = None
-    raw_response: dict | None = None
-
-class DeliveryRequestResponse(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
-    id: UUID
-    shipment_id: UUID
-    seller_order_id: UUID
-    provider: str
-    external_delivery_id: str
-    status: DeliveryStatus
-    tracking_number: str | None = None
-    tracking_url: str | None = None
-    delivery_fee: Decimal | None = None
-    currency: str
-    courier_name: str | None = None
-    courier_phone: str | None = None
-    estimated_pickup_at: datetime | None = None
-    estimated_delivery_at: datetime | None = None
-    last_synced_at: datetime | None = None
-    created_at: datetime
-
-class DeliveryWebhookResponse(BaseModel):
-    accepted: bool
-    delivery_id: str
-    status: DeliveryStatus
