@@ -45,3 +45,4 @@ def downgrade():
     op.drop_table("shipping_rates"); op.drop_table("shipping_methods"); op.drop_table("shipping_zones")
     for name in ["updated_at","longitude","latitude","landmark","ward","district","recipient_phone","recipient_name","label"]: op.drop_column("addresses", name)
     postgresql.ENUM(name="shippingratetype").drop(op.get_bind(), checkfirst=True)
+    
