@@ -79,6 +79,15 @@ class PermissionCode(str, enum.Enum):
     seller_store_read = "seller_store:read"
     seller_store_update = "seller_store:update"
     seller_store_branding = "seller_store:branding"
+    reviews_create = "reviews:create"
+    reviews_read = "reviews:read"
+    reviews_update = "reviews:update"
+    reviews_delete = "reviews:delete"
+    seller_reviews_read = "seller_reviews:read"
+    seller_reviews_reply = "seller_reviews:reply"
+    seller_reviews_report = "seller_reviews:report"
+    admin_reviews_read = "admin_reviews:read"
+    admin_reviews_moderate = "admin_reviews:moderate"
 
     # Commerce
     orders_read = "orders:read"
@@ -132,6 +141,25 @@ class PermissionCode(str, enum.Enum):
     STORE_ADMIN_VERIFY = "store:admin_verify"
     STORE_ADMIN_FEATURE = "store:admin_feature"
     STORE_ADMIN_DELETE = "store:admin_delete"
+
+
+
+
+class ReviewStatus(str, enum.Enum):
+    pending = "pending"
+    approved = "approved"
+    rejected = "rejected"
+    hidden = "hidden"
+    reported = "reported"
+
+
+class ReviewReportReason(str, enum.Enum):
+    spam = "spam"
+    abusive = "abusive"
+    misleading = "misleading"
+    inappropriate = "inappropriate"
+    conflict_of_interest = "conflict_of_interest"
+    other = "other"
 
 
 class SellerOrderStatus(str, enum.Enum):

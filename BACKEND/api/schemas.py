@@ -1,4 +1,4 @@
-from api.enums import DeliveryStatus
+from api.enums import DeliveryStatus, ReviewStatus, ReviewReportReason
 from api.enums import CommissionScope, CommissionRuleType
 from pydantic import (
     AliasChoices,
@@ -2095,3 +2095,54 @@ class DeliveryWebhookResponse(BaseModel):
     accepted: bool
     delivery_id: str
     status: DeliveryStatus
+
+
+# Phase 3 Task 12: reviews
+class ReviewCreate(BaseModel):
+    order_item_id: UUID
+    rating: int = Field(ge=1, le=5)
+    title: Optional[str] = Field(default=None, max_length=150)
+    comment: Optional[str] = Field(default=None, max_length=5000)
+
+class StoreReviewCreate(BaseModel):
+    seller_order_id: UUID
+    rating: int = Field(ge=1, le=5)
+    title: Optional[str] = Field(default=None, max_length=150)
+    comment: Optional[str] = Field(default=None, max_length=5000)
+
+class ReviewUpdate(BaseModel):
+    rating: Optional[int] = Field(default=None, ge=1, le=5)
+    title: Optional[str] = Field(default=None, max_length=150)
+    comment: Optional[str] = Field(default=None, max_length=5000)
+
+class SellerReviewReply(BaseModel):
+    reply: str = Field(min_length=1, max_length=3000)
+
+class ReviewModerationRequest(BaseModel):
+    status: ReviewStatus
+    reason: Optional[str] = Field(default=None, max_length=1000)
+
+class ReviewReportRequest(BaseModel):
+    reason: ReviewReportReason
+    details: Optional[str] = Field(default=None, max_length=2000)
+
+class ReviewResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: UUID
+    rating: int
+    title: Optional[str]
+    comment: Optional[str]
+    verified_purchase: bool
+    status: ReviewStatus
+    seller_reply: Optional[str]
+    seller_replied_at: Optional[datetime]
+    helpful_count: int
+    created_at: datetime
+    updated_at: Optional[datetime]
+
+class ReviewListResponse(BaseModel):
+    total: int
+    page: int
+    page_size: int
+    average_rating: Decimal
+    results: list[ReviewResponse]

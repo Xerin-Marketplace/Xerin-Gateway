@@ -32,7 +32,7 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-DEFAULT_BASE_URL = "http://127.0.0.1:8000/api/v1"
+DEFAULT_BASE_URL = "http://169.58.54.110:8081/api/v1"
 HTTP_METHODS = ("get", "post", "put", "patch", "delete", "options", "head")
 METHOD_ORDER = {name: i for i, name in enumerate(HTTP_METHODS)}
 METHOD_ICONS = {
@@ -610,7 +610,7 @@ with st.sidebar:
     st.session_state.base_url = st.text_input(
         "API base URL",
         value=st.session_state.base_url,
-        help="Normally http://127.0.0.1:8000/api/v1",
+        help="Normally http://169.58.54.110:8081/api/v1",
     )
     st.session_state.timeout = st.number_input("Timeout (seconds)", min_value=3, max_value=180, value=int(st.session_state.timeout))
     st.session_state.verify_ssl = st.checkbox("Verify SSL certificate", value=st.session_state.verify_ssl)
