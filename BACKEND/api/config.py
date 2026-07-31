@@ -38,8 +38,8 @@ class Settings(BaseSettings):
     REFRESH_TOKEN_EXPIRE_DAYS: int = Field(default=7, ge=1)
 
     # Browser and proxy security
-    CORS_ORIGINS: str = "http://localhost:3000,http://127.0.0.1:3000"
-    TRUSTED_HOSTS: str = "localhost,127.0.0.1"
+    CORS_ORIGINS: str = "http://localhost:3000,http://127.0.0.1:3000, http://169.58.54.110:8081/"
+    TRUSTED_HOSTS: str = "localhost,127.0.0.1, http://169.58.54.110:8081/"
     TRUST_PROXY_HEADERS: bool = False
 
     # Local uploads (temporary until object storage is introduced)
