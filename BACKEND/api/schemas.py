@@ -678,6 +678,8 @@ class CategoryResponse(BaseModel):
     parent_id: Optional[UUID]
     name: str
     slug: str
+    image_url: Optional[str] = None
+    thumbnail_url: Optional[str] = None
     created_at: datetime
 
     model_config = ORM_CONFIG

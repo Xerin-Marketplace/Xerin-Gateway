@@ -314,6 +314,9 @@ class Category(Base):
     parent_id = Column(UUID(as_uuid=True), ForeignKey("categories.id"), nullable=True)
     name = Column(String(150), nullable=False)
     slug = Column(String(150), unique=True, index=True, nullable=False)
+    image_url = Column(String(500), nullable=True)
+    thumbnail_url = Column(String(500), nullable=True)
+    image_storage_key = Column(String(500), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
 
