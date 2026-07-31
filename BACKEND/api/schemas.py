@@ -1306,6 +1306,8 @@ class PaymentInitiateRequest(BaseModel):
     method: PaymentMethod
     provider: Optional[str] = Field(default=None, max_length=100)
     phone_number: Optional[str] = None
+    success_url: Optional[str] = Field(default=None, max_length=2048)
+    failure_url: Optional[str] = Field(default=None, max_length=2048)
 
     _clean_phone = field_validator("phone_number")(_normalise_phone)
 
@@ -1315,6 +1317,8 @@ class PaymentInitiateRequest(BaseModel):
             raise ValueError("Phone number is required for mobile-money payments")
         if self.method == PaymentMethod.mobile_money and not self.provider:
             raise ValueError("Provider is required for mobile-money payments")
+        if self.method == PaymentMethod.card and self.provider and self.provider.lower() != "azampay":
+            raise ValueError("Card payments currently support provider=azampay")
         return self
 
 
@@ -1347,6 +1351,7 @@ class PaymentResponse(BaseModel):
     provider: Optional[str]
     status: PaymentStatus
     provider_transaction_id: Optional[str]
+    provider_response: Optional[Dict[str, Any]] = None
     paid_at: Optional[datetime]
     transactions: list[PaymentTransactionResponse]
     created_at: datetime

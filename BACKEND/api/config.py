@@ -73,6 +73,27 @@ class Settings(BaseSettings):
     # Payment webhook security
     PAYMENT_WEBHOOK_SECRET: str | None = None
 
+    # AzamPay (MNO push + hosted card checkout)
+    AZAMPAY_SANDBOX: bool = True
+    AZAMPAY_APP_NAME: str | None = None
+    AZAMPAY_CLIENT_ID: str | None = None
+    AZAMPAY_CLIENT_SECRET: str | None = None
+    AZAMPAY_API_KEY: str | None = None
+    AZAMPAY_VENDOR_ID: str | None = None
+    AZAMPAY_VENDOR_NAME: str | None = None
+    AZAMPAY_REQUEST_ORIGIN: str | None = None
+    AZAMPAY_CARD_SUCCESS_URL: str | None = None
+    AZAMPAY_CARD_FAILURE_URL: str | None = None
+    AZAMPAY_CALLBACK_SECRET: str | None = None
+    AZAMPAY_LANGUAGE: str = "en"
+    AZAMPAY_SANDBOX_AUTH_URL: str = "https://authenticator-sandbox.azampay.co.tz/AppRegistration/GenerateToken"
+    AZAMPAY_LIVE_AUTH_URL: str = "https://authenticator.azampay.co.tz/AppRegistration/GenerateToken"
+    AZAMPAY_SANDBOX_BASE_URL: str = "https://sandbox.azampay.co.tz"
+    AZAMPAY_LIVE_BASE_URL: str = "https://checkout.azampay.co.tz"
+    AZAMPAY_MNO_CHECKOUT_PATH: str = "/azampay/mno/checkout"
+    AZAMPAY_POST_CHECKOUT_PATH: str = "/azampay/checkout"
+    AZAMPAY_TIMEOUT_SECONDS: int = Field(default=30, ge=1, le=120)
+
     # External delivery provider
     DELIVERY_PROVIDER_NAME: str = "dependent-delivery"
     DELIVERY_API_BASE_URL: str | None = None

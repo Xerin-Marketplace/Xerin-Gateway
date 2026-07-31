@@ -21,3 +21,8 @@ python -m api.seed_permissions
 python -m pytest tests/test_phase3_task13_wishlist.py -v
 python -m pytest -m "not integration" -v
 ```
+
+# GIT 
+
+git reset --hard origin/main
+git pull origin main

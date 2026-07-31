@@ -27,6 +27,7 @@ from api.models import (
 from api.permissions import require_permission
 from api.schemas import PaymentCallbackRequest, PaymentInitiateRequest, PaymentResponse
 from api.enums import InventoryReservationStatus, SellerOrderStatus
+from api.services.azampay_service import AzamPayAPIError, AzamPayClient, AzamPayConfigurationError
 from api.services.inventory_reservations import commit_order_reservations, ensure_order_reservations_active, release_order_reservations
 from api.services.commission_engine import calculate_order_commissions
 
@@ -134,8 +135,11 @@ def initiate_payment(data: PaymentInitiateRequest, db: Session = Depends(get_db)
     ensure_order_reservations_active(db, order)
 
     method = data.method if isinstance(data.method, PaymentMethod) else PaymentMethod(data.method)
+    provider = (data.provider or ("azampay" if method in {PaymentMethod.mobile_money, PaymentMethod.card} else "")).lower().strip() or None
     if method == PaymentMethod.mobile_money and (not data.provider or not data.phone_number):
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="provider and phone_number are required for mobile money")
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail="provider and phone_number are required for mobile money")
+    if method in {PaymentMethod.mobile_money, PaymentMethod.card} and provider != "azampay" and method == PaymentMethod.card:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail="Card payments currently support AzamPay only")
 
     existing = db.query(Payment).filter(
         Payment.order_id == order.id,
@@ -151,7 +155,7 @@ def initiate_payment(data: PaymentInitiateRequest, db: Session = Depends(get_db)
         amount=order.total,
         currency=order.currency,
         method=method,
-        provider=data.provider.lower().strip() if data.provider else None,
+        provider="azampay" if method in {PaymentMethod.mobile_money, PaymentMethod.card} else provider,
         status=PaymentStatus.pending,
     )
     db.add(payment)
@@ -161,19 +165,81 @@ def initiate_payment(data: PaymentInitiateRequest, db: Session = Depends(get_db)
         "payment_reference": str(payment.id),
         "method": method.value,
         "provider": payment.provider,
+        "mno": data.provider if method == PaymentMethod.mobile_money else None,
         "phone": data.phone_number,
     })
 
-    payment.status = PaymentStatus.pending if method == PaymentMethod.cash_on_delivery else PaymentStatus.processing
-    if payment.status == PaymentStatus.processing:
+    if method == PaymentMethod.cash_on_delivery:
+        _commit(db)
+        db.refresh(payment)
+        return payment
+
+    if payment.provider != "azampay":
+        payment.status = PaymentStatus.processing
         _record_transaction(db, payment, "provider_request", PaymentStatus.processing.value, order.total, {
-            "payment_reference": str(payment.id),
-            "provider": payment.provider,
-            "phone": data.phone_number,
             "integration_status": "pending_real_provider_integration",
         })
+        _commit(db)
+        db.refresh(payment)
+        return payment
 
-    _commit(db)
+    client = AzamPayClient()
+    try:
+        if method == PaymentMethod.mobile_money:
+            result = client.mobile_checkout(
+                amount=Decimal(order.total),
+                currency=order.currency,
+                phone_number=data.phone_number or "",
+                provider=data.provider or "",
+                external_id=str(payment.id),
+                additional_properties={"order_id": str(order.id), "payment_id": str(payment.id)},
+            )
+        elif method == PaymentMethod.card:
+            success_url = data.success_url or settings.AZAMPAY_CARD_SUCCESS_URL
+            failure_url = data.failure_url or settings.AZAMPAY_CARD_FAILURE_URL
+            if not success_url or not failure_url:
+                raise AzamPayConfigurationError("Card checkout requires success_url and failure_url, or configured defaults")
+            cart_items = [
+                {
+                    "name": getattr(item, "product_name", None) or f"Order item {item.id}",
+                    "quantity": item.quantity,
+                    "price": format(Decimal(item.unit_price), "f"),
+                }
+                for item in order.items
+            ]
+            result = client.card_checkout(
+                amount=Decimal(order.total),
+                currency=order.currency,
+                external_id=payment.id.hex[:30],
+                success_url=success_url,
+                failure_url=failure_url,
+                cart={"items": cart_items},
+            )
+        else:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail="AzamPay supports mobile_money and card methods")
+    except ValueError as exc:
+        db.rollback()
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)) from exc
+    except AzamPayConfigurationError as exc:
+        db.rollback()
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
+    except AzamPayAPIError as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail={"message": str(exc), "provider": "azampay", "provider_status": exc.status_code},
+        ) from exc
+
+    payment.status = PaymentStatus.processing
+    payment.provider_transaction_id = result.transaction_id
+    payment.provider_response = {
+        **result.raw,
+        "checkout_url": result.checkout_url,
+        "message": result.message,
+        "mno": data.provider if method == PaymentMethod.mobile_money else None,
+    }
+    _record_transaction(db, payment, "provider_request", PaymentStatus.processing.value, order.total, payment.provider_response)
+    _commit(db, conflict_detail="AzamPay transaction conflict")
     db.refresh(payment)
     return payment
 
@@ -186,6 +252,10 @@ def payment_callback(
     db: Session = Depends(get_db),
 ):
     _verify_webhook_secret(x_webhook_secret)
+    return _apply_payment_callback(provider, data, db)
+
+
+def _apply_payment_callback(provider: str, data: PaymentCallbackRequest, db: Session) -> Payment:
     normalized_provider = provider.lower().strip()
     if data.provider.lower().strip() != normalized_provider:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Provider path and payload do not match")
@@ -259,6 +329,44 @@ def payment_callback(
     _commit(db, conflict_detail="Duplicate or conflicting payment callback")
     db.refresh(payment)
     return payment
+
+
+@router.post("/azampay/callback", response_model=PaymentResponse)
+def azampay_callback(
+    payload: dict,
+    x_azampay_secret: str | None = Header(default=None, alias="X-AzamPay-Secret"),
+    db: Session = Depends(get_db),
+):
+    configured_secret = settings.AZAMPAY_CALLBACK_SECRET
+    if configured_secret and (not x_azampay_secret or not hmac.compare_digest(x_azampay_secret, configured_secret)):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid AzamPay callback secret")
+
+    reference = str(payload.get("utilityref") or payload.get("externalId") or payload.get("external_id") or "").strip()
+    transaction_id = str(payload.get("reference") or payload.get("transactionId") or payload.get("transaction_id") or "").strip()
+    incoming_status = str(payload.get("transactionstatus") or payload.get("status") or "processing").lower().strip()
+    if not reference:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail="AzamPay callback is missing payment reference")
+    try:
+        payment_id = UUID(reference)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail="Invalid AzamPay payment reference") from exc
+
+    mapped = PaymentStatus.processing
+    if incoming_status in SUCCESS_STATUSES:
+        mapped = PaymentStatus.completed
+    elif incoming_status in FAILED_STATUSES:
+        mapped = PaymentStatus.failed
+    elif incoming_status in CANCELLED_STATUSES:
+        mapped = PaymentStatus.cancelled
+
+    callback_data = PaymentCallbackRequest(
+        payment_id=payment_id,
+        provider="azampay",
+        transaction_id=transaction_id or f"azampay-{reference}",
+        status=mapped,
+        payload=payload,
+    )
+    return _apply_payment_callback("azampay", callback_data, db)
 
 
 @router.get("/admin/all", response_model=list[PaymentResponse])
