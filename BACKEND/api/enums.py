@@ -112,6 +112,11 @@ class PermissionCode(str, enum.Enum):
     seller_questions_answer = "seller_questions:answer"
     product_questions_moderate = "product_questions:moderate"
 
+    search_read = "search:read"
+    recommendations_read = "recommendations:read"
+    search_history_manage = "search_history:manage"
+    seller_search_analytics_read = "seller_search_analytics:read"
+
     # Commerce
     orders_read = "orders:read"
     payments_read = "payments:read"

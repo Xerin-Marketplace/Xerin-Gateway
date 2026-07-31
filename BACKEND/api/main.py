@@ -39,6 +39,7 @@ from api.routers import (
     wishlist,
     notifications,
     product_qa,
+    search_recommendations,
 )
 
 
@@ -165,5 +166,6 @@ for router in (
     wishlist.router,
     notifications.router,
     product_qa.router,
+    search_recommendations.router,
 ):
     api.include_router(router, prefix=settings.API_PREFIX)
