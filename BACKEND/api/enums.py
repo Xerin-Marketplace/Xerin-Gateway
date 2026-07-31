@@ -88,6 +88,8 @@ class PermissionCode(str, enum.Enum):
     seller_reviews_report = "seller_reviews:report"
     admin_reviews_read = "admin_reviews:read"
     admin_reviews_moderate = "admin_reviews:moderate"
+    wishlist_read = "wishlist:read"
+    wishlist_manage = "wishlist:manage"
 
     # Commerce
     orders_read = "orders:read"

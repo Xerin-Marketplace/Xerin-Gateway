@@ -24,6 +24,8 @@ DEFAULT_ROLE_PERMISSIONS: dict[str, set[str]] = {
         PermissionCode.reviews_read.value,
         PermissionCode.reviews_update.value,
         PermissionCode.reviews_delete.value,
+        PermissionCode.wishlist_read.value,
+        PermissionCode.wishlist_manage.value,
     },
     "seller": {
         PermissionCode.view_profile.value,
@@ -114,6 +116,8 @@ DEFAULT_ROLE_PERMISSIONS: dict[str, set[str]] = {
         PermissionCode.reviews_read.value,
         PermissionCode.admin_reviews_read.value,
         PermissionCode.admin_reviews_moderate.value,
+        PermissionCode.wishlist_read.value,
+        PermissionCode.wishlist_manage.value,
         PermissionCode.STORE_ADMIN_VIEW.value,
     },
     "super_admin": {permission.value for permission in PermissionCode},
