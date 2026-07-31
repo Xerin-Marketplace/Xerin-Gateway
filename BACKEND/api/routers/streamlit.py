@@ -1,1119 +1,753 @@
-"""
-Auth / Profile / Admin API Tester — Streamlit app
-
-Exercises every endpoint in your FastAPI auth router (register, register-seller,
-login, logout, refresh-token, send-otp, verify-otp, forgot-password,
-reset-password), the /users/me profile endpoints, and — only if the logged
-in user turns out to be an admin — the full /admin/* router.
-
-How admin detection works:
-    After a successful login (or refresh), the app calls GET /users/me with
-    the access token. It inspects the returned JSON for role information
-    using a few common shapes (is_admin flag, a "role" string, or a "roles"
-    list of strings/objects). If any role resolves to "admin" or
-    "super_admin", the "Admin Panel" tab is shown. Every logged-in user,
-    admin or not, always sees "My Profile".
+"""XERIN Marketplace Backend — complete Streamlit API tester.
 
 Run:
     pip install streamlit requests
-    streamlit run streamlit_auth_tester.py
+    streamlit run streamlit.py
+
+The app reads FastAPI's OpenAPI schema and automatically exposes every route,
+including future routes. It supports JSON bodies, path/query/header parameters,
+Bearer authentication, multipart file uploads, request history, and cURL export.
 """
 
+from __future__ import annotations
+
 import json
+import mimetypes
 import time
 import uuid
-import urllib3
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+from dataclasses import dataclass
+from typing import Any
+from urllib.parse import quote
+
 import requests
 import streamlit as st
+import urllib3
 
-st.set_page_config(page_title="API Tester", layout="wide")
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-ADMIN_ROLE_NAMES = {"admin", "super_admin", "superadmin"}
+st.set_page_config(
+    page_title="XERIN Backend Tester",
+    page_icon="🛒",
+    layout="wide",
+    initial_sidebar_state="expanded",
+)
 
-defaults = {
-    "base_url": "http://api.xerinmarketplace.com/api/v1",
-    "access_token": "",
-    "refresh_token": "",
-    "last_email": "",
-    "last_phone": "",
-    "last_password": "",
-    "profile": {},
-    "is_admin": False,
-    "history": [],  # list of dicts: {method, path, status, body, request}
+DEFAULT_BASE_URL = "http://127.0.0.1:8000/api/v1"
+HTTP_METHODS = ("get", "post", "put", "patch", "delete", "options", "head")
+METHOD_ORDER = {name: i for i, name in enumerate(HTTP_METHODS)}
+METHOD_ICONS = {
+    "GET": "🔎",
+    "POST": "➕",
+    "PUT": "♻️",
+    "PATCH": "✏️",
+    "DELETE": "🗑️",
+    "OPTIONS": "⚙️",
+    "HEAD": "📨",
 }
-for k, v in defaults.items():
-    if k not in st.session_state:
-        st.session_state[k] = v
 
-def call(method: str, path: str, json_body: dict | None = None, auth: bool = False,
-         params: dict | None = None):
-    """Make a request and log it to history. Returns (status_code, response_json_or_text)."""
-    url = st.session_state.base_url.rstrip("/") + path
-    headers = {}
-    if auth and st.session_state.access_token:
-        headers["Authorization"] = f"Bearer {st.session_state.access_token}"
+# A fallback inventory discovered from the supplied backend. OpenAPI remains
+# the source of truth; this list is only displayed when the schema is disabled.
+BACKEND_MODULES = {
+    "System": ["/", "/health/live", "/health/ready"],
+    "Authentication": ["register", "seller registration", "login", "logout", "token refresh", "OTP", "password management"],
+    "Users & addresses": ["profile", "addresses", "default address"],
+    "Seller onboarding": ["seller profile", "KYC documents", "payout accounts", "approval/rejection"],
+    "Stores": ["store profile", "logo/banner", "gallery", "weekly opening hours", "public stores"],
+    "Products": ["categories", "brands", "products", "images", "options", "variants", "tags", "submission workflow"],
+    "Cart & coupons": ["cart items", "coupon application", "coupon administration"],
+    "Orders": ["checkout", "customer orders", "seller fulfilment", "admin order management"],
+    "Inventory": ["inventory CRUD", "seller stock", "adjustments", "restocking", "low-stock reporting"],
+    "Shipping & delivery": ["zones", "methods", "rates", "quotes", "shipments", "delivery provider integration"],
+    "Payments & refunds": ["payment initiation", "callbacks", "payment administration", "refund workflow"],
+    "Marketplace finance": ["commissions", "seller wallet", "payouts", "wallet adjustments"],
+    "Administration": ["users", "roles", "permissions", "sellers", "products", "catalog data"],
+    "Analytics & audit": ["admin analytics", "seller analytics", "reconciliation", "audit logs", "security events"],
+}
 
-    # Drop empty-string / None query params so we don't send junk filters.
-    clean_params = {k: v for k, v in (params or {}).items() if v not in (None, "")}
 
-    try:
-        resp = requests.request(
-            method, url, json=json_body, headers=headers,
-            params=clean_params or None, timeout=10, verify=False,
-        )
-    except requests.exceptions.RequestException as e:
-        entry = {
-            "method": method, "path": path, "status": "ERROR",
-            "body": str(e), "request": json_body, "params": clean_params,
-        }
-        st.session_state.history.insert(0, entry)
-        return None, str(e)
-
-    try:
-        body = resp.json()
-    except ValueError:
-        body = resp.text
-
-    entry = {
-        "method": method, "path": path, "status": resp.status_code,
-        "body": body, "request": json_body, "params": clean_params,
+def init_state() -> None:
+    defaults = {
+        "base_url": DEFAULT_BASE_URL,
+        "access_token": "",
+        "refresh_token": "",
+        "profile": {},
+        "openapi": None,
+        "openapi_error": "",
+        "history": [],
+        "last_response": None,
+        "verify_ssl": False,
+        "timeout": 30,
+        "selected_operation": "",
+        "remembered_email": "",
+        "remembered_password": "",
     }
-    st.session_state.history.insert(0, entry)
-    return resp.status_code, body
+    for key, value in defaults.items():
+        if key not in st.session_state:
+            st.session_state[key] = value
 
 
-def show_result(status, body):
-    if status is None:
-        st.error(f"Request failed: {body}")
-        return
-    if 200 <= status < 300:
-        st.success(f"Status {status}")
-    elif status == 429:
-        st.warning(f"Status {status} — rate limited")
-    else:
-        st.error(f"Status {status}")
-    st.json(body)
+init_state()
 
 
-def rand_suffix() -> str:
-    return uuid.uuid4().hex[:6]
+@dataclass
+class Operation:
+    method: str
+    path: str
+    summary: str
+    description: str
+    tags: list[str]
+    operation_id: str
+    raw: dict[str, Any]
 
-def check_is_admin(profile: dict) -> bool:
-    if not isinstance(profile, dict):
-        return False
+    @property
+    def key(self) -> str:
+        return f"{self.method.upper()} {self.path}"
 
-    account_type = str(profile.get("account_type", "")).lower()
-    if account_type in ADMIN_ROLE_NAMES:
-        return True
+    @property
+    def tag(self) -> str:
+        return self.tags[0] if self.tags else "Other"
 
-    roles = profile.get("roles", [])
-    if isinstance(roles, list):
-        return any(str(role).lower() in ADMIN_ROLE_NAMES for role in roles)
 
+def api_root() -> str:
+    """Return server root by removing the configured /api/v1 suffix."""
+    base = st.session_state.base_url.rstrip("/")
+    for suffix in ("/api/v1", "/api"):
+        if base.endswith(suffix):
+            return base[: -len(suffix)]
+    return base
+
+
+def openapi_urls() -> list[str]:
+    root = api_root()
+    base = st.session_state.base_url.rstrip("/")
+    return list(dict.fromkeys([f"{root}/openapi.json", f"{base}/openapi.json"]))
+
+
+def fetch_openapi(show_message: bool = True) -> bool:
+    errors: list[str] = []
+    for url in openapi_urls():
+        try:
+            response = requests.get(
+                url,
+                timeout=st.session_state.timeout,
+                verify=st.session_state.verify_ssl,
+            )
+            if response.ok:
+                st.session_state.openapi = response.json()
+                st.session_state.openapi_error = ""
+                if show_message:
+                    st.success(f"Loaded OpenAPI schema from {url}")
+                return True
+            errors.append(f"{url}: HTTP {response.status_code}")
+        except (requests.RequestException, ValueError) as exc:
+            errors.append(f"{url}: {exc}")
+
+    st.session_state.openapi = None
+    st.session_state.openapi_error = " | ".join(errors)
+    if show_message:
+        st.error("Could not load OpenAPI schema. " + st.session_state.openapi_error)
     return False
 
 
-def fetch_profile(silent: bool = False):
-    """Calls GET /users/me, stores it, and re-evaluates is_admin. Returns (status, body)."""
-    status, body = call("GET", "/users/me", auth=True)
-    if status and status < 300 and isinstance(body, dict):
-        st.session_state.profile = body
-        st.session_state.is_admin = check_is_admin(body)
+def resolve_ref(schema: Any, document: dict[str, Any] | None = None) -> Any:
+    document = document or st.session_state.openapi or {}
+    seen: set[str] = set()
+    current = schema
+    while isinstance(current, dict) and "$ref" in current:
+        ref = current["$ref"]
+        if ref in seen or not ref.startswith("#/"):
+            break
+        seen.add(ref)
+        current = document
+        for part in ref[2:].split("/"):
+            current = current.get(part, {})
+    return current
+
+
+def schema_example(schema: Any, depth: int = 0) -> Any:
+    if depth > 8:
+        return None
+    schema = resolve_ref(schema)
+    if not isinstance(schema, dict):
+        return None
+    if "example" in schema:
+        return schema["example"]
+    if "default" in schema:
+        return schema["default"]
+    if "enum" in schema and schema["enum"]:
+        return schema["enum"][0]
+    for key in ("oneOf", "anyOf", "allOf"):
+        if key in schema and schema[key]:
+            if key == "allOf":
+                merged: dict[str, Any] = {}
+                for item in schema[key]:
+                    value = schema_example(item, depth + 1)
+                    if isinstance(value, dict):
+                        merged.update(value)
+                return merged
+            return schema_example(schema[key][0], depth + 1)
+
+    kind = schema.get("type")
+    fmt = schema.get("format")
+    if kind == "object" or "properties" in schema:
+        result = {}
+        required = set(schema.get("required", []))
+        for name, child in schema.get("properties", {}).items():
+            value = schema_example(child, depth + 1)
+            if value is not None or name in required:
+                result[name] = value
+        return result
+    if kind == "array":
+        item = schema_example(schema.get("items", {}), depth + 1)
+        return [] if item is None else [item]
+    if kind == "boolean":
+        return False
+    if kind == "integer":
+        return schema.get("minimum", 0)
+    if kind == "number":
+        return schema.get("minimum", 0.0)
+    if fmt == "email":
+        return "user@example.com"
+    if fmt == "uuid":
+        return "00000000-0000-0000-0000-000000000000"
+    if fmt == "date-time":
+        return "2026-07-31T10:00:00Z"
+    if fmt == "date":
+        return "2026-07-31"
+    if fmt == "time":
+        return "08:00:00"
+    if kind == "string" or not kind:
+        return "string"
+    return None
+
+
+def operations() -> list[Operation]:
+    spec = st.session_state.openapi or {}
+    result: list[Operation] = []
+    for path, path_item in spec.get("paths", {}).items():
+        if not isinstance(path_item, dict):
+            continue
+        for method in HTTP_METHODS:
+            raw = path_item.get(method)
+            if not isinstance(raw, dict):
+                continue
+            result.append(
+                Operation(
+                    method=method.upper(),
+                    path=path,
+                    summary=raw.get("summary") or raw.get("operationId") or path,
+                    description=raw.get("description") or "",
+                    tags=raw.get("tags") or ["Other"],
+                    operation_id=raw.get("operationId") or f"{method}_{path}",
+                    raw=raw,
+                )
+            )
+    return sorted(result, key=lambda op: (op.tag.lower(), op.path, METHOD_ORDER.get(op.method.lower(), 99)))
+
+
+def merged_parameters(op: Operation) -> list[dict[str, Any]]:
+    spec = st.session_state.openapi or {}
+    path_item = spec.get("paths", {}).get(op.path, {})
+    params = []
+    for item in path_item.get("parameters", []) + op.raw.get("parameters", []):
+        params.append(resolve_ref(item))
+    unique: dict[tuple[str, str], dict[str, Any]] = {}
+    for item in params:
+        if isinstance(item, dict):
+            unique[(str(item.get("in")), str(item.get("name")))] = item
+    return list(unique.values())
+
+
+def parse_scalar(raw: str, schema: dict[str, Any]) -> Any:
+    if raw == "":
+        return None
+    schema = resolve_ref(schema)
+    kind = schema.get("type")
+    if kind == "integer":
+        return int(raw)
+    if kind == "number":
+        return float(raw)
+    if kind == "boolean":
+        return raw.lower() in {"true", "1", "yes", "on"}
+    if kind == "array":
+        return [x.strip() for x in raw.split(",") if x.strip()]
+    return raw
+
+
+def pretty(value: Any) -> str:
+    try:
+        return json.dumps(value, indent=2, ensure_ascii=False, default=str)
+    except TypeError:
+        return str(value)
+
+
+def request_call(
+    method: str,
+    path: str,
+    *,
+    path_params: dict[str, Any] | None = None,
+    query_params: dict[str, Any] | None = None,
+    header_params: dict[str, Any] | None = None,
+    json_body: Any = None,
+    form_data: dict[str, Any] | None = None,
+    files: dict[str, Any] | None = None,
+    use_auth: bool = True,
+) -> tuple[int | None, Any, dict[str, Any]]:
+    rendered_path = path
+    for name, value in (path_params or {}).items():
+        rendered_path = rendered_path.replace("{" + name + "}", quote(str(value), safe=""))
+
+    url = st.session_state.base_url.rstrip("/") + rendered_path
+    headers = {str(k): str(v) for k, v in (header_params or {}).items() if v not in (None, "")}
+    if use_auth and st.session_state.access_token:
+        headers["Authorization"] = f"Bearer {st.session_state.access_token}"
+
+    clean_query = {k: v for k, v in (query_params or {}).items() if v not in (None, "", [])}
+    started = time.perf_counter()
+    try:
+        response = requests.request(
+            method,
+            url,
+            headers=headers,
+            params=clean_query or None,
+            json=json_body if files is None and form_data is None else None,
+            data=form_data or None,
+            files=files or None,
+            timeout=st.session_state.timeout,
+            verify=st.session_state.verify_ssl,
+        )
+        elapsed_ms = round((time.perf_counter() - started) * 1000, 1)
+        try:
+            body = response.json()
+        except ValueError:
+            body = response.text
+        meta = {
+            "method": method,
+            "path": rendered_path,
+            "url": response.url,
+            "status": response.status_code,
+            "elapsed_ms": elapsed_ms,
+            "request": json_body if json_body is not None else form_data,
+            "query": clean_query,
+            "response": body,
+            "response_headers": dict(response.headers),
+            "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
+        }
+        st.session_state.history.insert(0, meta)
+        st.session_state.history = st.session_state.history[:100]
+        st.session_state.last_response = meta
+        return response.status_code, body, meta
+    except requests.RequestException as exc:
+        elapsed_ms = round((time.perf_counter() - started) * 1000, 1)
+        meta = {
+            "method": method,
+            "path": rendered_path,
+            "url": url,
+            "status": None,
+            "elapsed_ms": elapsed_ms,
+            "request": json_body if json_body is not None else form_data,
+            "query": clean_query,
+            "response": str(exc),
+            "response_headers": {},
+            "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
+        }
+        st.session_state.history.insert(0, meta)
+        st.session_state.last_response = meta
+        return None, str(exc), meta
+
+
+def show_response(status_code: int | None, body: Any, meta: dict[str, Any]) -> None:
+    c1, c2, c3 = st.columns(3)
+    if status_code is None:
+        c1.error("Connection error")
+    elif 200 <= status_code < 300:
+        c1.success(f"HTTP {status_code}")
+    elif status_code < 500:
+        c1.warning(f"HTTP {status_code}")
     else:
-        st.session_state.profile = {}
-        st.session_state.is_admin = False
-    if not silent:
-        show_result(status, body)
-    return status, body
+        c1.error(f"HTTP {status_code}")
+    c2.metric("Response time", f"{meta['elapsed_ms']} ms")
+    c3.caption(meta["url"])
+    if isinstance(body, (dict, list)):
+        st.json(body)
+    else:
+        st.code(str(body), language="text")
+    with st.expander("Response headers"):
+        st.json(meta.get("response_headers", {}))
 
 
+def maybe_capture_tokens(body: Any) -> None:
+    if not isinstance(body, dict):
+        return
+    access = body.get("access_token")
+    refresh = body.get("refresh_token")
+    if access:
+        st.session_state.access_token = str(access)
+    if refresh:
+        st.session_state.refresh_token = str(refresh)
+    user = body.get("user")
+    if isinstance(user, dict):
+        st.session_state.profile = user
+
+
+def render_endpoint_form(op: Operation) -> None:
+    st.subheader(f"{METHOD_ICONS.get(op.method, '🌐')} {op.method} {op.path}")
+    st.caption(op.summary)
+    if op.description:
+        st.markdown(op.description)
+
+    parameters = merged_parameters(op)
+    path_values: dict[str, Any] = {}
+    query_values: dict[str, Any] = {}
+    header_values: dict[str, Any] = {}
+
+    with st.form(f"endpoint_form_{op.operation_id}_{op.method}", clear_on_submit=False):
+        if parameters:
+            st.markdown("#### Parameters")
+        cols = st.columns(2)
+        for index, param in enumerate(parameters):
+            location = param.get("in", "query")
+            name = param.get("name", "parameter")
+            required = bool(param.get("required"))
+            schema = resolve_ref(param.get("schema", {}))
+            label = f"{name} ({location})" + (" *" if required else "")
+            help_text = param.get("description") or ""
+            enum_values = schema.get("enum")
+            key = f"param_{op.operation_id}_{location}_{name}"
+            with cols[index % 2]:
+                if enum_values:
+                    choices = enum_values if required else [""] + enum_values
+                    value = st.selectbox(label, choices, key=key, help=help_text)
+                elif schema.get("type") == "boolean":
+                    choices = ["", "true", "false"] if not required else ["true", "false"]
+                    value = st.selectbox(label, choices, key=key, help=help_text)
+                else:
+                    example = schema.get("example", param.get("example", ""))
+                    value = st.text_input(label, value=str(example or ""), key=key, help=help_text)
+            try:
+                parsed = parse_scalar(str(value), schema)
+            except ValueError:
+                parsed = value
+            if location == "path":
+                path_values[name] = parsed
+            elif location == "header":
+                header_values[name] = parsed
+            else:
+                query_values[name] = parsed
+
+        body_spec = op.raw.get("requestBody")
+        json_body: Any = None
+        form_data: dict[str, Any] | None = None
+        file_payload: dict[str, Any] | None = None
+        body_error = ""
+
+        if body_spec:
+            body_spec = resolve_ref(body_spec)
+            content = body_spec.get("content", {})
+            st.markdown("#### Request body")
+
+            if "application/json" in content:
+                media = content["application/json"]
+                schema = media.get("schema", {})
+                example = media.get("example", schema_example(schema))
+                body_text = st.text_area(
+                    "JSON body",
+                    value=pretty(example if example is not None else {}),
+                    height=280,
+                    key=f"body_{op.operation_id}",
+                )
+                try:
+                    json_body = json.loads(body_text) if body_text.strip() else None
+                except json.JSONDecodeError as exc:
+                    body_error = f"Invalid JSON: {exc}"
+
+            else:
+                media_type = next(
+                    (name for name in content if name in {"multipart/form-data", "application/x-www-form-urlencoded"}),
+                    next(iter(content), ""),
+                )
+                media = content.get(media_type, {})
+                schema = resolve_ref(media.get("schema", {}))
+                properties = schema.get("properties", {})
+                required_fields = set(schema.get("required", []))
+                form_data = {}
+                file_payload = {}
+                for field_name, field_schema_raw in properties.items():
+                    field_schema = resolve_ref(field_schema_raw)
+                    required = field_name in required_fields
+                    label = field_name + (" *" if required else "")
+                    widget_key = f"multipart_{op.operation_id}_{field_name}"
+                    if field_schema.get("format") == "binary":
+                        uploaded = st.file_uploader(label, key=widget_key)
+                        if uploaded is not None:
+                            content_type = uploaded.type or mimetypes.guess_type(uploaded.name)[0] or "application/octet-stream"
+                            file_payload[field_name] = (uploaded.name, uploaded.getvalue(), content_type)
+                    elif field_schema.get("type") == "boolean":
+                        form_data[field_name] = st.checkbox(label, value=bool(field_schema.get("default", False)), key=widget_key)
+                    elif field_schema.get("enum"):
+                        choices = field_schema["enum"] if required else [""] + field_schema["enum"]
+                        form_data[field_name] = st.selectbox(label, choices, key=widget_key)
+                    else:
+                        default = schema_example(field_schema)
+                        raw_value = st.text_input(label, value="" if default is None else str(default), key=widget_key)
+                        if raw_value != "":
+                            form_data[field_name] = raw_value
+                if not file_payload:
+                    file_payload = None
+                if not form_data:
+                    form_data = None
+
+        use_auth = st.checkbox(
+            "Send Bearer token",
+            value=True,
+            key=f"auth_{op.operation_id}",
+            help="Uses the access token stored in the sidebar.",
+        )
+        submitted = st.form_submit_button("Send request", type="primary", use_container_width=True)
+
+    if submitted:
+        missing = [name for name, value in path_values.items() if value in (None, "")]
+        if missing:
+            st.error("Missing required path parameter(s): " + ", ".join(missing))
+            return
+        if body_error:
+            st.error(body_error)
+            return
+        status_code, body, meta = request_call(
+            op.method,
+            op.path,
+            path_params=path_values,
+            query_params=query_values,
+            header_params=header_values,
+            json_body=json_body,
+            form_data=form_data,
+            files=file_payload,
+            use_auth=use_auth,
+        )
+        maybe_capture_tokens(body)
+        show_response(status_code, body, meta)
+
+
+def auth_quick_actions() -> None:
+    st.subheader("Authentication quick actions")
+    login_tab, profile_tab, refresh_tab, health_tab = st.tabs(["Login", "My profile", "Refresh token", "Health"])
+
+    with login_tab:
+        with st.form("quick_login"):
+            email = st.text_input("Email", value=st.session_state.remembered_email)
+            password = st.text_input("Password", value=st.session_state.remembered_password, type="password")
+            submitted = st.form_submit_button("Login", type="primary")
+        if submitted:
+            status_code, body, meta = request_call(
+                "POST", "/auth/login", json_body={"email": email, "password": password}, use_auth=False
+            )
+            if status_code and status_code < 300:
+                st.session_state.remembered_email = email
+                st.session_state.remembered_password = password
+                maybe_capture_tokens(body)
+            show_response(status_code, body, meta)
+
+    with profile_tab:
+        if st.button("GET /users/me", use_container_width=True):
+            status_code, body, meta = request_call("GET", "/users/me")
+            if status_code and status_code < 300 and isinstance(body, dict):
+                st.session_state.profile = body
+            show_response(status_code, body, meta)
+
+    with refresh_tab:
+        refresh_value = st.text_area("Refresh token", value=st.session_state.refresh_token, height=120)
+        if st.button("POST /auth/refresh-token", use_container_width=True):
+            status_code, body, meta = request_call(
+                "POST", "/auth/refresh-token", json_body={"refresh_token": refresh_value}, use_auth=False
+            )
+            if status_code and status_code < 300:
+                maybe_capture_tokens(body)
+            show_response(status_code, body, meta)
+
+    with health_tab:
+        c1, c2 = st.columns(2)
+        if c1.button("Liveness", use_container_width=True):
+            root = api_root()
+            old = st.session_state.base_url
+            st.session_state.base_url = root
+            status_code, body, meta = request_call("GET", "/health/live", use_auth=False)
+            st.session_state.base_url = old
+            show_response(status_code, body, meta)
+        if c2.button("Readiness", use_container_width=True):
+            root = api_root()
+            old = st.session_state.base_url
+            st.session_state.base_url = root
+            status_code, body, meta = request_call("GET", "/health/ready", use_auth=False)
+            st.session_state.base_url = old
+            show_response(status_code, body, meta)
+
+
+def render_history() -> None:
+    st.subheader("Request history")
+    if not st.session_state.history:
+        st.info("No requests have been sent yet.")
+        return
+    for index, item in enumerate(st.session_state.history):
+        code = item.get("status")
+        title = f"{item['timestamp']} · {item['method']} {item['path']} · {code or 'ERROR'} · {item['elapsed_ms']} ms"
+        with st.expander(title, expanded=index == 0):
+            st.caption(item.get("url", ""))
+            left, right = st.columns(2)
+            with left:
+                st.markdown("**Request**")
+                st.json({"query": item.get("query"), "body": item.get("request")})
+            with right:
+                st.markdown("**Response**")
+                if isinstance(item.get("response"), (dict, list)):
+                    st.json(item["response"])
+                else:
+                    st.code(str(item.get("response")), language="text")
+
+
+# ------------------------------ Sidebar ---------------------------------
 with st.sidebar:
-    st.header("Connection")
-    st.session_state.base_url = st.text_input("Base URL", st.session_state.base_url)
+    st.title("🛒 XERIN Tester")
+    st.session_state.base_url = st.text_input(
+        "API base URL",
+        value=st.session_state.base_url,
+        help="Normally http://127.0.0.1:8000/api/v1",
+    )
+    st.session_state.timeout = st.number_input("Timeout (seconds)", min_value=3, max_value=180, value=int(st.session_state.timeout))
+    st.session_state.verify_ssl = st.checkbox("Verify SSL certificate", value=st.session_state.verify_ssl)
+
+    c1, c2 = st.columns(2)
+    if c1.button("Load API", use_container_width=True):
+        fetch_openapi()
+        st.rerun()
+    if c2.button("Clear", use_container_width=True):
+        st.session_state.openapi = None
+        st.session_state.openapi_error = ""
+        st.rerun()
 
     st.divider()
-    st.header("Current tokens")
-    st.text_input("Access token", st.session_state.access_token, key="access_token_display", disabled=True)
-    st.text_input("Refresh token", st.session_state.refresh_token, key="refresh_token_display", disabled=True)
-    if st.button("Clear tokens"):
+    st.markdown("### Session")
+    st.session_state.access_token = st.text_area("Access token", value=st.session_state.access_token, height=110)
+    st.session_state.refresh_token = st.text_area("Refresh token", value=st.session_state.refresh_token, height=90)
+    if st.button("Clear tokens", use_container_width=True):
         st.session_state.access_token = ""
         st.session_state.refresh_token = ""
         st.session_state.profile = {}
-        st.session_state.is_admin = False
         st.rerun()
 
-    st.divider()
-    st.header("Session identity")
-    if st.session_state.access_token:
-        if st.session_state.profile:
-            name = f"{st.session_state.profile.get('first_name', '')} {st.session_state.profile.get('last_name', '')}".strip()
-            st.success(f"Logged in as {name or st.session_state.profile.get('email', '(unknown)')}")
-            st.caption(f"Role check: {'🛡️ Admin' if st.session_state.is_admin else '👤 Regular user'}")
-        else:
-            st.info("Logged in — profile not fetched yet.")
-        if st.button("Refresh profile / re-check admin status"):
-            fetch_profile()
-            st.rerun()
-    else:
-        st.caption("Not logged in.")
+    if st.session_state.profile:
+        name = " ".join(
+            str(st.session_state.profile.get(key, ""))
+            for key in ("first_name", "last_name")
+        ).strip()
+        st.success(name or st.session_state.profile.get("email", "Authenticated user"))
+        st.json(st.session_state.profile)
 
     st.divider()
-    st.header("Remembered identity")
-    st.caption("Auto-filled into forms below after register/login, editable anytime.")
-    st.session_state.last_email = st.text_input("Email", st.session_state.last_email)
-    st.session_state.last_phone = st.text_input("Phone", st.session_state.last_phone)
-    st.session_state.last_password = st.text_input("Password", st.session_state.last_password, type="password")
-
-    st.divider()
-    if st.button("Clear request history"):
+    st.markdown("### Data")
+    st.download_button(
+        "Download request history",
+        data=pretty(st.session_state.history),
+        file_name="xerin_api_test_history.json",
+        mime="application/json",
+        use_container_width=True,
+    )
+    if st.button("Clear history", use_container_width=True):
         st.session_state.history = []
+        st.session_state.last_response = None
         st.rerun()
 
-st.title("🔐 Auth / Profile / Admin API Tester")
-st.caption("Manual test harness for /auth, /users, and /admin endpoints — happy paths, edge cases, and role-aware navigation.")
 
-tab_names = [
-    "Register",
-    "Register Seller",
-    "Login",
-    "Session (logout / refresh)",
-    "OTP (send / verify)",
-    "Password Reset",
-    "My Profile",
-    "Cart",
-    "Orders",
-    "Payments",
-    "Inventory",
-    "Coupons",
-]
-if st.session_state.is_admin:
-    tab_names.append("Admin Panel")
-tab_names += ["Stress tests", "Request history"]
+# ------------------------------- Main -----------------------------------
+st.title("XERIN Marketplace — Complete Backend Tester")
+st.caption("A schema-driven test client for every FastAPI endpoint in your marketplace backend.")
 
-tab_map = dict(zip(tab_names, st.tabs(tab_names)))
+if st.session_state.openapi is None and not st.session_state.openapi_error:
+    fetch_openapi(show_message=False)
 
-with tab_map["Register"]:
-    st.subheader("POST /auth/register")
-    col1, col2 = st.columns(2)
-    with col1:
-        r_first = st.text_input("First name", "Test", key="r_first")
-        r_email = st.text_input("Email", f"user{rand_suffix()}@example.com", key="r_email")
-        r_password = st.text_input("Password", "TestPass123!", type="password", key="r_password")
-    with col2:
-        r_last = st.text_input("Last name", "User", key="r_last")
-        r_phone = st.text_input("Phone", f"+2557{rand_suffix()}", key="r_phone")
+ops = operations()
+overview_tab, quick_tab, explorer_tab, history_tab = st.tabs(
+    ["📊 Backend overview", "🔐 Quick actions", "🧪 Endpoint explorer", "🕘 History"]
+)
 
-    c1, c2 = st.columns(2)
-    with c1:
-        if st.button("Register", type="primary"):
-            status, body = call("POST", "/auth/register", {
-                "first_name": r_first, "last_name": r_last,
-                "email": r_email, "phone": r_phone, "password": r_password,
-            })
-            show_result(status, body)
-            if status and status < 300:
-                st.session_state.last_email = r_email
-                st.session_state.last_phone = r_phone
-                st.session_state.last_password = r_password
-    with c2:
-        st.caption("Edge case: submit twice with the same email/phone to confirm you get 400 'Email or phone already exists'.")
-        if st.button("Register again (expect 400 duplicate)"):
-            status, body = call("POST", "/auth/register", {
-                "first_name": r_first, "last_name": r_last,
-                "email": r_email, "phone": r_phone, "password": r_password,
-            })
-            show_result(status, body)
+with overview_tab:
+    if ops:
+        tag_count = len({op.tag for op in ops})
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("API operations", len(ops))
+        c2.metric("Modules/tags", tag_count)
+        c3.metric("GET routes", sum(op.method == "GET" for op in ops))
+        c4.metric("Write routes", sum(op.method in {"POST", "PUT", "PATCH", "DELETE"} for op in ops))
 
-with tab_map["Register Seller"]:
-    st.subheader("POST /auth/register-seller")
-    st.caption(
-        "Note: business_description/country/region/city/address/product_description/"
-        "years_in_business/website_url map to SellerProfile. business_category_ids "
-        "must be real BusinessCategory UUIDs from your DB — paste one below."
-    )
-
-    col1, col2 = st.columns(2)
-    with col1:
-        s_first = st.text_input("First name", "Seller", key="s_first")
-        s_email = st.text_input("Email", f"seller{rand_suffix()}@example.com", key="s_email")
-        s_password = st.text_input("Password", "TestPass123!", type="password", key="s_password")
-        s_business_name = st.text_input("Business name", "Test Biz", key="s_business_name")
-        s_business_desc = st.text_area("Business description", "A test business", key="s_business_desc")
-        s_country = st.text_input("Business country", "Tanzania", key="s_country")
-        s_region = st.text_input("Business region", "Dar es Salaam", key="s_region")
-    with col2:
-        s_last = st.text_input("Last name", "User", key="s_last")
-        s_phone = st.text_input("Phone", f"+2557{rand_suffix()}", key="s_phone")
-        s_city = st.text_input("Business city", "Dar es Salaam", key="s_city")
-        s_address = st.text_input("Business address", "123 Test St", key="s_address")
-        s_product_desc = st.text_area("Product description", "Widgets and gadgets", key="s_product_desc")
-        s_years = st.text_input("Years in business", "3", key="s_years")
-        s_website = st.text_input("Website URL", "https://example.com", key="s_website")
-
-    s_category_ids_raw = st.text_input(
-        "Business category IDs (comma-separated UUIDs)",
-        "",
-        key="s_category_ids",
-        help="Query your business_categories table for real UUIDs to paste here.",
-    )
-    s_agreement = st.checkbox("Agreement accepted", value=True, key="s_agreement")
-
-    c1, c2 = st.columns(2)
-    with c1:
-        if st.button("Register seller", type="primary"):
-            category_ids = [c.strip() for c in s_category_ids_raw.split(",") if c.strip()]
-            status, body = call("POST", "/auth/register-seller", {
-                "first_name": s_first, "last_name": s_last,
-                "email": s_email, "phone": s_phone, "password": s_password,
-                "business_name": s_business_name,
-                "business_description": s_business_desc,
-                "business_country": s_country,
-                "business_region": s_region,
-                "business_city": s_city,
-                "business_address": s_address,
-                "product_description": s_product_desc,
-                "years_in_business": s_years,
-                "website_url": s_website,
-                "business_category_ids": category_ids,
-                "agreement_accepted": s_agreement,
-            })
-            show_result(status, body)
-            if status and status < 300:
-                st.session_state.last_email = s_email
-                st.session_state.last_phone = s_phone
-                st.session_state.last_password = s_password
-    with c2:
-        st.caption("Edge case: empty category list should return 400 'At least one business category is required'.")
-        if st.button("Register seller with NO categories (expect 400)"):
-            status, body = call("POST", "/auth/register-seller", {
-                "first_name": s_first, "last_name": s_last,
-                "email": f"seller{rand_suffix()}@example.com", "phone": f"+2557{rand_suffix()}",
-                "password": s_password,
-                "business_name": s_business_name,
-                "business_description": s_business_desc,
-                "business_country": s_country, "business_region": s_region,
-                "business_city": s_city, "business_address": s_address,
-                "product_description": s_product_desc, "years_in_business": s_years,
-                "website_url": s_website,
-                "business_category_ids": [],
-                "agreement_accepted": s_agreement,
-            })
-            show_result(status, body)
-
-        st.caption("Edge case: agreement_accepted=False should return 400.")
-        if st.button("Register seller WITHOUT agreement (expect 400)"):
-            category_ids = [c.strip() for c in s_category_ids_raw.split(",") if c.strip()]
-            status, body = call("POST", "/auth/register-seller", {
-                "first_name": s_first, "last_name": s_last,
-                "email": f"seller{rand_suffix()}@example.com", "phone": f"+2557{rand_suffix()}",
-                "password": s_password,
-                "business_name": s_business_name,
-                "business_description": s_business_desc,
-                "business_country": s_country, "business_region": s_region,
-                "business_city": s_city, "business_address": s_address,
-                "product_description": s_product_desc, "years_in_business": s_years,
-                "website_url": s_website,
-                "business_category_ids": category_ids,
-                "agreement_accepted": False,
-            })
-            show_result(status, body)
-
-with tab_map["Login"]:
-    st.subheader("POST /auth/login")
-    l_email = st.text_input("Email", st.session_state.last_email, key="l_email")
-    l_password = st.text_input("Password", st.session_state.last_password, type="password", key="l_password")
-
-    c1, c2, c3 = st.columns(3)
-    with c1:
-        if st.button("Login", type="primary"):
-            status, body = call("POST", "/auth/login", {"email": l_email, "password": l_password})
-            show_result(status, body)
-            if status and status < 300 and isinstance(body, dict):
-                st.session_state.access_token = body.get("access_token", "")
-                st.session_state.refresh_token = body.get("refresh_token", "")
-
-            if isinstance(body.get("user"), dict):
-                st.session_state.profile = body["user"]
-                st.session_state.is_admin = check_is_admin(body["user"])
-            else:
-                fetch_profile(silent=True)
-
-            st.rerun()
-    with c2:
-        st.caption("Edge case: expect 401 'Invalid email or password'.")
-        if st.button("Login with WRONG password (expect 401)"):
-            status, body = call("POST", "/auth/login", {"email": l_email, "password": "definitely-wrong"})
-            show_result(status, body)
-    with c3:
-        st.caption("Edge case: expect 403 if the account hasn't completed OTP verification yet.")
-        if st.button("Login unverified account (expect 403)"):
-            status, body = call("POST", "/auth/login", {"email": l_email, "password": l_password})
-            show_result(status, body)
-
-with tab_map["Session (logout / refresh)"]:
-    st.subheader("POST /auth/logout")
-    st.caption("Requires a valid access token (sent as Bearer) AND the matching refresh token in the body.")
-    if st.button("Logout"):
-        status, body = call("POST", "/auth/logout", {"refresh_token": st.session_state.refresh_token}, auth=True)
-        show_result(status, body)
-        if status and status < 300:
-            st.info("Server-side session deleted. Your local refresh_token is now stale — clear it from the sidebar.")
-            st.session_state.profile = {}
-            st.session_state.is_admin = False
-
-    st.divider()
-    st.subheader("POST /auth/refresh-token")
-    c1, c2 = st.columns(2)
-    with c1:
-        if st.button("Refresh token", type="primary"):
-            status, body = call("POST", "/auth/refresh-token", {"refresh_token": st.session_state.refresh_token})
-            show_result(status, body)
-            if status and status < 300 and isinstance(body, dict):
-                st.session_state.access_token = body.get("access_token", "")
-                st.session_state.refresh_token = body.get("refresh_token", "")
-
-            if isinstance(body.get("user"), dict):
-                st.session_state.profile = body["user"]
-                st.session_state.is_admin = check_is_admin(body["user"])
-            else:
-                fetch_profile(silent=True)
-
-            st.rerun()
-    with c2:
-        st.caption("Edge case: garbage token should return 401 'Invalid refresh token'.")
-        if st.button("Refresh with GARBAGE token (expect 401)"):
-            status, body = call("POST", "/auth/refresh-token", {"refresh_token": "not-a-real-token"})
-            show_result(status, body)
-
-with tab_map["OTP (send / verify)"]:
-    st.subheader("POST /auth/send-otp")
-    otp_phone = st.text_input("Phone", st.session_state.last_phone, key="otp_phone")
-    if st.button("Send OTP", type="primary"):
-        status, body = call("POST", "/auth/send-otp", {"phone": otp_phone})
-        show_result(status, body)
-        if isinstance(body, dict) and body.get("dev_otp"):
-            st.info(f"DEBUG mode dev_otp: {body['dev_otp']} (only present when settings.DEBUG=True)")
-
-    st.divider()
-    st.subheader("POST /auth/verify-otp")
-    v_phone = st.text_input("Phone", st.session_state.last_phone, key="v_phone")
-    v_code = st.text_input("OTP code", "", key="v_code")
-
-    c1, c2, c3 = st.columns(3)
-    with c1:
-        if st.button("Verify OTP", type="primary"):
-            status, body = call("POST", "/auth/verify-otp", {"phone": v_phone, "otp_code": v_code})
-            show_result(status, body)
-    with c2:
-        st.caption("Edge case: wrong code should return 400 'Invalid OTP'.")
-        if st.button("Verify with WRONG code (expect 400)"):
-            status, body = call("POST", "/auth/verify-otp", {"phone": v_phone, "otp_code": "000000"})
-            show_result(status, body)
-    with c3:
-        st.caption("Edge case: reused/already-verified code should also fail — verify twice in a row.")
-        if st.button("Verify SAME code again (expect 400)"):
-            status, body = call("POST", "/auth/verify-otp", {"phone": v_phone, "otp_code": v_code})
-            show_result(status, body)
-
-with tab_map["Password Reset"]:
-    st.subheader("POST /auth/forgot-password")
-    fp_email = st.text_input("Email", st.session_state.last_email, key="fp_email")
-    c1, c2 = st.columns(2)
-    with c1:
-        if st.button("Forgot password", type="primary"):
-            status, body = call("POST", "/auth/forgot-password", {"email": fp_email})
-            show_result(status, body)
-            if isinstance(body, dict) and body.get("dev_otp"):
-                st.info(f"DEBUG mode dev_otp: {body['dev_otp']}")
-    with c2:
-        st.caption("Edge case: unknown email should still return 200 with a generic message (no account enumeration).")
-        if st.button("Forgot password for UNKNOWN email (expect 200, generic message)"):
-            status, body = call("POST", "/auth/forgot-password", {"email": f"nobody{rand_suffix()}@example.com"})
-            show_result(status, body)
-
-    st.divider()
-    st.subheader("POST /auth/reset-password")
-    rp_email = st.text_input("Email", st.session_state.last_email, key="rp_email")
-    rp_code = st.text_input("OTP code", "", key="rp_code")
-    rp_new_password = st.text_input("New password", "NewPass123!", type="password", key="rp_new_password")
-
-    c1, c2 = st.columns(2)
-    with c1:
-        if st.button("Reset password", type="primary"):
-            status, body = call("POST", "/auth/reset-password", {
-                "email": rp_email, "otp_code": rp_code, "new_password": rp_new_password,
-            })
-            show_result(status, body)
-            if status and status < 300:
-                st.session_state.last_password = rp_new_password
-                st.success("Remember to log in again with the new password — old sessions were invalidated.")
-    with c2:
-        st.caption("Edge case: a REGISTER-purpose OTP should NOT work here (purpose isolation). "
-                    "Get a code from the Register/Send-OTP tab and try it here — expect 400.")
-        if st.button("Reset password with WRONG-purpose code (expect 400)"):
-            status, body = call("POST", "/auth/reset-password", {
-                "email": rp_email, "otp_code": rp_code, "new_password": rp_new_password,
-            })
-            show_result(status, body)
-
-with tab_map["My Profile"]:
-    st.subheader("GET /users/me")
-    if not st.session_state.access_token:
-        st.warning("Log in first (Login tab) — this endpoint requires a Bearer token.")
+        rows = []
+        for tag in sorted({op.tag for op in ops}):
+            tagged = [op for op in ops if op.tag == tag]
+            rows.append(
+                {
+                    "Module": tag,
+                    "Total": len(tagged),
+                    "GET": sum(op.method == "GET" for op in tagged),
+                    "POST": sum(op.method == "POST" for op in tagged),
+                    "PUT/PATCH": sum(op.method in {"PUT", "PATCH"} for op in tagged),
+                    "DELETE": sum(op.method == "DELETE" for op in tagged),
+                }
+            )
+        st.dataframe(rows, use_container_width=True, hide_index=True)
+        with st.expander("All discovered operations"):
+            st.dataframe(
+                [{"Method": op.method, "Path": op.path, "Module": op.tag, "Summary": op.summary} for op in ops],
+                use_container_width=True,
+                hide_index=True,
+            )
     else:
-        if st.button("Fetch my profile", type="primary"):
-            fetch_profile()
+        st.warning(
+            "OpenAPI is unavailable. In production your backend disables /openapi.json. "
+            "Run the backend in development mode or temporarily expose OpenAPI to use the automatic explorer."
+        )
+        if st.session_state.openapi_error:
+            st.code(st.session_state.openapi_error)
+        st.markdown("### Features found in the uploaded backend")
+        for module, features in BACKEND_MODULES.items():
+            with st.expander(module):
+                st.write(", ".join(features))
 
-        if st.session_state.profile:
-            st.caption(f"Role check result: {'🛡️ Admin (Admin Panel tab unlocked)' if st.session_state.is_admin else '👤 Regular user'}")
-            roles = st.session_state.profile.get("roles", [])
-            permissions = st.session_state.profile.get("permissions", [])
-            account_type = st.session_state.profile.get("account_type")
+with quick_tab:
+    auth_quick_actions()
 
-            st.caption(f"Account type: {account_type}")
-            st.caption(f"Roles: {', '.join(roles) if roles else 'None'}")
+with explorer_tab:
+    if not ops:
+        st.error("Load a reachable OpenAPI schema first using the sidebar button.")
+    else:
+        left, right = st.columns([1, 2.3])
+        with left:
+            search = st.text_input("Search endpoint", placeholder="products, seller, refund...")
+            tags = sorted({op.tag for op in ops})
+            selected_tag = st.selectbox("Module", ["All modules"] + tags)
+            methods = st.multiselect("Methods", [m.upper() for m in HTTP_METHODS], default=[])
 
-            with st.expander("Permissions"):
-                if permissions:
-                    for permission in permissions:
-                       st.write(f"✅ {permission}")
-                else:
-                    st.warning("No permissions found")
-            st.json(st.session_state.profile)
-
-        st.divider()
-        st.subheader("PATCH /users/me")
-        st.caption("Quick fields for common attributes. Leave a field blank to leave it unchanged.")
-
-        p_first = st.text_input("First name", st.session_state.profile.get("first_name", "") if st.session_state.profile else "", key="p_first")
-        p_last = st.text_input("Last name", st.session_state.profile.get("last_name", "") if st.session_state.profile else "", key="p_last")
-        p_phone = st.text_input("Phone", "", key="p_phone", placeholder="Leave blank to skip")
-
-        if st.button("Update profile (quick fields)"):
-            patch = {}
-            if p_first:
-                patch["first_name"] = p_first
-            if p_last:
-                patch["last_name"] = p_last
-            if p_phone:
-                patch["phone"] = p_phone
-            if not patch:
-                st.warning("Nothing to update — fill in at least one field.")
+            filtered = [
+                op for op in ops
+                if (selected_tag == "All modules" or op.tag == selected_tag)
+                and (not methods or op.method in methods)
+                and (
+                    not search
+                    or search.lower() in op.path.lower()
+                    or search.lower() in op.summary.lower()
+                    or search.lower() in op.tag.lower()
+                )
+            ]
+            labels = [op.key for op in filtered]
+            if labels:
+                current_index = labels.index(st.session_state.selected_operation) if st.session_state.selected_operation in labels else 0
+                selected = st.radio("Endpoints", labels, index=current_index, label_visibility="collapsed")
+                st.session_state.selected_operation = selected
             else:
-                status, body = call("PATCH", "/users/me", patch, auth=True)
-                show_result(status, body)
-                if status and status < 300:
-                    fetch_profile(silent=True)
+                selected = ""
+                st.info("No endpoint matches the filters.")
 
-        st.caption("Advanced: send an arbitrary JSON body (useful for fields not covered above, e.g. avatar_url).")
-        raw_patch = st.text_area("Raw PATCH body (JSON)", "{}", key="raw_patch")
-        if st.button("Update profile (raw JSON)"):
-            try:
-                patch_body = json.loads(raw_patch)
-            except json.JSONDecodeError as e:
-                st.error(f"Invalid JSON: {e}")
-            else:
-                status, body = call("PATCH", "/users/me", patch_body, auth=True)
-                show_result(status, body)
-                if status and status < 300:
-                    fetch_profile(silent=True)
+        with right:
+            selected_op = next((op for op in filtered if op.key == selected), None)
+            if selected_op:
+                render_endpoint_form(selected_op)
 
-        st.divider()
-        st.subheader("Addresses")
-        colA, colB = st.columns(2)
-        with colA:
-            st.markdown("**GET /addresses**")
-            if st.button("List my addresses"):
-                status, body = call("GET", "/addresses", auth=True)
-                show_result(status, body)
-        with colB:
-            st.markdown("**POST /addresses**")
-            addr_line = st.text_input("Address line", "123 Test St", key="addr_line")
-            addr_city = st.text_input("City", "Dar es Salaam", key="addr_city")
-            addr_country = st.text_input("Country", "Tanzania", key="addr_country")
-            if st.button("Create address"):
-                status, body = call("POST", "/addresses", {
-                    "address_line": addr_line, "city": addr_city, "country": addr_country,
-                }, auth=True)
-                show_result(status, body)
-
-        st.markdown("**Update / delete an address**")
-        addr_id = st.text_input("Address ID (UUID)", "", key="addr_id")
-        c1, c2 = st.columns(2)
-        with c1:
-            addr_patch_raw = st.text_area("PATCH body (JSON)", '{"city": "New City"}', key="addr_patch_raw")
-            if st.button("Update address"):
-                if not addr_id:
-                    st.warning("Provide an address ID.")
-                else:
-                    try:
-                        addr_patch = json.loads(addr_patch_raw)
-                    except json.JSONDecodeError as e:
-                        st.error(f"Invalid JSON: {e}")
-                    else:
-                        status, body = call("PATCH", f"/addresses/{addr_id}", addr_patch, auth=True)
-                        show_result(status, body)
-        with c2:
-            if st.button("Delete address", type="secondary"):
-                if not addr_id:
-                    st.warning("Provide an address ID.")
-                else:
-                    status, body = call("DELETE", f"/addresses/{addr_id}", auth=True)
-                    show_result(status, body)
-
-if st.session_state.is_admin:
-    with tab_map["Admin Panel"]:
-        st.info("This tab is only visible because /users/me indicated your account has an admin role.")
-
-        admin_subtabs = st.tabs([
-            "Users", "Admins", "Business Categories", "Product Categories",
-            "Brands", "Sellers", "Products",
-        ])
-        
-        with admin_subtabs[0]:
-            st.markdown("**GET /admin/users**")
-            colf1, colf2, colf3, colf4 = st.columns(4)
-            with colf1:
-                au_page = st.number_input("Page", min_value=1, value=1, key="au_page")
-            with colf2:
-                au_page_size = st.number_input("Page size", min_value=1, max_value=100, value=10, key="au_page_size")
-            with colf3:
-                au_search = st.text_input("Search", "", key="au_search")
-            with colf4:
-                au_status_filter = st.text_input("Status filter", "", key="au_status_filter")
-            if st.button("List users", type="primary"):
-                status, body = call("GET", "/admin/users", auth=True, params={
-                    "page": au_page, "page_size": au_page_size,
-                    "search": au_search, "status_filter": au_status_filter,
-                })
-                show_result(status, body)
-
-            st.divider()
-            st.markdown("**POST /admin/users**")
-            nc1, nc2 = st.columns(2)
-            with nc1:
-                nu_first = st.text_input("First name", "New", key="nu_first")
-                nu_email = st.text_input("Email", f"admincreated{rand_suffix()}@example.com", key="nu_email")
-                nu_password = st.text_input("Password", "TestPass123!", type="password", key="nu_password")
-                nu_status = st.text_input("Status", "active", key="nu_status")
-            with nc2:
-                nu_last = st.text_input("Last name", "User", key="nu_last")
-                nu_phone = st.text_input("Phone", f"+2557{rand_suffix()}", key="nu_phone")
-                nu_verified = st.checkbox("Is verified", value=True, key="nu_verified")
-            if st.button("Create user"):
-                status, body = call("POST", "/admin/users", {
-                    "first_name": nu_first, "last_name": nu_last, "email": nu_email,
-                    "phone": nu_phone, "password": nu_password, "status": nu_status,
-                    "is_verified": nu_verified,
-                }, auth=True)
-                show_result(status, body)
-
-            st.divider()
-            st.markdown("**GET / PATCH / DELETE /admin/users/{user_id}**")
-            au_id = st.text_input("User ID (UUID)", "", key="au_id")
-            c1, c2, c3 = st.columns(3)
-            with c1:
-                if st.button("Get user detail"):
-                    if au_id:
-                        status, body = call("GET", f"/admin/users/{au_id}", auth=True)
-                        show_result(status, body)
-                    else:
-                        st.warning("Provide a user ID.")
-            with c2:
-                au_patch_raw = st.text_area("PATCH body (JSON)", '{"status": "active"}', key="au_patch_raw")
-                if st.button("Update user"):
-                    if not au_id:
-                        st.warning("Provide a user ID.")
-                    else:
-                        try:
-                            patch = json.loads(au_patch_raw)
-                        except json.JSONDecodeError as e:
-                            st.error(f"Invalid JSON: {e}")
-                        else:
-                            status, body = call("PATCH", f"/admin/users/{au_id}", patch, auth=True)
-                            show_result(status, body)
-            with c3:
-                if st.button("Delete user", type="secondary"):
-                    if not au_id:
-                        st.warning("Provide a user ID.")
-                    else:
-                        status, body = call("DELETE", f"/admin/users/{au_id}", auth=True)
-                        show_result(status, body)
-                        st.caption("Edge case: deleting your own account should return 400.")
-
-        with admin_subtabs[1]:
-            st.markdown("**POST /admin/admins** — creates a new user and grants the admin role.")
-            ac1, ac2 = st.columns(2)
-            with ac1:
-                na_first = st.text_input("First name", "New", key="na_first")
-                na_email = st.text_input("Email", f"newadmin{rand_suffix()}@example.com", key="na_email")
-                na_password = st.text_input("Password", "TestPass123!", type="password", key="na_password")
-            with ac2:
-                na_last = st.text_input("Last name", "Admin", key="na_last")
-                na_phone = st.text_input("Phone", f"+2557{rand_suffix()}", key="na_phone")
-            if st.button("Create admin", type="primary"):
-                status, body = call("POST", "/admin/admins", {
-                    "first_name": na_first, "last_name": na_last, "email": na_email,
-                    "phone": na_phone, "password": na_password,
-                }, auth=True)
-                show_result(status, body)
-
-        with admin_subtabs[2]:
-            st.markdown("**GET /admin/business-categories**")
-            if st.button("List business categories"):
-                status, body = call("GET", "/admin/business-categories", auth=True)
-                show_result(status, body)
-
-            st.divider()
-            st.markdown("**POST /admin/business-categories**")
-            bc_name = st.text_input("Name", "Electronics", key="bc_name")
-            bc_slug = st.text_input("Slug", "electronics", key="bc_slug")
-            bc_desc = st.text_area("Description", "", key="bc_desc")
-            bc_active = st.checkbox("Active", value=True, key="bc_active")
-            if st.button("Create business category"):
-                status, body = call("POST", "/admin/business-categories", {
-                    "name": bc_name, "slug": bc_slug, "description": bc_desc, "active": bc_active,
-                }, auth=True)
-                show_result(status, body)
-
-            st.divider()
-            st.markdown("**PATCH / DELETE /admin/business-categories/{category_id}**")
-            bc_id = st.text_input("Category ID (UUID)", "", key="bc_id")
-            c1, c2 = st.columns(2)
-            with c1:
-                bc_patch_raw = st.text_area("PATCH body (JSON)", '{"active": false}', key="bc_patch_raw")
-                if st.button("Update business category"):
-                    if not bc_id:
-                        st.warning("Provide a category ID.")
-                    else:
-                        try:
-                            patch = json.loads(bc_patch_raw)
-                        except json.JSONDecodeError as e:
-                            st.error(f"Invalid JSON: {e}")
-                        else:
-                            status, body = call("PATCH", f"/admin/business-categories/{bc_id}", patch, auth=True)
-                            show_result(status, body)
-            with c2:
-                if st.button("Delete business category", type="secondary"):
-                    if not bc_id:
-                        st.warning("Provide a category ID.")
-                    else:
-                        status, body = call("DELETE", f"/admin/business-categories/{bc_id}", auth=True)
-                        show_result(status, body)
-
-        with admin_subtabs[3]:
-            st.markdown("**GET /admin/product-categories**")
-            if st.button("List product categories"):
-                status, body = call("GET", "/admin/product-categories", auth=True)
-                show_result(status, body)
-
-            st.divider()
-            st.markdown("**POST /admin/product-categories**")
-            pc_name = st.text_input("Name", "Phones", key="pc_name")
-            pc_slug = st.text_input("Slug", "phones", key="pc_slug")
-            pc_parent = st.text_input("Parent ID (UUID, optional)", "", key="pc_parent")
-            if st.button("Create product category"):
-                status, body = call("POST", "/admin/product-categories", {
-                    "name": pc_name, "slug": pc_slug,
-                    "parent_id": pc_parent or None,
-                }, auth=True)
-                show_result(status, body)
-
-            st.divider()
-            st.markdown("**DELETE /admin/product-categories/{category_id}**")
-            pc_id = st.text_input("Category ID (UUID)", "", key="pc_id")
-            if st.button("Delete product category", type="secondary"):
-                if not pc_id:
-                    st.warning("Provide a category ID.")
-                else:
-                    status, body = call("DELETE", f"/admin/product-categories/{pc_id}", auth=True)
-                    show_result(status, body)
-
-        with admin_subtabs[4]:
-            st.markdown("**GET /admin/brands**")
-            if st.button("List brands"):
-                status, body = call("GET", "/admin/brands", auth=True)
-                show_result(status, body)
-
-            st.divider()
-            st.markdown("**POST /admin/brands**")
-            br_name = st.text_input("Name", "Acme", key="br_name")
-            br_slug = st.text_input("Slug", "acme", key="br_slug")
-            if st.button("Create brand"):
-                status, body = call("POST", "/admin/brands", {"name": br_name, "slug": br_slug}, auth=True)
-                show_result(status, body)
-
-            st.divider()
-            st.markdown("**DELETE /admin/brands/{brand_id}**")
-            br_id = st.text_input("Brand ID (UUID)", "", key="br_id")
-            if st.button("Delete brand", type="secondary"):
-                if not br_id:
-                    st.warning("Provide a brand ID.")
-                else:
-                    status, body = call("DELETE", f"/admin/brands/{br_id}", auth=True)
-                    show_result(status, body)
-
-        with admin_subtabs[5]:
-            c1, c2 = st.columns(2)
-            with c1:
-                st.markdown("**GET /admin/sellers**")
-                if st.button("List all sellers"):
-                    status, body = call("GET", "/admin/sellers", auth=True)
-                    show_result(status, body)
-            with c2:
-                st.markdown("**GET /admin/sellers/pending**")
-                if st.button("List pending sellers"):
-                    status, body = call("GET", "/admin/sellers/pending", auth=True)
-                    show_result(status, body)
-
-            st.divider()
-            sl_id = st.text_input("Seller ID (UUID)", "", key="sl_id")
-            c1, c2, c3, c4 = st.columns(4)
-            with c1:
-                if st.button("Get seller detail"):
-                    if sl_id:
-                        status, body = call("GET", f"/admin/sellers/{sl_id}", auth=True)
-                        show_result(status, body)
-                    else:
-                        st.warning("Provide a seller ID.")
-            with c2:
-                if st.button("Get seller documents"):
-                    if sl_id:
-                        status, body = call("GET", f"/admin/sellers/{sl_id}/documents", auth=True)
-                        show_result(status, body)
-                    else:
-                        st.warning("Provide a seller ID.")
-            with c3:
-                if st.button("Approve seller", type="primary"):
-                    if sl_id:
-                        status, body = call("POST", f"/admin/sellers/{sl_id}/approve", auth=True)
-                        show_result(status, body)
-                        st.caption("Edge case: missing required KYC docs (tin, business_profile, business_registration) should return 400.")
-                    else:
-                        st.warning("Provide a seller ID.")
-            with c4:
-                sl_reject_reason = st.text_input("Rejection reason", "Incomplete documents", key="sl_reject_reason")
-                if st.button("Reject seller", type="secondary"):
-                    if sl_id:
-                        url = f"/admin/sellers/{sl_id}/reject"
-                        headers_note = "Sent as form data (reason=...)."
-                        # This endpoint expects Form(...) not JSON — send as form data directly.
-                        try:
-                            full_url = st.session_state.base_url.rstrip("/") + url
-                            headers = {"Authorization": f"Bearer {st.session_state.access_token}"}
-                            resp = requests.post(full_url, data={"reason": sl_reject_reason}, headers=headers, timeout=10)
-                            try:
-                                body = resp.json()
-                            except ValueError:
-                                body = resp.text
-                            st.session_state.history.insert(0, {
-                                "method": "POST", "path": url, "status": resp.status_code,
-                                "body": body, "request": {"reason": sl_reject_reason}, "params": None,
-                            })
-                            show_result(resp.status_code, body)
-                        except requests.exceptions.RequestException as e:
-                            st.error(f"Request failed: {e}")
-                    else:
-                        st.warning("Provide a seller ID.")
-
-        with admin_subtabs[6]:
-            st.markdown("**GET /admin/products/pending**")
-            if st.button("List pending products"):
-                status, body = call("GET", "/admin/products/pending", auth=True)
-                show_result(status, body)
-
-            st.divider()
-            pr_id = st.text_input("Product ID (UUID)", "", key="pr_id")
-            c1, c2 = st.columns(2)
-            with c1:
-                if st.button("Approve product", type="primary"):
-                    if pr_id:
-                        status, body = call("POST", f"/admin/products/{pr_id}/approve", auth=True)
-                        show_result(status, body)
-                    else:
-                        st.warning("Provide a product ID.")
-            with c2:
-                pr_reject_reason = st.text_input("Rejection reason", "Does not meet guidelines", key="pr_reject_reason")
-                if st.button("Reject product", type="secondary"):
-                    if pr_id:
-                        url = f"/admin/products/{pr_id}/reject"
-                        try:
-                            full_url = st.session_state.base_url.rstrip("/") + url
-                            headers = {"Authorization": f"Bearer {st.session_state.access_token}"}
-                            resp = requests.post(full_url, data={"reason": pr_reject_reason}, headers=headers, timeout=10)
-                            try:
-                                body = resp.json()
-                            except ValueError:
-                                body = resp.text
-                            st.session_state.history.insert(0, {
-                                "method": "POST", "path": url, "status": resp.status_code,
-                                "body": body, "request": {"reason": pr_reject_reason}, "params": None,
-                            })
-                            show_result(resp.status_code, body)
-                        except requests.exceptions.RequestException as e:
-                            st.error(f"Request failed: {e}")
-                    else:
-                        st.warning("Provide a product ID.")
-
-
-with tab_map["Cart"]:
-    st.subheader("GET /cart")
-    if st.button("Fetch cart", key="cart_fetch"):
-        status, body = call("GET", "/cart", auth=True)
-        show_result(status, body)
-
-    st.divider()
-    st.subheader("POST /cart/items")
-    c_prod = st.text_input("Product ID", "", key="cart_prod")
-    c_var = st.text_input("Variant ID (optional)", "", key="cart_var")
-    c_qty = st.number_input("Quantity", min_value=1, value=1, key="cart_qty")
-    if st.button("Add to cart", key="cart_add"):
-        payload = {"product_id": c_prod, "quantity": int(c_qty)}
-        if c_var:
-            payload["variant_id"] = c_var
-        status, body = call("POST", "/cart/items", payload, auth=True)
-        show_result(status, body)
-
-    st.divider()
-    st.subheader("PUT /cart/items/{item_id}")
-    c_item = st.text_input("Cart item ID", "", key="cart_item")
-    c_new_qty = st.number_input("New quantity", min_value=1, value=1, key="cart_new_qty")
-    if st.button("Update cart item", key="cart_update"):
-        status, body = call("PUT", f"/cart/items/{c_item}", {"quantity": int(c_new_qty)}, auth=True)
-        show_result(status, body)
-
-    st.divider()
-    st.subheader("DELETE /cart/items/{item_id}")
-    c_del_item = st.text_input("Cart item ID to remove", "", key="cart_del_item")
-    if st.button("Remove cart item", key="cart_remove"):
-        status, body = call("DELETE", f"/cart/items/{c_del_item}", auth=True)
-        show_result(status, body)
-
-    st.divider()
-    st.subheader("POST /cart/apply-coupon")
-    c_coupon = st.text_input("Coupon code", "", key="cart_coupon")
-    if st.button("Apply coupon", key="cart_apply_coupon"):
-        status, body = call("POST", "/cart/apply-coupon", {"code": c_coupon}, auth=True)
-        show_result(status, body)
-
-    st.divider()
-    st.subheader("DELETE /cart")
-    if st.button("Clear cart", key="cart_clear"):
-        status, body = call("DELETE", "/cart", auth=True)
-        show_result(status, body)
-
-
-with tab_map["Orders"]:
-    st.subheader("POST /orders")
-    o_addr = st.text_input("Shipping address ID (optional)", "", key="order_addr")
-    o_coupon = st.text_input("Coupon code (optional)", "", key="order_coupon")
-    o_notes = st.text_area("Notes (optional)", "", key="order_notes")
-    if st.button("Create order from cart", key="order_create"):
-        payload = {}
-        if o_addr:
-            payload["shipping_address_id"] = o_addr
-        if o_coupon:
-            payload["coupon_code"] = o_coupon
-        if o_notes:
-            payload["notes"] = o_notes
-        status, body = call("POST", "/orders", payload or None, auth=True)
-        show_result(status, body)
-
-    st.divider()
-    st.subheader("GET /orders/my-orders")
-    if st.button("List my orders", key="orders_list"):
-        status, body = call("GET", "/orders/my-orders", auth=True)
-        show_result(status, body)
-
-    st.divider()
-    st.subheader("GET /orders/{order_id}")
-    o_id = st.text_input("Order ID", "", key="order_id")
-    if st.button("Get order", key="order_get"):
-        status, body = call("GET", f"/orders/{o_id}", auth=True)
-        show_result(status, body)
-
-    st.divider()
-    st.subheader("PATCH /orders/{order_id}/status")
-    o_status_id = st.text_input("Order ID", "", key="order_status_id")
-    o_status = st.selectbox("New status", ["pending", "paid", "processing", "shipped", "delivered", "cancelled"], key="order_status")
-    o_status_notes = st.text_input("Status notes", "", key="order_status_notes")
-    if st.button("Update order status", key="order_status_update"):
-        status, body = call("PATCH", f"/orders/{o_status_id}/status", {"status": o_status, "notes": o_status_notes or None}, auth=True)
-        show_result(status, body)
-
-
-with tab_map["Payments"]:
-    st.subheader("POST /payments/initiate")
-    p_order = st.text_input("Order ID", "", key="pay_order")
-    p_method = st.selectbox("Method", ["mobile_money", "bank_transfer", "card", "cash_on_delivery"], key="pay_method")
-    p_provider = st.text_input("Provider (e.g. mpesa)", "", key="pay_provider")
-    p_phone = st.text_input("Phone number", "", key="pay_phone")
-    if st.button("Initiate payment", key="pay_init"):
-        payload = {"order_id": p_order, "method": p_method}
-        if p_provider:
-            payload["provider"] = p_provider
-        if p_phone:
-            payload["phone_number"] = p_phone
-        status, body = call("POST", "/payments/initiate", payload, auth=True)
-        show_result(status, body)
-
-    st.divider()
-    st.subheader("POST /payments/callback/{provider}")
-    cb_provider = st.text_input("Provider", "mpesa", key="cb_provider")
-    cb_tx = st.text_input("Transaction ID", "", key="cb_tx")
-    cb_status = st.selectbox("Callback status", ["success", "failed", "cancelled"], key="cb_status")
-    if st.button("Send callback", key="pay_callback"):
-        status, body = call("POST", f"/payments/callback/{cb_provider}", {
-            "provider": cb_provider,
-            "transaction_id": cb_tx,
-            "status": cb_status,
-            "payload": {"reason": "test callback"},
-        })
-        show_result(status, body)
-
-    st.divider()
-    st.subheader("GET /payments/{payment_id}")
-    p_id = st.text_input("Payment ID", "", key="pay_id")
-    if st.button("Get payment", key="pay_get"):
-        status, body = call("GET", f"/payments/{p_id}", auth=True)
-        show_result(status, body)
-
-
-with tab_map["Inventory"]:
-    st.subheader("POST /inventory")
-    i_prod = st.text_input("Product ID", "", key="inv_prod")
-    i_var = st.text_input("Variant ID (optional)", "", key="inv_var")
-    i_qty = st.number_input("Quantity", min_value=0, value=100, key="inv_qty")
-    i_res = st.number_input("Reserved quantity", min_value=0, value=0, key="inv_res")
-    i_loc = st.text_input("Warehouse location", "", key="inv_loc")
-    if st.button("Create inventory record", key="inv_create"):
-        payload = {"product_id": i_prod, "quantity": int(i_qty), "reserved_quantity": int(i_res)}
-        if i_var:
-            payload["variant_id"] = i_var
-        if i_loc:
-            payload["warehouse_location"] = i_loc
-        status, body = call("POST", "/inventory", payload, auth=True)
-        show_result(status, body)
-
-    st.divider()
-    st.subheader("GET /inventory/my-inventory")
-    if st.button("List my inventory", key="inv_list"):
-        status, body = call("GET", "/inventory/my-inventory", auth=True)
-        show_result(status, body)
-
-    st.divider()
-    st.subheader("PUT /inventory/{inventory_id}")
-    i_id = st.text_input("Inventory ID", "", key="inv_id")
-    i_new_qty = st.number_input("New quantity", min_value=0, value=100, key="inv_new_qty")
-    if st.button("Update inventory", key="inv_update"):
-        status, body = call("PUT", f"/inventory/{i_id}", {"quantity": int(i_new_qty)}, auth=True)
-        show_result(status, body)
-
-    st.divider()
-    st.subheader("GET /inventory/low-stock")
-    if st.button("List low stock", key="inv_low"):
-        status, body = call("GET", "/inventory/low-stock", auth=True)
-        show_result(status, body)
-
-
-with tab_map["Coupons"]:
-    st.subheader("POST /coupons")
-    cp_code = st.text_input("Code", f"SAVE{rand_suffix()}", key="cp_code")
-    cp_type = st.selectbox("Discount type", ["percentage", "fixed_amount"], key="cp_type")
-    cp_value = st.number_input("Discount value", min_value=0.0, value=10.0, step=0.01, key="cp_value")
-    cp_min = st.number_input("Minimum order amount", min_value=0.0, value=0.0, step=0.01, key="cp_min")
-    cp_limit = st.number_input("Usage limit", min_value=1, value=100, key="cp_limit")
-    if st.button("Create coupon", key="cp_create"):
-        payload = {
-            "code": cp_code,
-            "discount_type": cp_type,
-            "discount_value": cp_value,
-            "minimum_order_amount": cp_min if cp_min > 0 else None,
-            "usage_limit": int(cp_limit),
-        }
-        status, body = call("POST", "/coupons", payload, auth=True)
-        show_result(status, body)
-
-    st.divider()
-    st.subheader("GET /coupons")
-    if st.button("List coupons", key="cp_list"):
-        status, body = call("GET", "/coupons", auth=True)
-        show_result(status, body)
-
-    st.divider()
-    st.subheader("PUT /coupons/{coupon_id}")
-    cp_id = st.text_input("Coupon ID", "", key="cp_id")
-    cp_active = st.checkbox("Active", value=True, key="cp_active")
-    if st.button("Update coupon", key="cp_update"):
-        status, body = call("PUT", f"/coupons/{cp_id}", {"is_active": cp_active}, auth=True)
-        show_result(status, body)
-
-
-with tab_map["Stress tests"]:
-    st.subheader("Rate limiting")
-    st.caption("Fires N rapid login requests with a wrong password. You should see the last few come back as 429.")
-
-    if "stress_email" not in st.session_state:
-        st.session_state.stress_email = ""
-
-    stress_email = st.text_input("Email to hammer", key="stress_email")
-    n_calls = st.slider("Number of requests", 1, 30, 15)
-
-    if st.button("Fire requests", type="primary"):
-        results = []
-        progress = st.progress(0)
-        for i in range(n_calls):
-            status, _ = call("POST", "/auth/login", {"email": stress_email, "password": "wrong"})
-            results.append(status)
-            progress.progress((i + 1) / n_calls)
-        counts = {}
-        for s in results:
-            counts[s] = counts.get(s, 0) + 1
-        st.write("Status code counts:", counts)
-        if 429 in counts:
-            st.success(f"Rate limiting confirmed — {counts[429]} requests were throttled with 429.")
-        else:
-            st.warning("No 429s seen. Either the limit threshold is higher than n_calls, or the limiter isn't triggering.")
-
-    st.divider()
-    st.subheader("OTP brute-force lockout")
-    st.caption("Fires wrong OTP codes at a phone number repeatedly. Should lock out after OTP_MAX_ATTEMPTS (default 5).")
-    lockout_phone = st.text_input("Phone to hammer", st.session_state.last_phone, key="lockout_phone")
-    n_otp_calls = st.slider("Number of wrong OTP attempts", 1, 15, 7, key="n_otp_calls")
-
-    if st.button("Fire wrong OTP attempts", type="primary"):
-        results = []
-        progress = st.progress(0)
-        for i in range(n_otp_calls):
-            status, _ = call("POST", "/auth/verify-otp", {"phone": lockout_phone, "otp_code": "000000"})
-            results.append(status)
-            progress.progress((i + 1) / n_otp_calls)
-        counts = {}
-        for s in results:
-            counts[s] = counts.get(s, 0) + 1
-        st.write("Status code counts:", counts)
-        if 429 in counts:
-            st.success(f"OTP lockout confirmed — {counts[429]} attempts were blocked with 429.")
-        else:
-            st.warning("No 429s seen. Try more attempts, or check OTP_MAX_ATTEMPTS in auth.py.")
-            
-with tab_map["Request history"]:
-    st.subheader("Request history (most recent first)")
-    if not st.session_state.history:
-        st.info("No requests made yet.")
-    for entry in st.session_state.history:
-        status = entry["status"]
-        color = "🟢" if isinstance(status, int) and status < 300 else ("🟡" if status == 429 else "🔴")
-        with st.expander(f"{color} {entry['method']} {entry['path']} → {status}"):
-            if entry.get("params"):
-                st.markdown("**Query params:**")
-                st.code(json.dumps(entry["params"], indent=2), language="json")
-            if entry.get("request") is not None:
-                st.markdown("**Request body:**")
-                st.code(json.dumps(entry["request"], indent=2), language="json")
-            st.markdown("**Response:**")
-            if isinstance(entry["body"], (dict, list)):
-                st.code(json.dumps(entry["body"], indent=2), language="json")
-            else:
-                st.code(str(entry["body"]))
+with history_tab:
+    render_history()

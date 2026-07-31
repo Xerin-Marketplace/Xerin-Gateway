@@ -449,9 +449,13 @@ class SellerProfileResponse(BaseModel):
 class StoreUpdate(BaseModel):
     store_name: str | None = Field(default=None, min_length=2, max_length=255)
     description: str | None = Field(default=None, max_length=5000)
+    about: str | None = Field(default=None, max_length=10000)
+    theme_color: str | None = Field(default=None, pattern=r"^#[0-9A-Fa-f]{6}$")
+    secondary_color: str | None = Field(default=None, pattern=r"^#[0-9A-Fa-f]{6}$")
 
     contact_email: EmailStr | None = None
     contact_phone: str | None = Field(default=None, max_length=30)
+    whatsapp_phone: str | None = Field(default=None, max_length=30)
     website_url: str | None = None
 
     country: str | None = Field(default=None, max_length=100)
@@ -476,6 +480,12 @@ class StoreUpdate(BaseModel):
     tiktok_url: str | None = None
     youtube_url: str | None = None
 
+    vacation_mode: bool | None = None
+    accept_orders: bool | None = None
+    processing_days: int | None = Field(default=None, ge=0, le=60)
+    seo_title: str | None = Field(default=None, max_length=255)
+    seo_description: str | None = Field(default=None, max_length=500)
+
 
 class StoreResponse(BaseModel):
     id: UUID
@@ -484,12 +494,16 @@ class StoreResponse(BaseModel):
     store_name: str
     slug: str
     description: str | None
+    about: str | None
 
     logo_url: str | None
     banner_url: str | None
+    theme_color: str
+    secondary_color: str
 
     contact_email: str | None
     contact_phone: str | None
+    whatsapp_phone: str | None
     website_url: str | None
 
     country: str | None
@@ -521,6 +535,11 @@ class StoreResponse(BaseModel):
     rating: Decimal
     review_count: int
     followers_count: int
+    vacation_mode: bool
+    accept_orders: bool
+    processing_days: int
+    seo_title: str | None
+    seo_description: str | None
     
     gallery_images: list["StoreGalleryImageResponse"] = Field(default_factory=list)
     opening_hours: list["StoreOpeningHourResponse"] = Field(default_factory=list)
@@ -538,12 +557,16 @@ class StorePublicResponse(BaseModel):
     store_name: str
     slug: str
     description: str | None
+    about: str | None
 
     logo_url: str | None
     banner_url: str | None
+    theme_color: str
+    secondary_color: str
 
     contact_email: str | None
     contact_phone: str | None
+    whatsapp_phone: str | None
     website_url: str | None
 
     country: str | None
@@ -570,6 +593,11 @@ class StorePublicResponse(BaseModel):
     rating: Decimal
     review_count: int
     followers_count: int
+    vacation_mode: bool
+    accept_orders: bool
+    processing_days: int
+    seo_title: str | None
+    seo_description: str | None
     
     gallery_images: list["StoreGalleryImageResponse"] = Field(default_factory=list)
     opening_hours: list["StoreOpeningHourResponse"] = Field(default_factory=list)

@@ -1095,12 +1095,16 @@ class Store(Base):
     slug = Column(String(255), unique=True, index=True, nullable=False)
 
     description = Column(Text, nullable=True)
+    about = Column(Text, nullable=True)
 
     logo_url = Column(Text, nullable=True)
     banner_url = Column(Text, nullable=True)
+    theme_color = Column(String(7), nullable=False, default="#111827", server_default="#111827")
+    secondary_color = Column(String(7), nullable=False, default="#ffffff", server_default="#ffffff")
 
     contact_email = Column(String(255), nullable=True)
     contact_phone = Column(String(30), nullable=True)
+    whatsapp_phone = Column(String(30), nullable=True)
     website_url = Column(Text, nullable=True)
 
     country = Column(String(100), nullable=True)
@@ -1138,6 +1142,12 @@ class Store(Base):
     rating = Column(Numeric(3, 2), default=0, nullable=False)
     review_count = Column(Integer, default=0, nullable=False)
     followers_count = Column(Integer, default=0, nullable=False)
+
+    vacation_mode = Column(Boolean, nullable=False, default=False, server_default="false")
+    accept_orders = Column(Boolean, nullable=False, default=True, server_default="true")
+    processing_days = Column(Integer, nullable=False, default=1, server_default="1")
+    seo_title = Column(String(255), nullable=True)
+    seo_description = Column(String(500), nullable=True)
 
     created_at = Column(
         DateTime(timezone=True),
