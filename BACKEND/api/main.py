@@ -79,6 +79,7 @@ if settings.trusted_hosts:
         "testserver",
         "localhost",
         "api.xerinmarketplace.com",
+        "169.58.54.110",
     ],
 )
 
