@@ -135,3 +135,8 @@ API_FEATURES.md
 # Keep migrations
 ###############################################################################
 !alembic/versions/
+/BACKEND/xerin_before_phase1_task3_20260730.sql
+/BACKEND/xerin_before_phase1_task3_20260730.sql/*
+BACKEND/xerin_before_phase1_task3_20260730.sql/*
+xerin_before_phase1_task3_20260730.sql/*
+
