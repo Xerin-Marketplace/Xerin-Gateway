@@ -2518,3 +2518,66 @@ class ProductQuestionListResponse(BaseModel):
     page: int
     page_size: int
     results: List[ProductQuestionResponse]
+
+
+class SearchProductItem(BaseModel):
+    id: UUID
+    seller_id: UUID
+    category_id: UUID
+    brand_id: Optional[UUID] = None
+    name: str
+    slug: str
+    price: Decimal
+    sale_price: Optional[Decimal] = None
+    currency: str
+    primary_image_url: Optional[str] = None
+    model_config = ORM_CONFIG
+
+
+class ProductSearchResponse(BaseModel):
+    total: int
+    page: int
+    page_size: int
+    results: list[SearchProductItem]
+
+
+class SearchSuggestionResponse(BaseModel):
+    suggestions: list[str]
+
+
+class TrendingSearchItem(BaseModel):
+    term: str
+    search_count: int
+
+
+class ProductViewCreate(BaseModel):
+    session_id: Optional[str] = Field(default=None, max_length=128)
+    source: Optional[str] = Field(default=None, max_length=64)
+    search_query: Optional[str] = Field(default=None, max_length=255)
+
+
+class ProductViewResponse(BaseModel):
+    id: UUID
+    product_id: UUID
+    user_id: Optional[UUID] = None
+    session_id: Optional[str] = None
+    source: Optional[str] = None
+    created_at: datetime
+    model_config = ORM_CONFIG
+
+
+class RecommendationListResponse(BaseModel):
+    total: int
+    results: list[SearchProductItem]
+
+
+class SellerSearchAnalyticsItem(BaseModel):
+    query: str
+    searches: int
+    product_views: int
+
+
+class SellerProductPerformanceItem(BaseModel):
+    product_id: UUID
+    product_name: str
+    views: int

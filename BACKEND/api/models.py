@@ -1916,3 +1916,89 @@ class QuestionReport(Base):
     created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
     question = relationship("ProductQuestion", back_populates="reports")
     __table_args__ = (UniqueConstraint("question_id", "reported_by_id", name="uq_question_report_question_user"),)
+
+
+class SearchHistory(Base):
+    __tablename__ = "search_history"
+    __table_args__ = (
+        Index("ix_search_history_user_created", "user_id", "created_at"),
+        Index("ix_search_history_query_created", "normalized_query", "created_at"),
+    )
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=True, index=True)
+    query = Column(String(255), nullable=False)
+    normalized_query = Column(String(255), nullable=False, index=True)
+    filters = Column(JSONB, nullable=False, default=dict)
+    result_count = Column(Integer, nullable=False, default=0)
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+    __table_args__ = (
+        Index("ix_search_history_user_created", "user_id", "created_at"),
+        Index("ix_search_history_query_created", "normalized_query", "created_at"),
+        CheckConstraint("result_count >= 0", name="ck_search_history_result_count"),
+    )
+
+
+class SearchTerm(Base):
+    __tablename__ = "search_terms"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    term = Column(String(255), nullable=False, unique=True, index=True)
+    search_count = Column(Integer, nullable=False, default=0)
+    result_click_count = Column(Integer, nullable=False, default=0)
+    last_searched_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), nullable=True, onupdate=func.now())
+
+    __table_args__ = (
+        CheckConstraint("search_count >= 0", name="ck_search_term_search_count"),
+        CheckConstraint("result_click_count >= 0", name="ck_search_term_click_count"),
+    )
+
+
+class ProductView(Base):
+    __tablename__ = "product_views"
+    __table_args__ = (Index("ix_product_views_product_created", "product_id", "created_at"),)
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    product_id = Column(UUID(as_uuid=True), ForeignKey("products.id", ondelete="CASCADE"), nullable=False, index=True)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
+    session_id = Column(String(128), nullable=True, index=True)
+    source = Column(String(64), nullable=True)
+    search_query = Column(String(255), nullable=True)
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+    product = relationship("Product")
+
+
+class ProductRecommendation(Base):
+    __tablename__ = "product_recommendations"
+    __table_args__ = (
+        UniqueConstraint("user_id", "product_id", "recommendation_type", name="uq_product_recommendation_user_product_type"),
+        CheckConstraint("score >= 0", name="ck_product_recommendation_score"),
+    )
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    product_id = Column(UUID(as_uuid=True), ForeignKey("products.id", ondelete="CASCADE"), nullable=False, index=True)
+    recommendation_type = Column(String(64), nullable=False, default="personalized")
+    score = Column(Float, nullable=False, default=0.0)
+    reason = Column(String(255), nullable=True)
+    generated_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    expires_at = Column(DateTime(timezone=True), nullable=True)
+
+    product = relationship("Product")
+
+
+class RecommendationEvent(Base):
+    __tablename__ = "recommendation_events"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
+    product_id = Column(UUID(as_uuid=True), ForeignKey("products.id", ondelete="CASCADE"), nullable=False, index=True)
+    event_type = Column(String(64), nullable=False, index=True)
+    metadata_json = Column(JSONB, nullable=False, default=dict)
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+    __table_args__ = (CheckConstraint("char_length(event_type) >= 2", name="ck_recommendation_event_type"),)
