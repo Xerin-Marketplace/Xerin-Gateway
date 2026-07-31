@@ -40,8 +40,6 @@ DEFAULT_ROLE_PERMISSIONS: dict[str, set[str]] = {
         PermissionCode.seller_product_variants_manage.value,
         PermissionCode.seller_orders_read.value,
         PermissionCode.seller_orders_manage.value,
-        PermissionCode.seller_inventory_read.value,
-        PermissionCode.seller_inventory_manage.value,
         PermissionCode.can_view_products.value,
         PermissionCode.can_view_public_stores.value,
         PermissionCode.shipping_track.value,

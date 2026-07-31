@@ -22,7 +22,8 @@ Run:
 import json
 import time
 import uuid
-
+import urllib3
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 import requests
 import streamlit as st
 
@@ -31,7 +32,7 @@ st.set_page_config(page_title="API Tester", layout="wide")
 ADMIN_ROLE_NAMES = {"admin", "super_admin", "superadmin"}
 
 defaults = {
-    "base_url": "http://127.0.0.1:8000",
+    "base_url": "http://api.xerinmarketplace.com/api/v1",
     "access_token": "",
     "refresh_token": "",
     "last_email": "",
@@ -59,7 +60,7 @@ def call(method: str, path: str, json_body: dict | None = None, auth: bool = Fal
     try:
         resp = requests.request(
             method, url, json=json_body, headers=headers,
-            params=clean_params or None, timeout=10,
+            params=clean_params or None, timeout=10, verify=False,
         )
     except requests.exceptions.RequestException as e:
         entry = {
