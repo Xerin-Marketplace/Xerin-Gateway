@@ -53,8 +53,7 @@ logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    # Database schema changes must be applied with Alembic before startup:
-    # alembic upgrade head
+
     if settings.SERVE_LOCAL_UPLOADS:
         settings.upload_path.mkdir(parents=True, exist_ok=True)
 
