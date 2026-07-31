@@ -43,7 +43,6 @@ from api.routers import (
     admin_dashboard,
 )
 
-
 logging.basicConfig(
     level=getattr(logging, settings.LOG_LEVEL.upper(), logging.INFO),
     format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
@@ -85,6 +84,7 @@ if settings.trusted_hosts:
         "localhost",
         "api.xerinmarketplace.com",
         "169.58.54.110",
+        "169.58.54.110:8080",
     ],
 )
 
