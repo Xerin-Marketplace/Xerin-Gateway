@@ -40,6 +40,7 @@ from api.routers import (
     notifications,
     product_qa,
     search_recommendations,
+    admin_dashboard,
 )
 
 
@@ -167,5 +168,6 @@ for router in (
     notifications.router,
     product_qa.router,
     search_recommendations.router,
+    admin_dashboard.router,
 ):
     api.include_router(router, prefix=settings.API_PREFIX)
