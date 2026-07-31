@@ -390,3 +390,14 @@ Payouts
 Elasticsearch
 Recommendations
 Promotions
+
+api/
+├── models.py
+├── schemas.py
+├── enums.py
+├── permissions.py
+├── seed_permissions.py
+├── main.py
+└── routers/
+    ├── addresses.py
+    └── shipping.py
