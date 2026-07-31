@@ -51,6 +51,8 @@ class User(Base):
     addresses = relationship("Address", back_populates="user")
     seller_profile = relationship("Seller", back_populates="user", uselist=False)
     roles = relationship("UserRole", back_populates="user")
+    wishlist_products = relationship("WishlistProduct", back_populates="user", cascade="all, delete-orphan")
+    favorite_stores = relationship("FavoriteStore", back_populates="user", cascade="all, delete-orphan")
     
 class Role(Base):
     __tablename__ = "roles"
@@ -355,6 +357,7 @@ class Product(Base):
     variants = relationship("ProductVariant", back_populates="product", cascade="all, delete-orphan")
     options = relationship("ProductOption", back_populates="product", cascade="all, delete-orphan", order_by="ProductOption.display_order")
     tags = relationship("ProductTag", back_populates="product", cascade="all, delete-orphan")
+    wishlist_entries = relationship("WishlistProduct", back_populates="product", cascade="all, delete-orphan")
 
     __table_args__ = (
         CheckConstraint("price >= 0", name="ck_product_price_nonnegative"),
@@ -1180,6 +1183,7 @@ class Store(Base):
         cascade="all, delete-orphan",
         order_by="StoreOpeningHour.day_number",
     )
+    favorite_entries = relationship("FavoriteStore", back_populates="store", cascade="all, delete-orphan")
     
 class StoreGalleryImage(Base):
     __tablename__ = "store_gallery_images"
@@ -1598,3 +1602,38 @@ class ReviewReport(Base):
     product_review = relationship("ProductReview", back_populates="reports")
     store_review = relationship("StoreReview", back_populates="reports")
     __table_args__ = (CheckConstraint("(product_review_id IS NOT NULL) <> (store_review_id IS NOT NULL)", name="ck_review_report_single_target"),)
+
+
+# Phase 3 Task 13: customer wishlist and favorite stores
+class WishlistProduct(Base):
+    __tablename__ = "wishlist_products"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    product_id = Column(UUID(as_uuid=True), ForeignKey("products.id", ondelete="CASCADE"), nullable=False, index=True)
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now(), index=True)
+
+    user = relationship("User", back_populates="wishlist_products")
+    product = relationship("Product", back_populates="wishlist_entries")
+
+    __table_args__ = (
+        UniqueConstraint("user_id", "product_id", name="uq_wishlist_product_user_product"),
+        Index("ix_wishlist_products_user_created", "user_id", "created_at"),
+    )
+
+
+class FavoriteStore(Base):
+    __tablename__ = "favorite_stores"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    store_id = Column(UUID(as_uuid=True), ForeignKey("stores.id", ondelete="CASCADE"), nullable=False, index=True)
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now(), index=True)
+
+    user = relationship("User", back_populates="favorite_stores")
+    store = relationship("Store", back_populates="favorite_entries")
+
+    __table_args__ = (
+        UniqueConstraint("user_id", "store_id", name="uq_favorite_store_user_store"),
+        Index("ix_favorite_stores_user_created", "user_id", "created_at"),
+    )

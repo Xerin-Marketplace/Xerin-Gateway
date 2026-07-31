@@ -2146,3 +2146,60 @@ class ReviewListResponse(BaseModel):
     page_size: int
     average_rating: Decimal
     results: list[ReviewResponse]
+
+
+# Phase 3 Task 13: wishlist and favorite stores
+class WishlistProductItemResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    wishlist_id: UUID
+    product_id: UUID
+    name: str
+    slug: str
+    sku: str
+    price: Decimal
+    sale_price: Optional[Decimal] = None
+    currency: str
+    primary_image_url: Optional[str] = None
+    store_name: Optional[str] = None
+    store_slug: Optional[str] = None
+    is_available: bool
+    is_in_stock: bool
+    created_at: datetime
+
+
+class WishlistProductListResponse(BaseModel):
+    total: int
+    page: int
+    page_size: int
+    results: list[WishlistProductItemResponse]
+
+
+class FavoriteStoreItemResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    favorite_id: UUID
+    store_id: UUID
+    store_name: str
+    slug: str
+    logo_url: Optional[str] = None
+    banner_url: Optional[str] = None
+    rating: Decimal
+    review_count: int
+    followers_count: int
+    is_available: bool
+    created_at: datetime
+
+
+class FavoriteStoreListResponse(BaseModel):
+    total: int
+    page: int
+    page_size: int
+    results: list[FavoriteStoreItemResponse]
+
+
+class WishlistSummaryResponse(BaseModel):
+    product_count: int
+    favorite_store_count: int
+
+
+class WishlistMutationResponse(BaseModel):
+    message: str
