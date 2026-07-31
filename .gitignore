@@ -1,16 +1,32 @@
 # Environment files
 .env
+.env.*
 **/.env
+**/.env.*
+
+# Keep example env files
+!.env.example
+!**/.env.example
 
 # Python virtual environments
 .venv/
 venv/
 **/.venv/
+**/venv/
 
-# Frontend dependencies/build
-Frontend/
+# Python cache
+__pycache__/
+*.py[cod]
+
+# Node
+node_modules/
+.next/
+out/
+
+# Test envs
 .env.test
+.env.test.*
 .env/test/*
 
+# Docs
 API_FEATURES.md
-API_FEATURES.md/*
