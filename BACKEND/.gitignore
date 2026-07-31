@@ -139,4 +139,10 @@ API_FEATURES.md
 /BACKEND/xerin_before_phase1_task3_20260730.sql/*
 BACKEND/xerin_before_phase1_task3_20260730.sql/*
 xerin_before_phase1_task3_20260730.sql/*
+# SQL backups
+*.sql
+*.sql.gz
+
+# Or ignore this specific backup
+xerin_before_phase1_task3_20260730.sql
 
