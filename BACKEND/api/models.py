@@ -2002,3 +2002,48 @@ class RecommendationEvent(Base):
     created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
 
     __table_args__ = (CheckConstraint("char_length(event_type) >= 2", name="ck_recommendation_event_type"),)
+
+
+# Phase 3 Task 18: Marketplace Administration Dashboard
+class AdminDashboardSnapshot(Base):
+    __tablename__ = "admin_dashboard_snapshots"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    period_start = Column(DateTime(timezone=True), nullable=False, index=True)
+    period_end = Column(DateTime(timezone=True), nullable=False, index=True)
+    metrics = Column(JSONB, nullable=False, default=dict)
+    generated_by_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    generated_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    __table_args__ = (CheckConstraint("period_end >= period_start", name="ck_admin_dashboard_snapshot_period"),)
+
+
+class SystemAlert(Base):
+    __tablename__ = "system_alerts"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    alert_type = Column(String(80), nullable=False, index=True)
+    severity = Column(String(20), nullable=False, default="warning", server_default="warning", index=True)
+    title = Column(String(255), nullable=False)
+    message = Column(Text, nullable=False)
+    source = Column(String(100), nullable=True, index=True)
+    entity_type = Column(String(80), nullable=True)
+    entity_id = Column(String(100), nullable=True)
+    metadata_json = Column(JSONB, nullable=False, default=dict)
+    is_resolved = Column(Boolean, nullable=False, default=False, server_default="false", index=True)
+    resolved_by_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    resolved_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now(), index=True)
+    __table_args__ = (CheckConstraint("severity IN ('info','warning','error','critical')", name="ck_system_alert_severity"),)
+
+
+class AdminActivityLog(Base):
+    __tablename__ = "admin_activity_logs"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    admin_user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
+    action = Column(String(120), nullable=False, index=True)
+    resource_type = Column(String(100), nullable=True, index=True)
+    resource_id = Column(String(100), nullable=True)
+    details = Column(JSONB, nullable=False, default=dict)
+    ip_address = Column(String(64), nullable=True)
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now(), index=True)

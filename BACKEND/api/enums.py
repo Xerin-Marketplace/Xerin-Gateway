@@ -117,6 +117,13 @@ class PermissionCode(str, enum.Enum):
     search_history_manage = "search_history:manage"
     seller_search_analytics_read = "seller_search_analytics:read"
 
+    admin_dashboard_read = "admin_dashboard:read"
+    admin_dashboard_finance_read = "admin_dashboard_finance:read"
+    admin_dashboard_operations_read = "admin_dashboard_operations:read"
+    admin_dashboard_security_read = "admin_dashboard_security:read"
+    admin_system_alerts_manage = "admin_system_alerts:manage"
+    admin_activity_logs_read = "admin_activity_logs:read"
+
     # Commerce
     orders_read = "orders:read"
     payments_read = "payments:read"
