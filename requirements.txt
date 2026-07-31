@@ -10,5 +10,4 @@ python-multipart>=0.0.9
 email-validator>=2.1.0
 redis>=5.0.0
 africastalking>=1.2.0
-httpx>=0.27.0
 streamlit>=1.35.0
