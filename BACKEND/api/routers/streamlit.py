@@ -32,7 +32,7 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-DEFAULT_BASE_URL = "http://169.58.54.110:8081/api/v1"
+DEFAULT_BASE_URL = "https://api.xerinmarketplace.com/"
 HTTP_METHODS = ("get", "post", "put", "patch", "delete", "options", "head")
 METHOD_ORDER = {name: i for i, name in enumerate(HTTP_METHODS)}
 METHOD_ICONS = {
@@ -109,9 +109,9 @@ class Operation:
 
 
 def api_root() -> str:
-    """Return server root by removing the configured /api/v1 suffix."""
+    """Return server root by removing the configured suffix."""
     base = st.session_state.base_url.rstrip("/")
-    for suffix in ("/api/v1", "/api"):
+    for suffix in ("/api"):
         if base.endswith(suffix):
             return base[: -len(suffix)]
     return base
@@ -297,7 +297,12 @@ def request_call(
     for name, value in (path_params or {}).items():
         rendered_path = rendered_path.replace("{" + name + "}", quote(str(value), safe=""))
 
-    url = st.session_state.base_url.rstrip("/") + rendered_path
+    base = st.session_state.base_url.rstrip("/")
+
+    if base.endswith("/api/v1") and rendered_path.startswith("/api/v1"):
+        rendered_path = rendered_path[len("/api/v1"):]
+
+    url = base + rendered_path
     headers = {str(k): str(v) for k, v in (header_params or {}).items() if v not in (None, "")}
     if use_auth and st.session_state.access_token:
         headers["Authorization"] = f"Bearer {st.session_state.access_token}"
@@ -610,7 +615,7 @@ with st.sidebar:
     st.session_state.base_url = st.text_input(
         "API base URL",
         value=st.session_state.base_url,
-        help="Normally http://169.58.54.110:8081/api/v1",
+        help="Normally https://api.xerinmarketplace.com/",
     )
     st.session_state.timeout = st.number_input("Timeout (seconds)", min_value=3, max_value=180, value=int(st.session_state.timeout))
     st.session_state.verify_ssl = st.checkbox("Verify SSL certificate", value=st.session_state.verify_ssl)
@@ -751,3 +756,4 @@ with explorer_tab:
 
 with history_tab:
     render_history()
+    
