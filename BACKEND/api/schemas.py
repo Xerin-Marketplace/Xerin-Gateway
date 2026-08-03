@@ -369,6 +369,45 @@ class SellerRegisterRequest(BaseModel):
             raise ValueError("At least one business category is required")
         return list(dict.fromkeys(value))
 
+class SellerApplicationRequest(BaseModel):
+    """Business details submitted by an authenticated customer becoming a seller."""
+
+    business_name: str
+    business_category_ids: list[UUID]
+    business_description: str | None = None
+    business_country: str | None = None
+    business_region: str | None = None
+    business_city: str | None = None
+    business_address: str | None = None
+    product_description: str | None = None
+    years_in_business: str | None = None
+    website_url: str | None = None
+    contact_email: EmailStr | None = None
+    contact_phone: str | None = None
+    agreement_accepted: Literal[True]
+
+    _clean_business_name = field_validator("business_name")(_clean_required_text)
+    _clean_contact_phone = field_validator("contact_phone")(_normalise_phone)
+
+    @field_validator("business_category_ids")
+    @classmethod
+    def require_business_categories(cls, value: list[UUID]) -> list[UUID]:
+        if not value:
+            raise ValueError("At least one business category is required")
+        return list(dict.fromkeys(value))
+
+
+class SellerApplicationStatusResponse(BaseModel):
+    has_application: bool
+    seller_id: UUID | None = None
+    status: str | None = None
+    business_name: str | None = None
+    can_access_seller_dashboard: bool = False
+    can_upload_kyc: bool = False
+    submitted_at: datetime | None = None
+    approved_at: datetime | None = None
+
+
 class SellerKYCCreate(BaseModel):
     document_type: str
     document_url: str

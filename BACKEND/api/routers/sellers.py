@@ -1,10 +1,22 @@
 from uuid import UUID
+from datetime import datetime, timezone
 from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, Form
 from sqlalchemy.orm import Session
 from api.schemas import SellerProfileUpdate, SellerProfileResponse
 from api.deps import get_db, get_current_user
-from api.models import User, Seller, SellerProfile, SellerKYCDocument, SellerPayoutAccount, SellerStatus
+from api.models import (
+    User,
+    Seller,
+    SellerProfile,
+    SellerKYCDocument,
+    SellerPayoutAccount,
+    SellerStatus,
+    BusinessCategory,
+    SellerBusinessCategory,
+    Role,
+    UserRole,
+)
 from fastapi import Query
 from api.schemas import (
     SellerResponse,
@@ -15,6 +27,8 @@ from api.schemas import (
     PaginatedKYCResponse,
     PaginatedPayoutResponse,
     PaginatedSellerResponse,
+    SellerApplicationRequest,
+    SellerApplicationStatusResponse,
 )
 
 router = APIRouter(prefix="/sellers", tags=["Sellers"])
@@ -27,6 +41,35 @@ REQUIRED_KYC_DOCUMENTS = [
     "business_profile",
     "business_registration",
 ]
+
+
+def _assign_role(db: Session, user_id: UUID, role_name: str) -> None:
+    role = db.query(Role).filter(Role.name == role_name).first()
+    if role is None:
+        raise RuntimeError(
+            f"Required role '{role_name}' does not exist. "
+            "Run: python -m api.seed_permissions"
+        )
+
+    existing = db.query(UserRole).filter(
+        UserRole.user_id == user_id,
+        UserRole.role_id == role.id,
+    ).first()
+    if existing is None:
+        db.add(UserRole(user_id=user_id, role_id=role.id))
+
+
+def _validated_categories(db: Session, category_ids: list[UUID]) -> list[BusinessCategory]:
+    unique_ids = list(dict.fromkeys(category_ids))
+    categories = db.query(BusinessCategory).filter(
+        BusinessCategory.id.in_(unique_ids)
+    ).all()
+    if len(categories) != len(unique_ids):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="One or more business categories are invalid",
+        )
+    return categories
 
 
 def get_my_seller(db: Session, current_user: User) -> Seller:
@@ -51,6 +94,107 @@ def require_admin(current_user: User):
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Admin access required"
         )
+@router.post(
+    "/apply",
+    response_model=SellerResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+def apply_to_become_seller(
+    data: SellerApplicationRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Attach a pending seller application to the authenticated customer account.
+
+    The existing user, email, phone, password, customer role, addresses and order
+    history are preserved. A second user account is never created.
+    """
+    existing = db.query(Seller).filter(Seller.user_id == current_user.id).first()
+    if existing is not None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "message": "This account already has a seller application",
+                "seller_id": str(existing.id),
+                "status": existing.status.value if hasattr(existing.status, "value") else str(existing.status),
+            },
+        )
+
+    _validated_categories(db, data.business_category_ids)
+
+    seller = Seller(
+        user_id=current_user.id,
+        business_name=data.business_name.strip(),
+        contact_email=str(data.contact_email).strip().lower() if data.contact_email else current_user.email,
+        contact_phone=data.contact_phone or current_user.phone,
+        agreement_accepted=True,
+        status=SellerStatus.pending,
+    )
+
+    try:
+        db.add(seller)
+        db.flush()
+
+        db.add(
+            SellerProfile(
+                seller_id=seller.id,
+                business_description=data.business_description,
+                business_country=data.business_country,
+                business_region=data.business_region,
+                business_city=data.business_city,
+                business_address=data.business_address,
+                product_description=data.product_description,
+                years_in_business=data.years_in_business,
+                website_url=data.website_url,
+            )
+        )
+
+        for category_id in data.business_category_ids:
+            db.add(
+                SellerBusinessCategory(
+                    seller_id=seller.id,
+                    business_category_id=category_id,
+                )
+            )
+
+        db.commit()
+        db.refresh(seller)
+    except Exception:
+        db.rollback()
+        raise
+
+    return seller
+
+
+@router.get(
+    "/application-status",
+    response_model=SellerApplicationStatusResponse,
+)
+def get_seller_application_status(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    seller = db.query(Seller).filter(Seller.user_id == current_user.id).first()
+    if seller is None:
+        return SellerApplicationStatusResponse(has_application=False)
+
+    seller_status = seller.status.value if hasattr(seller.status, "value") else str(seller.status)
+    return SellerApplicationStatusResponse(
+        has_application=True,
+        seller_id=seller.id,
+        status=seller_status,
+        business_name=seller.business_name,
+        can_access_seller_dashboard=seller.status == SellerStatus.approved,
+        can_upload_kyc=seller.status in {
+            SellerStatus.pending,
+            SellerStatus.under_review,
+            SellerStatus.rejected,
+        },
+        submitted_at=seller.created_at,
+        approved_at=seller.approved_at,
+    )
+
+
 @router.get("/me", response_model=SellerResponse)
 def get_my_seller_profile(
     db: Session = Depends(get_db),
@@ -479,6 +623,8 @@ def admin_approve_seller(
         )
 
     seller.status = SellerStatus.approved
+    seller.approved_at = datetime.now(timezone.utc)
+    _assign_role(db, seller.user_id, "seller")
     db.commit()
     db.refresh(seller)
 
