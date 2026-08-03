@@ -619,16 +619,36 @@ def create_business_category(
     return category
 
 
-@router.get("/business-categories", response_model=list[BusinessCategoryResponse])
+@router.get(
+    "/business-categories",
+    response_model=list[BusinessCategoryResponse],
+    summary="List public business categories",
+    description=(
+        "Public endpoint. Authentication is not required. "
+        "Only active business categories are returned."
+    ),
+)
 def get_business_categories(
     db: Session = Depends(get_db),
-    current_user: User = Depends(
-    require_permission(PermissionCode.can_view_business_categories.value)
-),
 ):
-     
+    """
+    Return all active business categories for public consumers.
 
-    return db.query(BusinessCategory).order_by(BusinessCategory.name.asc()).all()
+    This endpoint is intentionally public so it can be used by:
+    - guest users
+    - external websites
+    - mobile applications
+    - seller registration forms
+
+    Create, update, and delete operations remain protected by
+    administrator permissions.
+    """
+    return (
+        db.query(BusinessCategory)
+        .filter(BusinessCategory.active.is_(True))
+        .order_by(BusinessCategory.name.asc())
+        .all()
+    )
 
 
 @router.patch("/business-categories/{category_id}", response_model=BusinessCategoryResponse)
