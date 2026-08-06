@@ -253,7 +253,7 @@ class AzamPayClient:
         phone_number: str,
         provider: str,
     ):
-        token = self.get_access_token()
+        token = self.get_token()
 
         url = f"{self.base_url}/azampay/mno/lookup"
 
