@@ -25,7 +25,13 @@ from api.models import (
     User,
 )
 from api.permissions import require_permission
-from api.schemas import PaymentCallbackRequest, PaymentInitiateRequest, PaymentResponse
+from api.schemas import (
+    PaymentCallbackRequest,
+    PaymentInitiateRequest,
+    PaymentResponse,
+    NameLookupRequest,
+    NameLookupResponse,
+)
 from api.enums import InventoryReservationStatus, SellerOrderStatus
 from api.services.azampay_service import AzamPayAPIError, AzamPayClient, AzamPayConfigurationError
 from api.services.inventory_reservations import commit_order_reservations, ensure_order_reservations_active, release_order_reservations
@@ -121,7 +127,58 @@ def _commit(db: Session, *, conflict_detail: str = "Payment conflict") -> None:
     except Exception:
         db.rollback()
         raise
+    
+    
+@router.post(
+    "/name-lookup",
+    response_model=NameLookupResponse
+)
+def payment_name_lookup(
+    data: NameLookupRequest,
+):
+    """
+    Verify a Mobile Money account before payment/disbursement.
+    """
 
+    provider = data.provider.upper()
+
+    allowed = {
+        "MPESA",
+        "AIRTEL",
+        "TIGOPESA",
+        "HALOPESA",
+    }
+
+    if provider not in allowed:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported provider. Allowed: {', '.join(allowed)}"
+        )
+
+    client = AzamPayClient()
+
+    try:
+        result = client.name_lookup(
+            phone_number=data.phone_number,
+            provider=provider,
+        )
+
+        return {
+            "success": True,
+            "account_name": result.get("accountName"),
+            "provider": provider,
+            "phone_number": data.phone_number,
+            "message": result.get("message"),
+        }
+
+    except AzamPayAPIError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail={
+                "provider": "azampay",
+                "message": str(exc),
+            },
+        )
 
 @router.post("/initiate", response_model=PaymentResponse, status_code=status.HTTP_201_CREATED)
 def initiate_payment(data: PaymentInitiateRequest, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
