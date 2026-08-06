@@ -2627,3 +2627,15 @@ class SellerProductPerformanceItem(BaseModel):
     product_id: UUID
     product_name: str
     views: int
+    
+class NameLookupRequest(BaseModel):
+    account_number: str
+    provider: str
+
+
+class NameLookupResponse(BaseModel):
+    success: bool
+    account_name: str | None = None
+    provider: str | None = None
+    account_number: str
+    message: str | None = None    

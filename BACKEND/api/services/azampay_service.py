@@ -247,3 +247,37 @@ class AzamPayClient:
             checkout_url=str(checkout_url),
             raw=data,
         )
+        
+    def name_lookup(
+        self,
+        phone_number: str,
+        provider: str,
+    ):
+        token = self.get_access_token()
+
+        url = f"{self.base_url}/azampay/mno/lookup"
+
+        payload = {
+        "accountNumber": phone_number,
+        "provider": provider.upper()
+    }
+
+        headers = {
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json",
+    }
+
+        response = requests.post(
+            url,
+            json=payload,
+            headers=headers,
+            timeout=30,
+    )
+
+        if response.status_code >= 400:
+            raise AzamPayAPIError(
+            response.text,
+            response.status_code,
+        )
+
+        return response.json()    
