@@ -7,7 +7,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import String, cast, func, or_
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import Session, joinedload, selectinload
+from sqlalchemy.orm import Session, selectinload
 
 from api.deps import get_db
 from api.enums import PermissionCode, SellerOrderStatus, ShipmentStatus
@@ -25,13 +25,28 @@ def _seller(user: User):
 
 
 def _query(db: Session, seller_id: UUID):
-    return db.query(SellerOrder).options(
-        joinedload(SellerOrder.order).joinedload(Order.user),
-        joinedload(SellerOrder.order).joinedload(Order.shipping_address),
-        selectinload(SellerOrder.order).selectinload(Order.items),
-        selectinload(SellerOrder.order).selectinload(Order.shipments).selectinload(Shipment.items),
-        selectinload(SellerOrder.order).selectinload(Order.shipments).selectinload(Shipment.tracking_events),
-    ).filter(SellerOrder.seller_id == seller_id)
+    return (
+        db.query(SellerOrder)
+        .options(
+            selectinload(SellerOrder.order)
+                .selectinload(Order.user),
+
+            selectinload(SellerOrder.order)
+                .selectinload(Order.shipping_address),
+
+            selectinload(SellerOrder.order)
+                .selectinload(Order.items),
+
+            selectinload(SellerOrder.order)
+                .selectinload(Order.shipments)
+                .selectinload(Shipment.items),
+
+            selectinload(SellerOrder.order)
+                .selectinload(Order.shipments)
+                .selectinload(Shipment.tracking_events),
+        )
+        .filter(SellerOrder.seller_id == seller_id)
+    )
 
 
 def _get(db: Session, seller_id: UUID, row_id: UUID, lock: bool = False):
