@@ -141,7 +141,7 @@ def admin_create_user(
     ).first()
 
     if existing:
-        raise HTTPException(status_code=400, detail="Email or phone already exists")
+        raise HTTPException(status_code=400, detail="Email or phone already exists .Please sign in")
 
     user = User(
         first_name=data.first_name,
