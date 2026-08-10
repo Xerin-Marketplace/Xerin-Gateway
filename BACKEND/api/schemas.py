@@ -159,13 +159,22 @@ class RefreshRequest(BaseModel):
     refresh_token: str
 
 
+OtpPurpose = Literal["generic", "register", "register_seller", "password_reset"]
+
+
 class SendOTPRequest(BaseModel):
     phone: str
+    purpose: OtpPurpose = "generic"
+
+    _clean_phone = field_validator("phone")(_normalise_phone)
 
 
 class VerifyOTPRequest(BaseModel):
     phone: str
-    otp_code: str
+    otp_code: str = Field(min_length=4, max_length=10)
+    purpose: OtpPurpose = "generic"
+
+    _clean_phone = field_validator("phone")(_normalise_phone)
 
 
 class ForgotPasswordRequest(BaseModel):
@@ -207,6 +216,30 @@ class UserResponse(BaseModel):
     account_type: str = "customer"
 
     model_config = ORM_CONFIG
+
+
+class RegistrationResponse(BaseModel):
+    message: str
+    user_id: UUID
+    email: EmailStr
+    phone: str
+    verification_required: Literal[True] = True
+    verification_purpose: Literal["register"] = "register"
+    otp_expires_in_seconds: int = 300
+    resumed_registration: bool = False
+
+
+class SellerRegistrationResponse(BaseModel):
+    message: str
+    user_id: UUID
+    seller_id: UUID
+    email: EmailStr
+    phone: str
+    seller_status: str
+    verification_required: Literal[True] = True
+    verification_purpose: Literal["register_seller"] = "register_seller"
+    otp_expires_in_seconds: int = 300
+    resumed_registration: bool = False
 
 
 class UpdateUserRequest(BaseModel):
