@@ -898,7 +898,7 @@ def get_pending_sellers(
 
     return (
         db.query(Seller)
-        .filter(Seller.status == SellerStatus.under_recan_view)
+        .filter(Seller.status.in_([SellerStatus.pending, SellerStatus.under_review]))
         .order_by(Seller.created_at.desc())
         .all()
     )
@@ -938,6 +938,65 @@ def get_seller_documents(
     )
 
 
+@router.post("/sellers/{seller_id}/documents/{document_id}/view")
+def view_seller_document(
+    seller_id: UUID,
+    document_id: UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permission(PermissionCode.can_view_seller_documents.value)),
+):
+    document = db.query(SellerKYCDocument).filter(
+        SellerKYCDocument.id == document_id,
+        SellerKYCDocument.seller_id == seller_id,
+    ).first()
+    if not document:
+        raise HTTPException(status_code=404, detail="Seller KYC document not found")
+
+    from pathlib import Path
+    import mimetypes
+    from fastapi.responses import FileResponse
+
+    upload_root = Path("uploads/kyc").resolve()
+    file_path = Path(document.document_url).resolve()
+    try:
+        file_path.relative_to(upload_root)
+    except ValueError as exc:
+        raise HTTPException(status_code=403, detail="Invalid document path") from exc
+    if not file_path.exists() or not file_path.is_file():
+        raise HTTPException(status_code=404, detail="Document file not found")
+    media_type, _ = mimetypes.guess_type(str(file_path))
+    return FileResponse(path=file_path, media_type=media_type or "application/pdf", filename=file_path.name, content_disposition_type="inline")
+
+
+@router.post("/sellers/{seller_id}/start-review", response_model=SellerResponse)
+def start_seller_review(
+    seller_id: UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permission(PermissionCode.can_view_seller_documents.value)),
+):
+    seller = db.query(Seller).filter(Seller.id == seller_id).first()
+    if not seller:
+        raise HTTPException(status_code=404, detail="Seller not found")
+    if seller.status == SellerStatus.approved:
+        raise HTTPException(status_code=409, detail="Seller is already approved")
+
+    documents = db.query(SellerKYCDocument).filter(SellerKYCDocument.seller_id == seller.id).all()
+    required = {"tin", "business_profile", "business_registration"}
+    uploaded = {doc.document_type for doc in documents}
+    missing = sorted(required - uploaded)
+    if missing:
+        raise HTTPException(status_code=400, detail=f"Seller is missing documents: {missing}")
+
+    for document in documents:
+        document.status = "under_review"
+        document.rejection_reason = None
+    seller.status = SellerStatus.under_review
+    seller.approved_at = None
+    db.commit()
+    db.refresh(seller)
+    return seller
+
+
 @router.post("/sellers/{seller_id}/approve", response_model=SellerResponse)
 def approve_seller(
     seller_id: UUID,
@@ -968,6 +1027,20 @@ def approve_seller(
         raise HTTPException(
             status_code=400, detail=f"Seller is missing documents: {missing}"
         )
+
+    not_reviewed = [
+        doc.document_type for doc in documents
+        if doc.document_type in required_docs and doc.status not in {"under_review", "approved"}
+    ]
+    if not_reviewed:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Start review before approval. Documents not under review: {not_reviewed}",
+        )
+
+    for document in documents:
+        document.status = "approved"
+        document.rejection_reason = None
 
     seller.status = SellerStatus.approved
     seller.approved_at = datetime.now(timezone.utc)

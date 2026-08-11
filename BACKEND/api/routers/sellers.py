@@ -286,8 +286,8 @@ def update_my_seller_business_profile(
 # KYC DOCUMENTS
 # =========================================================
 
-ALLOWED_KYC_EXTENSIONS = {".pdf", ".jpg", ".jpeg", ".png"}
-MAX_KYC_FILE_SIZE = 15 * 1024 * 1024  # 15 MB
+ALLOWED_KYC_EXTENSIONS = {".pdf"}
+MAX_KYC_FILE_SIZE = 10 * 1024 * 1024  # 10 MB
 
 
 def _normalize_document_type(document_type: str) -> str:
@@ -312,6 +312,29 @@ def _ensure_kyc_is_editable(seller: Seller) -> None:
                 "KYC documents cannot be changed after seller approval. "
                 "Contact an administrator if a correction is required."
             ),
+        )
+
+
+def _ensure_document_is_not_under_admin_review(document: SellerKYCDocument | None) -> None:
+    if document is not None and document.status == "under_review":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "This KYC document is currently under administrator review. "
+                "It is view-only until the application is rejected for correction."
+            ),
+        )
+
+
+def _ensure_no_documents_are_under_admin_review(db: Session, seller_id: UUID) -> None:
+    reviewing = db.query(SellerKYCDocument).filter(
+        SellerKYCDocument.seller_id == seller_id,
+        SellerKYCDocument.status == "under_review",
+    ).first()
+    if reviewing is not None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="KYC review is in progress. Documents are view-only until review is completed.",
         )
 
 
@@ -392,7 +415,7 @@ async def _save_kyc_upload(
     if extension not in ALLOWED_KYC_EXTENSIONS:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Only PDF, JPG, JPEG, and PNG files are allowed",
+            detail="Only PDF files are allowed",
         )
 
     content = await file.read()
@@ -405,7 +428,7 @@ async def _save_kyc_upload(
     if len(content) > MAX_KYC_FILE_SIZE:
         raise HTTPException(
             status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-            detail="KYC document must not exceed 15 MB",
+            detail="KYC PDF must not exceed 10 MB",
         )
 
     file_name = (
@@ -454,16 +477,17 @@ async def upload_kyc_document(
     _ensure_kyc_is_editable(seller)
 
     normalized_type = _normalize_document_type(document_type)
+    existing_document = db.query(SellerKYCDocument).filter(
+        SellerKYCDocument.seller_id == seller.id,
+        SellerKYCDocument.document_type == normalized_type,
+    ).first()
+    _ensure_document_is_not_under_admin_review(existing_document)
+
     new_document_url = await _save_kyc_upload(
         seller_id=seller.id,
         document_type=normalized_type,
         file=file,
     )
-
-    existing_document = db.query(SellerKYCDocument).filter(
-        SellerKYCDocument.seller_id == seller.id,
-        SellerKYCDocument.document_type == normalized_type,
-    ).first()
 
     old_document_url = None
 
@@ -555,6 +579,7 @@ async def upload_bulk_kyc_documents(
     """Create or replace all three required KYC documents in one request."""
     seller = get_my_seller(db, current_user)
     _ensure_kyc_is_editable(seller)
+    _ensure_no_documents_are_under_admin_review(db, seller.id)
 
     files_map = {
         "tin": tin_file,
@@ -669,6 +694,7 @@ async def update_my_kyc_document(
     _ensure_kyc_is_editable(seller)
 
     document = _get_owned_kyc_document(db, seller.id, document_id)
+    _ensure_document_is_not_under_admin_review(document)
 
     if document_type is None and file is None:
         raise HTTPException(
@@ -737,6 +763,7 @@ def delete_my_kyc_document(
     _ensure_kyc_is_editable(seller)
 
     document = _get_owned_kyc_document(db, seller.id, document_id)
+    _ensure_document_is_not_under_admin_review(document)
     document_url = document.document_url
 
     try:
