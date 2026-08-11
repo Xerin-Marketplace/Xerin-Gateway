@@ -61,6 +61,16 @@ async def lifespan(_: FastAPI):
     if settings.SERVE_LOCAL_UPLOADS:
         settings.upload_path.mkdir(parents=True, exist_ok=True)
 
+    # Auto-seed permissions so new permissions are added to existing roles
+    try:
+        from api.seed_permissions import seed_permissions
+        db = SessionLocal()
+        seed_permissions(db)
+        db.close()
+        logger.info("Permissions seeded successfully")
+    except Exception:
+        logger.warning("Permission seeding skipped")
+
     logger.info(
         "Starting %s in %s mode",
         settings.APP_NAME,
