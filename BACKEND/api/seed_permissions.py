@@ -168,6 +168,34 @@ DEFAULT_ROLE_PERMISSIONS: dict[str, set[str]] = {
         PermissionCode.admin_system_alerts_manage.value,
         PermissionCode.admin_activity_logs_read.value,
         PermissionCode.STORE_ADMIN_VIEW.value,
+        # Inventory & Fulfilment
+        PermissionCode.inventory_manage.value,
+        # Logistics
+        PermissionCode.logistics_read.value,
+        PermissionCode.logistics_manage.value,
+        PermissionCode.logistics_driver_manage.value,
+        PermissionCode.logistics_vehicle_manage.value,
+        PermissionCode.logistics_trip_assign.value,
+        PermissionCode.stock_transfer_read.value,
+        PermissionCode.stock_transfer_manage.value,
+        # Notifications
+        PermissionCode.notification_logs_read.value,
+        PermissionCode.notification_bulk_send.value,
+        PermissionCode.notification_templates_manage.value,
+        # Driver KYC
+        PermissionCode.driver_kyc_read.value,
+        PermissionCode.driver_kyc_manage.value,
+        PermissionCode.driver_kyc_review.value,
+        # Delivery fare, zone & surge
+        PermissionCode.delivery_fare_read.value,
+        PermissionCode.delivery_fare_manage.value,
+        PermissionCode.delivery_zone_read.value,
+        PermissionCode.delivery_zone_manage.value,
+        PermissionCode.surge_pricing_read.value,
+        PermissionCode.surge_pricing_manage.value,
+        # Settings
+        PermissionCode.settings_read.value,
+        PermissionCode.settings_manage.value,
     },
     "super_admin": {permission.value for permission in PermissionCode},
 }
