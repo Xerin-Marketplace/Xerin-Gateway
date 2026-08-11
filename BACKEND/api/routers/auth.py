@@ -37,19 +37,15 @@ from api.security import (
     ALGORITHM,
 )
 from api.config import settings
-
 # from api.utils import send_email, send_sms
 from api.routers.email import send_email as _send_email
 from api.routers.sms import send_sms as _send_sms
 
-
 def send_email(to: str, subject: str, body: str, html: str | None = None) -> None:
     return _send_email(to=to, subject=subject, body=body, html=html)
 
-
 def send_sms(to: str, message: str) -> None:
     return _send_sms(to=to, message=message)
-
 
 logger = logging.getLogger(__name__)
 
@@ -183,9 +179,7 @@ def _clear_otp_failures(phone: str) -> None:
         _otp_attempts.pop(phone, None)
 
 
-def _invalidate_existing_otps(
-    db: Session, phone: str, purpose: str = "generic"
-) -> None:
+def _invalidate_existing_otps(db: Session, phone: str, purpose: str = "generic") -> None:
     """
     Mark any previously-issued, unverified OTPs for this phone AND this
     purpose as used/invalid, so only the most recently issued OTP for that
@@ -250,7 +244,6 @@ def cleanup_old_otp_requests(db: Session, older_than_days: int = 30) -> int:
     db.commit()
     return deleted
 
-
 def _get_required_role(db: Session, role_name: str) -> Role:
     role = db.query(Role).filter(Role.name == role_name).first()
     if role is None:
@@ -283,7 +276,9 @@ def register(data: RegisterRequest, db: Session = Depends(get_db)):
         raise HTTPException(status_code=422, detail="Phone number is required")
 
     existing_user = (
-        db.query(User).filter((User.email == email) | (User.phone == phone)).first()
+        db.query(User)
+        .filter((User.email == email) | (User.phone == phone))
+        .first()
     )
 
     resumed_registration = False
@@ -298,7 +293,7 @@ def register(data: RegisterRequest, db: Session = Depends(get_db)):
         if not (same_identity and still_pending):
             raise HTTPException(
                 status_code=409,
-                detail="An account with this Email or phone already exists. Please sign in.",
+                detail="An account with this email or phone already exists. Please sign in.",
             )
 
         # The account was already committed during an earlier registration
@@ -387,23 +382,19 @@ def register_seller(data: SellerRegisterRequest, db: Session = Depends(get_db)):
         raise HTTPException(status_code=400, detail="Seller agreement must be accepted")
 
     if not data.business_category_ids:
-        raise HTTPException(
-            status_code=400, detail="At least one business category is required"
-        )
+        raise HTTPException(status_code=400, detail="At least one business category is required")
 
-    categories = (
-        db.query(BusinessCategory)
-        .filter(BusinessCategory.id.in_(data.business_category_ids))
-        .all()
-    )
+    categories = db.query(BusinessCategory).filter(
+        BusinessCategory.id.in_(data.business_category_ids)
+    ).all()
 
     if len(categories) != len(set(data.business_category_ids)):
-        raise HTTPException(
-            status_code=400, detail="One or more business categories are invalid"
-        )
+        raise HTTPException(status_code=400, detail="One or more business categories are invalid")
 
     existing_user = (
-        db.query(User).filter((User.email == email) | (User.phone == phone)).first()
+        db.query(User)
+        .filter((User.email == email) | (User.phone == phone))
+        .first()
     )
 
     resumed_registration = False
@@ -418,7 +409,7 @@ def register_seller(data: SellerRegisterRequest, db: Session = Depends(get_db)):
         if not (same_identity and still_pending):
             raise HTTPException(
                 status_code=409,
-                detail="An account with this Email or phone already exists. Please sign in.",
+                detail="An account with this email or phone already exists. Please sign in.",
             )
 
         seller = db.query(Seller).filter(Seller.user_id == existing_user.id).first()
@@ -530,17 +521,16 @@ def register_seller(data: SellerRegisterRequest, db: Session = Depends(get_db)):
         seller_id=seller.id,
         email=user.email,
         phone=user.phone,
-        seller_status=seller.status.value
-        if hasattr(seller.status, "value")
-        else str(seller.status),
+        seller_status=seller.status.value if hasattr(seller.status, "value") else str(seller.status),
         resumed_registration=resumed_registration,
     )
-
 
 def build_auth_user_response(db: Session, user: User):
     seller = db.query(Seller).filter(Seller.user_id == user.id).first()
 
-    user_roles = db.query(UserRole).filter(UserRole.user_id == user.id).all()
+    user_roles = db.query(UserRole).filter(
+        UserRole.user_id == user.id
+    ).all()
 
     roles = [user_role.role.name for user_role in user_roles]
 
@@ -549,9 +539,9 @@ def build_auth_user_response(db: Session, user: User):
     permissions = []
 
     if role_ids:
-        role_permissions = (
-            db.query(RolePermission).filter(RolePermission.role_id.in_(role_ids)).all()
-        )
+        role_permissions = db.query(RolePermission).filter(
+            RolePermission.role_id.in_(role_ids)
+        ).all()
 
         permissions = {
             role_permission.permission.code
@@ -561,11 +551,13 @@ def build_auth_user_response(db: Session, user: User):
     else:
         permissions = set()
 
-    direct_permissions = (
-        db.query(UserPermission).filter(UserPermission.user_id == user.id).all()
-    )
+    direct_permissions = db.query(UserPermission).filter(
+        UserPermission.user_id == user.id
+    ).all()
     permissions.update(
-        row.permission.code for row in direct_permissions if row.permission is not None
+        row.permission.code
+        for row in direct_permissions
+        if row.permission is not None
     )
     permissions = sorted(permissions)
 
@@ -633,11 +625,11 @@ def login(request: Request, data: LoginRequest, db: Session = Depends(get_db)):
     db.commit()
 
     return {
-        "access_token": access_token,
-        "refresh_token": refresh_token,
-        "token_type": "bearer",
-        "user": build_auth_user_response(db, user),
-    }
+    "access_token": access_token,
+    "refresh_token": refresh_token,
+    "token_type": "bearer",
+    "user": build_auth_user_response(db, user),
+}
 
 
 @router.post("/logout")
@@ -772,10 +764,7 @@ def send_otp(request: Request, data: SendOTPRequest, db: Session = Depends(get_d
         except Exception as e:
             logger.exception("send_email failed for %s: %s", user.email, e)
 
-    return {
-        "message": "OTP sent successfully",
-        "dev_otp": otp if settings.DEBUG else None,
-    }
+    return {"message": "OTP sent successfully", "dev_otp": otp if settings.DEBUG else None}
 
 
 @router.post("/verify-otp")
@@ -823,10 +812,171 @@ def verify_otp(data: VerifyOTPRequest, db: Session = Depends(get_db)):
     return {"message": "OTP verified successfully"}
 
 
-@router.post("/forgot-password")
-def forgot_password(
-    request: Request, data: ForgotPasswordRequest, db: Session = Depends(get_db)
+
+def _find_user_by_verification_identifier(db: Session, identifier: str) -> User | None:
+    value = identifier.strip()
+    if not value:
+        return None
+
+    if "@" in value:
+        return db.query(User).filter(User.email == value.lower()).first()
+
+    return db.query(User).filter(User.phone == value).first()
+
+
+def _pending_verification_purpose(db: Session, user: User) -> str:
+    seller = db.query(Seller).filter(Seller.user_id == user.id).first()
+    return "register_seller" if seller is not None else "register"
+
+
+@router.post("/resend-verification")
+def resend_verification(
+    request: Request,
+    data: ResendVerificationRequest,
+    db: Session = Depends(get_db),
 ):
+    identifier = data.identifier.strip()
+    ip = _client_ip(request)
+
+    _rate_limit(
+        f"resend-verification:identifier:{identifier.lower()}",
+        max_calls=3,
+        window_seconds=5 * 60,
+    )
+    _rate_limit(
+        f"resend-verification:ip:{ip}",
+        max_calls=10,
+        window_seconds=5 * 60,
+    )
+
+    user = _find_user_by_verification_identifier(db, identifier)
+
+    # Deliberately use a generic response so this endpoint cannot be used
+    # to enumerate registered email addresses or phone numbers.
+    generic_message = (
+        "If an unverified account matches those details, "
+        "a fresh verification code has been sent."
+    )
+
+    if user is None:
+        return {"message": generic_message}
+
+    if user.is_verified and user.status != UserStatus.pending_verification:
+        return {"message": generic_message}
+
+    purpose = _pending_verification_purpose(db, user)
+    phone = (user.phone or "").strip()
+
+    if not phone:
+        logger.warning(
+            "Cannot resend verification for user %s because phone is missing",
+            user.id,
+        )
+        return {"message": generic_message}
+
+    _invalidate_existing_otps(db, phone, purpose=purpose)
+    _clear_otp_failures(phone)
+
+    otp = generate_otp()
+
+    db.add(
+        OTPRequest(
+            user_id=user.id,
+            phone=phone,
+            otp_hash=hash_otp(otp),
+            purpose=purpose,
+            expires_at=datetime.now(timezone.utc) + timedelta(minutes=5),
+            verified=False,
+        )
+    )
+    db.commit()
+
+    try:
+        send_sms(
+            to=phone,
+            message=f"Your Xerin Marketplace verification code is: {otp}",
+        )
+    except Exception as exc:
+        logger.exception("send_sms failed for %s: %s", phone, exc)
+
+    try:
+        send_email(
+            to=user.email,
+            subject="Your verification code",
+            body=f"Your Xerin Marketplace verification code is: {otp}",
+        )
+    except Exception as exc:
+        logger.exception("send_email failed for %s: %s", user.email, exc)
+
+    return {
+        "message": generic_message,
+        "dev_otp": otp if settings.DEBUG else None,
+    }
+
+
+@router.post("/verify-account-otp")
+def verify_account_otp(
+    data: VerifyAccountOTPRequest,
+    db: Session = Depends(get_db),
+):
+    identifier = data.identifier.strip()
+    user = _find_user_by_verification_identifier(db, identifier)
+
+    if user is None:
+        raise HTTPException(status_code=400, detail="Invalid verification code")
+
+    if user.is_verified and user.status != UserStatus.pending_verification:
+        return {"message": "Account already verified"}
+
+    phone = (user.phone or "").strip()
+    if not phone:
+        raise HTTPException(status_code=400, detail="Invalid verification request")
+
+    purpose = _pending_verification_purpose(db, user)
+
+    _check_otp_lockout(phone)
+
+    otp_request = (
+        db.query(OTPRequest)
+        .filter(
+            OTPRequest.user_id == user.id,
+            OTPRequest.phone == phone,
+            OTPRequest.purpose == purpose,
+            OTPRequest.verified.is_(False),
+        )
+        .order_by(OTPRequest.created_at.desc())
+        .first()
+    )
+
+    if otp_request is None:
+        _record_otp_failure(phone)
+        raise HTTPException(
+            status_code=400,
+            detail="No active verification code. Please request a new OTP.",
+        )
+
+    if otp_request.expires_at < datetime.now(timezone.utc):
+        raise HTTPException(
+            status_code=400,
+            detail="OTP expired. Please request a new OTP.",
+        )
+
+    if not verify_otp_hash(data.otp_code, otp_request.otp_hash):
+        _record_otp_failure(phone)
+        raise HTTPException(status_code=400, detail="Invalid verification code")
+
+    otp_request.verified = True
+    user.is_verified = True
+    user.status = UserStatus.active
+
+    db.commit()
+    _clear_otp_failures(phone)
+
+    return {"message": "Account verified successfully"}
+
+
+@router.post("/forgot-password")
+def forgot_password(request: Request, data: ForgotPasswordRequest, db: Session = Depends(get_db)):
     email = data.email.strip().lower()
     ip = _client_ip(request)
 
@@ -872,10 +1022,7 @@ def forgot_password(
     except Exception as e:
         logger.exception("send_sms failed for %s: %s", user.phone, e)
 
-    return {
-        "message": "Password reset OTP sent",
-        "dev_otp": otp if settings.DEBUG else None,
-    }
+    return {"message": "Password reset OTP sent", "dev_otp": otp if settings.DEBUG else None}
 
 
 @router.post("/reset-password")
@@ -929,8 +1076,7 @@ def change_password(
 
     if data.current_password == data.new_password:
         raise HTTPException(
-            status_code=400,
-            detail="New password must be different from current password",
+            status_code=400, detail="New password must be different from current password"
         )
 
     user.password_hash = hash_password(data.new_password)
