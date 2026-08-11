@@ -23,6 +23,7 @@ from api.models import (
     Payment,
     PaymentStatus,
     ProductStatus,
+    Shipment,
     ShippingMethod,
     ShippingRate,
     ShippingZone,
@@ -30,15 +31,17 @@ from api.models import (
 )
 from api.permissions import get_user_permissions, get_user_role_names, require_permission
 from api.schemas import OrderCreateRequest, OrderResponse, OrderStatusUpdateRequest, PaginatedOrderResponse
-from api.enums import InventoryReservationStatus
+from api.enums import InventoryReservationStatus, NotificationChannel, NotificationEvent
 from api.services.inventory_reservations import create_reservation, release_order_reservations
+from api.services.notification_service import notification_service
 
 router = APIRouter(prefix="/orders", tags=["Orders"])
 
 ALLOWED_TRANSITIONS: dict[OrderStatus, set[OrderStatus]] = {
     OrderStatus.pending: {OrderStatus.cancelled},
     OrderStatus.paid: {OrderStatus.processing, OrderStatus.refunded},
-    OrderStatus.processing: {OrderStatus.shipped, OrderStatus.cancelled, OrderStatus.refunded},
+    OrderStatus.processing: {OrderStatus.received_at_hub, OrderStatus.shipped, OrderStatus.cancelled, OrderStatus.refunded},
+    OrderStatus.received_at_hub: {OrderStatus.shipped, OrderStatus.cancelled, OrderStatus.refunded},
     OrderStatus.shipped: {OrderStatus.delivered},
     OrderStatus.delivered: {OrderStatus.refunded},
     OrderStatus.cancelled: set(),
@@ -126,6 +129,18 @@ def _validate_coupon(coupon: Coupon, subtotal: Decimal) -> Decimal:
     else:
         raise HTTPException(status_code=500, detail="Coupon configuration is invalid")
     return min(discount, subtotal)
+
+
+def _generate_order_number(db: Session, order: Order) -> str:
+    """Generate a commercial order reference: XM-YYMMDD-NNNNN."""
+    created = order.created_at or datetime.now(timezone.utc)
+    yy = str(created.year)[2:]
+    mm = str(created.month).zfill(2)
+    dd = str(created.day).zfill(2)
+    day_start = created.replace(hour=0, minute=0, second=0, microsecond=0)
+    count = db.query(Order).filter(Order.created_at >= day_start).count()
+    seq = str(count + 1).zfill(5)
+    return f"XM-{yy}{mm}{dd}-{seq}"
 
 
 def _release_reserved_inventory(db: Session, order: Order) -> None:
@@ -254,6 +269,7 @@ def create_order(
                 user_id=current_user.id, quantity=cart_item.quantity, expires_at=reservation_expires_at,
             )
 
+        order.order_number = _generate_order_number(db, order)
         _create_status_history(db, order, OrderStatus.pending, "Order created", current_user.id)
         if coupon:
             coupon.usage_count += 1
@@ -263,13 +279,29 @@ def create_order(
 
         db.commit()
         db.refresh(order)
+
+        # Send order_placed notification to customer + admin
+        try:
+            notification_service.notify(
+                db=db, user_id=current_user.id, event=NotificationEvent.order_placed,
+                title="Order Confirmed",
+                message=f"Your order {order.order_number} has been placed successfully. Total: {order.total} {order.currency}.",
+                data={"order_number": order.order_number, "total": str(order.total), "currency": order.currency},
+                action_url=f"/orders/{order.id}",
+                channels=[NotificationChannel.in_app, NotificationChannel.sms, NotificationChannel.email],
+                commit=False, dispatch=True,
+            )
+            notification_service.notify_admins(
+                db=db, event=NotificationEvent.admin_order_alert,
+                title="New Order Placed",
+                message=f"Order {order.order_number} placed by {current_user.first_name} {current_user.last_name}. Total: {order.total} {order.currency}.",
+                data={"order_number": order.order_number, "total": str(order.total), "currency": order.currency},
+                channels=[NotificationChannel.in_app, NotificationChannel.email],
+            )
+        except Exception:
+            pass
+
         return order
-    except HTTPException:
-        db.rollback()
-        raise
-    except SQLAlchemyError as exc:
-        db.rollback()
-        raise HTTPException(status_code=500, detail="Could not create order") from exc
 
 
 @router.get("/my-orders", response_model=PaginatedOrderResponse)
@@ -279,7 +311,10 @@ def get_my_orders(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    query = db.query(Order).filter(Order.user_id == current_user.id).order_by(Order.created_at.desc())
+    query = db.query(Order).options(
+        selectinload(Order.seller_orders),
+        selectinload(Order.shipments),
+    ).filter(Order.user_id == current_user.id).order_by(Order.created_at.desc())
     return {
         "total": query.count(),
         "page": page,
@@ -296,7 +331,10 @@ def list_all_orders(
     db: Session = Depends(get_db),
     current_user: User = Depends(require_permission("orders:read")),
 ):
-    query = db.query(Order)
+    query = db.query(Order).options(
+        selectinload(Order.seller_orders),
+        selectinload(Order.shipments),
+    )
     if order_status is not None:
         query = query.filter(Order.status == order_status)
     query = query.order_by(Order.created_at.desc())
@@ -308,13 +346,45 @@ def list_all_orders(
     }
 
 
+@router.get("/ref/{order_number}", response_model=OrderResponse)
+def get_order_by_ref(
+    order_number: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    order = (
+        db.query(Order)
+        .options(
+            selectinload(Order.shipments).selectinload(Shipment.tracking_events),
+            selectinload(Order.shipments).selectinload(Shipment.items),
+            selectinload(Order.seller_orders),
+        )
+        .filter(Order.order_number == order_number.upper())
+        .first()
+    )
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+    if order.user_id != current_user.id and not _is_order_seller(current_user, order) and not _is_privileged_order_operator(db, current_user):
+        raise HTTPException(status_code=403, detail="Not authorized to view this order")
+    return order
+
+
 @router.get("/{order_id}", response_model=OrderResponse)
 def get_order(
     order_id: UUID,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    order = db.query(Order).filter(Order.id == order_id).first()
+    order = (
+        db.query(Order)
+        .options(
+            selectinload(Order.shipments).selectinload(Shipment.tracking_events),
+            selectinload(Order.shipments).selectinload(Shipment.items),
+            selectinload(Order.seller_orders),
+        )
+        .filter(Order.id == order_id)
+        .first()
+    )
     if not order:
         raise HTTPException(status_code=404, detail="Order not found")
     if order.user_id != current_user.id and not _is_order_seller(current_user, order) and not _is_privileged_order_operator(db, current_user):
@@ -367,6 +437,29 @@ def update_order_status(
         _create_status_history(db, order, new_status, data.notes, current_user.id)
         db.commit()
         db.refresh(order)
+
+        # Send status-based notifications
+        try:
+            event_map = {
+                OrderStatus.paid: (NotificationEvent.payment_confirmed, "Payment Confirmed", f"Payment for order {order.order_number} has been confirmed."),
+                OrderStatus.processing: (NotificationEvent.order_accepted, "Order Processing", f"Your order {order.order_number} is now being processed."),
+                OrderStatus.shipped: (NotificationEvent.order_dispatched, "Order Dispatched", f"Your order {order.order_number} has been dispatched."),
+                OrderStatus.delivered: (NotificationEvent.order_delivered, "Order Delivered", f"Your order {order.order_number} has been delivered. Thank you for shopping with Xerin!"),
+                OrderStatus.cancelled: (NotificationEvent.cancellation_requested, "Order Cancelled", f"Your order {order.order_number} has been cancelled."),
+            }
+            if new_status in event_map:
+                ev, title, msg = event_map[new_status]
+                notification_service.notify(
+                    db=db, user_id=order.user_id, event=ev, title=title, message=msg,
+                    data={"order_number": order.order_number, "status": new_status.value},
+                    action_url=f"/orders/{order.id}",
+                    channels=[NotificationChannel.in_app, NotificationChannel.sms, NotificationChannel.email],
+                    commit=False, dispatch=True,
+                )
+                db.commit()
+        except Exception:
+            pass
+
         return order
     except HTTPException:
         db.rollback()

@@ -41,6 +41,11 @@ from api.routers import (
     product_qa,
     search_recommendations,
     admin_dashboard,
+    fulfilment,
+    logistics,
+    settings as settings_router,
+    driver_kyc,
+    delivery_fare,
 )
 
 logging.basicConfig(
@@ -169,5 +174,10 @@ for router in (
     product_qa.router,
     search_recommendations.router,
     admin_dashboard.router,
+    fulfilment.router,
+    logistics.router,
+    settings_router.router,
+    driver_kyc.router,
+    delivery_fare.router,
 ):
     api.include_router(router, prefix=settings.API_PREFIX)

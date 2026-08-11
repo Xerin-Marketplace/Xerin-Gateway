@@ -1,6 +1,7 @@
 from api.enums import NotificationChannel, NotificationDeliveryStatus, NotificationEvent, QuestionStatus, QuestionReportReason
 from api.enums import DeliveryStatus, ReviewStatus, ReviewReportReason
 from api.enums import CommissionScope, CommissionRuleType
+from api.enums import DriverDocumentType, DriverDocumentStatus, VehicleOwnership, VehicleRequestStatus, FareType, SurgePricingType, SurgeScheduleType, VehicleType
 from pydantic import (
     AliasChoices,
     BaseModel,
@@ -12,12 +13,17 @@ from pydantic import (
     model_validator,
 )
 from uuid import UUID
-from datetime import datetime, time as Time
+from datetime import datetime, time as Time, date
 from decimal import Decimal
 from typing import Optional, List, Dict, Any, Literal
 import enum
 from api.enums import DayOfWeek, StoreStatus, ShippingRateType
 from api.enums import ShipmentStatus, WalletTransactionType, PayoutStatus, RefundStatus, RefundReason, SellerOrderStatus, InventoryMovementType
+from api.enums import (
+    FulfilmentType, WarehouseStatus, InboundShipmentStatus, PutawayTaskStatus,
+    PickListStatus, PackagingType, InventoryAdjustmentType, WarehouseInventoryMovementType,
+    DriverStatus, DriverVerificationStatus, VehicleType, DeliveryTripStatus, StockTransferStatus,
+)
 
 
 class UserStatus(str, enum.Enum):
@@ -45,8 +51,9 @@ class ProductStatus(str, enum.Enum):
 
 class OrderStatus(str, enum.Enum):
     pending = "pending"
-    confirmed = "confirmed"
+    paid = "paid"
     processing = "processing"
+    received_at_hub = "received_at_hub"
     shipped = "shipped"
     delivered = "delivered"
     cancelled = "cancelled"
@@ -1207,6 +1214,18 @@ class OrderStatusHistoryResponse(BaseModel):
     model_config = ORM_CONFIG
 
 
+class SellerOrderSummary(BaseModel):
+    id: UUID
+    seller_id: UUID
+    status: SellerOrderStatus
+    seller_subtotal: Decimal
+    item_count: int
+    created_at: datetime
+    updated_at: Optional[datetime]
+
+    model_config = ORM_CONFIG
+
+
 class OrderCreateRequest(BaseModel):
     shipping_address_id: UUID
     shipping_rate_id: UUID
@@ -1221,6 +1240,7 @@ class OrderStatusUpdateRequest(BaseModel):
 
 class OrderResponse(BaseModel):
     id: UUID
+    order_number: Optional[str] = None
     user_id: UUID
     shipping_address_id: Optional[UUID]
     shipping_rate_id: Optional[UUID]
@@ -1240,6 +1260,8 @@ class OrderResponse(BaseModel):
     notes: Optional[str]
     items: list[OrderItemResponse]
     status_history: list[OrderStatusHistoryResponse]
+    shipments: list[ShipmentResponse] = Field(default_factory=list)
+    seller_orders: list["SellerOrderSummary"] = Field(default_factory=list)
     created_at: datetime
     updated_at: Optional[datetime]
 
@@ -1686,6 +1708,29 @@ class ShippingQuoteRequest(BaseModel):
     address_id: UUID
     subtotal: Decimal = Field(ge=0)
     weight_kg: Decimal = Field(default=Decimal("0.00"), ge=0)
+
+
+class PerSellerQuoteItem(BaseModel):
+    product_id: UUID
+    seller_id: UUID
+    quantity: int = Field(ge=1)
+    unit_price: Decimal = Field(ge=0)
+
+
+class PerSellerQuoteRequest(BaseModel):
+    address_id: UUID
+    items: list[PerSellerQuoteItem]
+
+
+class PerSellerQuoteResponse(BaseModel):
+    seller_id: UUID
+    seller_subtotal: Decimal
+    shipping_amount: Decimal
+    total: Decimal
+    method_name: str
+    carrier_name: Optional[str] = None
+    min_delivery_days: int
+    max_delivery_days: int
 
 
 class ShippingQuoteOption(BaseModel):
@@ -2672,3 +2717,1064 @@ class NameLookupResponse(BaseModel):
     provider: str | None = None
     account_number: str
     message: str | None = None    
+
+
+# =========================================================
+# FULFILMENT & MULTI-WAREHOUSE SCHEMAS
+# =========================================================
+
+# --- Warehouse ---
+
+class WarehouseCreate(BaseModel):
+    name: str = Field(..., max_length=200)
+    code: str = Field(..., max_length=20)
+    country: str = Field(..., max_length=100)
+    region: str = Field(..., max_length=100)
+    district: Optional[str] = Field(default=None, max_length=100)
+    ward: Optional[str] = Field(default=None, max_length=100)
+    street: Optional[str] = Field(default=None, max_length=255)
+    latitude: Optional[float] = None
+    longitude: Optional[float] = None
+    total_capacity: Optional[int] = Field(default=0, ge=0)
+    status: WarehouseStatus = WarehouseStatus.active
+
+    @field_validator("code")
+    @classmethod
+    def _upper_code(cls, v: str) -> str:
+        return v.strip().upper()
+
+    @model_validator(mode="after")
+    def _default_capacity(self):
+        if self.total_capacity is None:
+            self.total_capacity = 0
+        return self
+
+
+class WarehouseUpdate(BaseModel):
+    name: Optional[str] = Field(default=None, max_length=200)
+    code: Optional[str] = Field(default=None, max_length=20)
+    country: Optional[str] = Field(default=None, max_length=100)
+    region: Optional[str] = Field(default=None, max_length=100)
+    district: Optional[str] = Field(default=None, max_length=100)
+    ward: Optional[str] = Field(default=None, max_length=100)
+    street: Optional[str] = Field(default=None, max_length=255)
+    latitude: Optional[float] = None
+    longitude: Optional[float] = None
+    total_capacity: Optional[int] = Field(default=None, ge=0)
+    status: Optional[WarehouseStatus] = None
+
+    @field_validator("code")
+    @classmethod
+    def _upper_code(cls, v: Optional[str]) -> Optional[str]:
+        return v.strip().upper() if v else v
+
+    @model_validator(mode="after")
+    def _default_capacity(self):
+        if self.total_capacity is None:
+            self.total_capacity = 0
+        return self
+
+
+class WarehouseResponse(BaseModel):
+    id: UUID
+    name: str
+    code: str
+    country: str
+    region: str
+    district: Optional[str] = None
+    ward: Optional[str] = None
+    street: Optional[str] = None
+    latitude: Optional[float] = None
+    longitude: Optional[float] = None
+    total_capacity: Optional[int] = None
+    used_capacity: Optional[int] = None
+    status: WarehouseStatus
+    created_at: datetime
+    updated_at: Optional[datetime] = None
+    model_config = ORM_CONFIG
+
+
+class WarehouseListResponse(BaseModel):
+    items: list[WarehouseResponse]
+    total: int
+    page: int
+    page_size: int
+
+
+# --- Warehouse Bin ---
+
+class WarehouseBinCreate(BaseModel):
+    aisle: str = Field(..., max_length=20)
+    shelf: str = Field(..., max_length=20)
+    bin: str = Field(..., max_length=20)
+    zone: Optional[str] = Field(default=None, max_length=50)
+    capacity: int = Field(default=0, ge=0)
+
+
+class WarehouseBinResponse(BaseModel):
+    id: UUID
+    warehouse_id: UUID
+    aisle: str
+    shelf: str
+    bin: str
+    zone: Optional[str] = None
+    capacity: int
+    used_capacity: int
+    is_active: bool
+    created_at: datetime
+    model_config = ORM_CONFIG
+
+
+class WarehouseBinListResponse(BaseModel):
+    items: list[WarehouseBinResponse]
+
+
+# --- Inbound Shipment ---
+
+class InboundShipmentCreate(BaseModel):
+    seller_id: Optional[UUID] = None
+    warehouse_id: UUID
+    expected_arrival_at: Optional[datetime] = None
+    notes: Optional[str] = Field(default=None, max_length=1000)
+
+
+class InboundShipmentUpdate(BaseModel):
+    expected_arrival_at: Optional[datetime] = None
+    notes: Optional[str] = Field(default=None, max_length=1000)
+
+
+class InboundShipmentResponse(BaseModel):
+    id: UUID
+    reference: str
+    seller_id: UUID
+    seller_name: Optional[str] = None
+    warehouse_id: UUID
+    warehouse_name: Optional[str] = None
+    status: InboundShipmentStatus
+    expected_arrival_at: Optional[datetime] = None
+    received_at: Optional[datetime] = None
+    completed_at: Optional[datetime] = None
+    total_items: int = 0
+    total_quantity: int = 0
+    notes: Optional[str] = None
+    created_at: datetime
+    updated_at: Optional[datetime] = None
+    model_config = ORM_CONFIG
+
+
+class InboundShipmentListResponse(BaseModel):
+    items: list[InboundShipmentResponse]
+    total: int
+    page: int
+    page_size: int
+
+
+# --- Inbound Shipment Item ---
+
+class InboundItemCreate(BaseModel):
+    product_id: UUID
+    variant_id: Optional[UUID] = None
+    expected_quantity: int = Field(..., ge=1)
+
+
+class InboundItemUpdate(BaseModel):
+    expected_quantity: int = Field(..., ge=1)
+
+
+class InboundItemResponse(BaseModel):
+    id: UUID
+    inbound_shipment_id: UUID
+    product_id: UUID
+    product_name: Optional[str] = None
+    variant_id: Optional[UUID] = None
+    expected_quantity: int
+    received_quantity: int
+    putaway_quantity: int
+    status: str = "pending"
+    condition: Optional[str] = None
+    notes: Optional[str] = None
+    created_at: datetime
+    model_config = ORM_CONFIG
+
+
+class InboundItemListResponse(BaseModel):
+    items: list[InboundItemResponse]
+
+
+class ReceivedItem(BaseModel):
+    inbound_item_id: UUID
+    received_quantity: int = Field(..., ge=0)
+    condition: Optional[str] = Field(default=None, max_length=20)
+    notes: Optional[str] = None
+
+
+class ReceiveInboundRequest(BaseModel):
+    received_items: list[ReceivedItem]
+
+
+# --- Putaway Task ---
+
+class PutawayTaskResponse(BaseModel):
+    id: UUID
+    inbound_shipment_id: UUID
+    inbound_item_id: UUID
+    warehouse_id: UUID
+    warehouse_bin_id: Optional[UUID] = None
+    bin_label: Optional[str] = None
+    product_id: UUID
+    product_name: Optional[str] = None
+    variant_id: Optional[UUID] = None
+    quantity: int
+    putaway_quantity: int
+    assigned_to: Optional[UUID] = None
+    assigned_to_name: Optional[str] = None
+    status: PutawayTaskStatus
+    notes: Optional[str] = None
+    created_at: datetime
+    completed_at: Optional[datetime] = None
+    model_config = ORM_CONFIG
+
+
+class PutawayTaskListResponse(BaseModel):
+    items: list[PutawayTaskResponse]
+    total: int
+    page: int
+    page_size: int
+
+
+class PutawayAssignRequest(BaseModel):
+    assigned_to: UUID
+
+
+class PutawayCompleteRequest(BaseModel):
+    warehouse_bin_id: UUID
+    putaway_quantity: int = Field(..., ge=1)
+    notes: Optional[str] = None
+
+
+class PutawaySkipRequest(BaseModel):
+    reason: str = Field(..., max_length=255)
+
+
+# --- Pick List ---
+
+class PickListResponse(BaseModel):
+    id: UUID
+    reference: str
+    warehouse_id: UUID
+    warehouse_name: Optional[str] = None
+    seller_order_id: UUID
+    status: PickListStatus
+    assigned_to: Optional[UUID] = None
+    assigned_to_name: Optional[str] = None
+    total_items: int = 0
+    total_quantity: int = 0
+    notes: Optional[str] = None
+    created_at: datetime
+    completed_at: Optional[datetime] = None
+    model_config = ORM_CONFIG
+
+
+class PickListListResponse(BaseModel):
+    items: list[PickListResponse]
+    total: int
+    page: int
+    page_size: int
+
+
+class PickListItemResponse(BaseModel):
+    id: UUID
+    pick_list_id: UUID
+    product_id: UUID
+    product_name: Optional[str] = None
+    variant_id: Optional[UUID] = None
+    warehouse_bin_id: Optional[UUID] = None
+    bin_label: Optional[str] = None
+    quantity: int
+    picked_quantity: int
+    status: str
+    created_at: datetime
+    model_config = ORM_CONFIG
+
+
+class PickListItemListResponse(BaseModel):
+    items: list[PickListItemResponse]
+
+
+class PickItemRequest(BaseModel):
+    picked_quantity: int = Field(..., ge=0)
+
+
+class PickListAssignRequest(BaseModel):
+    assigned_to: UUID
+
+
+class PickListCancelRequest(BaseModel):
+    reason: Optional[str] = Field(default=None, max_length=500)
+
+
+class PickListStatusUpdate(BaseModel):
+    status: PickListStatus
+
+
+class PackPickListRequest(BaseModel):
+    packaging_id: Optional[UUID] = None
+    weight_kg: Optional[Decimal] = None
+    length_cm: Optional[Decimal] = None
+    width_cm: Optional[Decimal] = None
+    height_cm: Optional[Decimal] = None
+    tracking_number: Optional[str] = Field(default=None, max_length=150)
+
+
+# --- Warehouse Inventory (FBX) ---
+
+class WarehouseInventoryResponse(BaseModel):
+    id: UUID
+    warehouse_id: UUID
+    warehouse_name: Optional[str] = None
+    product_id: UUID
+    product_name: Optional[str] = None
+    variant_id: Optional[UUID] = None
+    seller_id: UUID
+    quantity: int
+    reserved_quantity: int
+    available_quantity: int
+    low_stock_threshold: int
+    warehouse_bin_id: Optional[UUID] = None
+    bin_label: Optional[str] = None
+    updated_at: Optional[datetime] = None
+    model_config = ORM_CONFIG
+
+
+class WarehouseInventoryListResponse(BaseModel):
+    items: list[WarehouseInventoryResponse]
+    total: int
+    page: int
+    page_size: int
+
+
+class InventoryAdjustRequest(BaseModel):
+    adjustment_type: InventoryAdjustmentType
+    quantity: int = Field(..., ge=1)
+    reason: str = Field(..., max_length=255)
+    notes: Optional[str] = None
+
+
+class InventoryThresholdUpdate(BaseModel):
+    low_stock_threshold: int = Field(..., ge=0)
+
+
+# --- Packaging ---
+
+class PackagingCreate(BaseModel):
+    name: str = Field(..., max_length=100)
+    packaging_type: PackagingType = PackagingType.box
+    length_cm: Optional[Decimal] = None
+    width_cm: Optional[Decimal] = None
+    height_cm: Optional[Decimal] = None
+    empty_weight_kg: Optional[Decimal] = None
+    max_weight_kg: Optional[Decimal] = None
+
+
+class PackagingUpdate(BaseModel):
+    name: Optional[str] = Field(default=None, max_length=100)
+    packaging_type: Optional[PackagingType] = None
+    length_cm: Optional[Decimal] = None
+    width_cm: Optional[Decimal] = None
+    height_cm: Optional[Decimal] = None
+    empty_weight_kg: Optional[Decimal] = None
+    max_weight_kg: Optional[Decimal] = None
+    is_active: Optional[bool] = None
+
+
+class PackagingResponse(BaseModel):
+    id: UUID
+    name: str
+    packaging_type: PackagingType
+    length_cm: Optional[Decimal] = None
+    width_cm: Optional[Decimal] = None
+    height_cm: Optional[Decimal] = None
+    empty_weight_kg: Optional[Decimal] = None
+    max_weight_kg: Optional[Decimal] = None
+    is_active: bool
+    created_at: datetime
+    updated_at: Optional[datetime] = None
+    model_config = ORM_CONFIG
+
+
+class PackagingListResponse(BaseModel):
+    items: list[PackagingResponse]
+
+
+# =========================================================
+# XERIN LOGISTICS – DRIVER, VEHICLE, DELIVERY TRIP SCHEMAS
+# =========================================================
+
+class DriverCreate(BaseModel):
+    user_id: UUID
+    license_number: Optional[str] = None
+    license_expiry: Optional[datetime] = None
+    national_id: Optional[str] = None
+    phone: Optional[str] = None
+    emergency_contact: Optional[str] = None
+    service_zones: list[str] = Field(default_factory=list)
+    vehicle_id: Optional[UUID] = None
+
+
+class DriverUpdate(BaseModel):
+    license_number: Optional[str] = None
+    license_expiry: Optional[datetime] = None
+    national_id: Optional[str] = None
+    phone: Optional[str] = None
+    emergency_contact: Optional[str] = None
+    service_zones: Optional[list[str]] = None
+    vehicle_id: Optional[UUID] = None
+    status: Optional[DriverStatus] = None
+
+
+class DriverResponse(BaseModel):
+    id: UUID
+    user_id: UUID
+    license_number: Optional[str] = None
+    license_expiry: Optional[datetime] = None
+    national_id: Optional[str] = None
+    profile_image_url: Optional[str] = None
+    phone: Optional[str] = None
+    emergency_contact: Optional[str] = None
+    status: DriverStatus
+    verification_status: DriverVerificationStatus
+    is_online: bool
+    rating: Decimal
+    total_deliveries: int
+    total_ratings: int
+    current_latitude: Optional[float] = None
+    current_longitude: Optional[float] = None
+    last_location_at: Optional[datetime] = None
+    service_zones: list[str] = Field(default_factory=list)
+    vehicle_id: Optional[UUID] = None
+    approved_at: Optional[datetime] = None
+    suspended_at: Optional[datetime] = None
+    suspend_reason: Optional[str] = None
+    created_at: datetime
+    updated_at: Optional[datetime] = None
+    user_name: Optional[str] = None
+    user_email: Optional[str] = None
+    vehicle_plate: Optional[str] = None
+    kyc_verified: Optional[bool] = None
+    kyc_submitted: Optional[bool] = None
+    model_config = ORM_CONFIG
+
+
+class DriverListResponse(BaseModel):
+    total: int
+    page: int
+    page_size: int
+    results: list[DriverResponse]
+
+
+class VehicleCreate(BaseModel):
+    plate_number: str = Field(min_length=2, max_length=20)
+    vehicle_type: VehicleType = VehicleType.motorcycle
+    brand: Optional[str] = None
+    model: Optional[str] = None
+    year: Optional[int] = None
+    color: Optional[str] = None
+    capacity_kg: Optional[Decimal] = None
+    volume_m3: Optional[Decimal] = None
+    license_expiry: Optional[datetime] = None
+    insurance_expiry: Optional[datetime] = None
+
+
+class VehicleUpdate(BaseModel):
+    plate_number: Optional[str] = None
+    vehicle_type: Optional[VehicleType] = None
+    brand: Optional[str] = None
+    model: Optional[str] = None
+    year: Optional[int] = None
+    color: Optional[str] = None
+    capacity_kg: Optional[Decimal] = None
+    volume_m3: Optional[Decimal] = None
+    license_expiry: Optional[datetime] = None
+    insurance_expiry: Optional[datetime] = None
+    is_active: Optional[bool] = None
+
+
+class VehicleResponse(BaseModel):
+    id: UUID
+    plate_number: str
+    vehicle_type: VehicleType
+    brand: Optional[str] = None
+    model: Optional[str] = None
+    year: Optional[int] = None
+    color: Optional[str] = None
+    capacity_kg: Optional[Decimal] = None
+    volume_m3: Optional[Decimal] = None
+    license_expiry: Optional[datetime] = None
+    insurance_expiry: Optional[datetime] = None
+    is_active: bool
+    created_at: datetime
+    updated_at: Optional[datetime] = None
+    model_config = ORM_CONFIG
+
+
+class VehicleListResponse(BaseModel):
+    total: int
+    page: int
+    page_size: int
+    results: list[VehicleResponse]
+
+
+class DeliveryTripResponse(BaseModel):
+    id: UUID
+    ref_code: str
+    shipment_id: UUID
+    seller_order_id: UUID
+    driver_id: Optional[UUID] = None
+    vehicle_id: Optional[UUID] = None
+    status: DeliveryTripStatus
+    pickup_address: Optional[str] = None
+    delivery_address: Optional[str] = None
+    estimated_distance_km: Optional[Decimal] = None
+    estimated_duration_min: Optional[int] = None
+    delivery_fee: Optional[Decimal] = None
+    currency: str = "TZS"
+    otp: Optional[str] = None
+    pickup_at: Optional[datetime] = None
+    delivered_at: Optional[datetime] = None
+    failed_at: Optional[datetime] = None
+    failure_reason: Optional[str] = None
+    notes: Optional[str] = None
+    created_at: datetime
+    updated_at: Optional[datetime] = None
+    driver_name: Optional[str] = None
+    driver_phone: Optional[str] = None
+    vehicle_plate: Optional[str] = None
+    order_number: Optional[str] = None
+    model_config = ORM_CONFIG
+
+
+class DeliveryTripListResponse(BaseModel):
+    total: int
+    page: int
+    page_size: int
+    results: list[DeliveryTripResponse]
+
+
+class AssignDriverRequest(BaseModel):
+    driver_id: UUID
+    vehicle_id: Optional[UUID] = None
+
+
+class UpdateTripStatusRequest(BaseModel):
+    status: DeliveryTripStatus
+    notes: Optional[str] = None
+    latitude: Optional[float] = None
+    longitude: Optional[float] = None
+
+
+class DriverLocationUpdate(BaseModel):
+    latitude: float
+    longitude: float
+
+
+# =========================================================
+# SELLER STOCK TRANSFER SCHEMAS
+# =========================================================
+
+class StockTransferItemCreate(BaseModel):
+    product_id: UUID
+    variant_id: Optional[UUID] = None
+    expected_quantity: int = Field(ge=1)
+
+
+class StockTransferCreate(BaseModel):
+    warehouse_id: UUID
+    origin_address: Optional[str] = None
+    expected_arrival_at: Optional[datetime] = None
+    transport_cost: Optional[Decimal] = None
+    notes: Optional[str] = None
+    items: list[StockTransferItemCreate] = Field(min_length=1)
+
+
+class StockTransferItemResponse(BaseModel):
+    id: UUID
+    product_id: UUID
+    variant_id: Optional[UUID] = None
+    expected_quantity: int
+    received_quantity: int
+    condition: Optional[str] = None
+    notes: Optional[str] = None
+    product_name: Optional[str] = None
+    model_config = ORM_CONFIG
+
+
+class StockTransferResponse(BaseModel):
+    id: UUID
+    reference: str
+    seller_id: UUID
+    warehouse_id: UUID
+    status: StockTransferStatus
+    origin_type: str
+    origin_address: Optional[str] = None
+    expected_arrival_at: Optional[datetime] = None
+    dispatched_at: Optional[datetime] = None
+    received_at: Optional[datetime] = None
+    transport_cost: Optional[Decimal] = None
+    currency: str = "TZS"
+    notes: Optional[str] = None
+    rejection_reason: Optional[str] = None
+    created_at: datetime
+    updated_at: Optional[datetime] = None
+    warehouse_name: Optional[str] = None
+    seller_name: Optional[str] = None
+    items: list[StockTransferItemResponse] = Field(default_factory=list)
+    model_config = ORM_CONFIG
+
+
+class StockTransferListResponse(BaseModel):
+    total: int
+    page: int
+    page_size: int
+    results: list[StockTransferResponse]
+
+
+class StockTransferStatusUpdate(BaseModel):
+    status: StockTransferStatus
+    notes: Optional[str] = None
+    rejection_reason: Optional[str] = None
+
+
+class ReceiveStockTransferItem(BaseModel):
+    item_id: UUID
+    received_quantity: int = Field(ge=0)
+
+
+class ReceiveStockTransferRequest(BaseModel):
+    items: list[ReceiveStockTransferItem]
+
+
+# --- Dashboard ---
+
+class AdminFulfilmentDashboardResponse(BaseModel):
+    warehouses: Dict[str, int]
+    inbound: Dict[str, int]
+    pick_lists: Dict[str, int]
+    inventory: Dict[str, int]
+
+
+class SellerFulfilmentDashboardResponse(BaseModel):
+    inbound: Dict[str, int]
+    fbx_inventory: Dict[str, int]
+
+
+# =========================================================
+# SYSTEM SETTINGS SCHEMAS
+# =========================================================
+
+class SystemSettingCreate(BaseModel):
+    key: str = Field(min_length=1, max_length=100)
+    value: str | None = None
+    data_type: str = Field(default="string", max_length=20)
+    category: str = Field(default="general", max_length=50)
+    description: str | None = None
+    is_public: bool = False
+    is_encrypted: bool = False
+
+
+class SystemSettingUpdate(BaseModel):
+    value: str | None = None
+    description: str | None = None
+    is_public: bool | None = None
+    is_encrypted: bool | None = None
+
+
+class SystemSettingResponse(BaseModel):
+    id: UUID
+    key: str
+    value: str | None
+    data_type: str
+    category: str
+    description: str | None
+    is_public: bool
+    is_encrypted: bool
+    updated_at: datetime | None = None
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class SystemSettingListResponse(BaseModel):
+    total: int
+    page: int
+    page_size: int
+    results: list[SystemSettingResponse]
+
+
+class SystemSettingBulkUpdate(BaseModel):
+    settings: dict[str, str] = Field(default_factory=dict)
+
+
+# =========================================================
+# DRIVER KYC & DOCUMENTS SCHEMAS
+# =========================================================
+
+class DriverDocumentCreate(BaseModel):
+    document_type: DriverDocumentType
+    document_number: str | None = Field(default=None, max_length=100)
+    document_image_url: str | None = None
+    document_image_back_url: str | None = None
+    expiry_date: datetime | None = None
+
+
+class DriverDocumentUpdate(BaseModel):
+    document_number: str | None = Field(default=None, max_length=100)
+    document_image_url: str | None = None
+    document_image_back_url: str | None = None
+    expiry_date: datetime | None = None
+    status: DriverDocumentStatus | None = None
+    rejection_reason: str | None = None
+
+
+class DriverDocumentResponse(BaseModel):
+    id: UUID
+    driver_id: UUID
+    document_type: DriverDocumentType
+    document_number: str | None
+    document_image_url: str | None
+    document_image_back_url: str | None
+    status: DriverDocumentStatus
+    expiry_date: datetime | None
+    rejection_reason: str | None
+    verified_at: datetime | None
+    created_at: datetime
+    updated_at: datetime | None = None
+
+    class Config:
+        from_attributes = True
+
+
+class DriverKYCCreate(BaseModel):
+    full_name: str = Field(min_length=2, max_length=200)
+    date_of_birth: date | None = None
+    gender: str | None = Field(default=None, max_length=20)
+    national_id_number: str | None = Field(default=None, max_length=50)
+    license_number: str | None = Field(default=None, max_length=50)
+    license_class: str | None = Field(default=None, max_length=20)
+    license_expiry: datetime | None = None
+    address: str | None = None
+    city: str | None = Field(default=None, max_length=100)
+    region: str | None = Field(default=None, max_length=100)
+    country: str = Field(default="Tanzania", max_length=100)
+    emergency_contact_name: str | None = Field(default=None, max_length=200)
+    emergency_contact_phone: str | None = Field(default=None, max_length=30)
+    next_of_kin: str | None = Field(default=None, max_length=200)
+    next_of_kin_phone: str | None = Field(default=None, max_length=30)
+    bank_account_name: str | None = Field(default=None, max_length=200)
+    bank_account_number: str | None = Field(default=None, max_length=50)
+    bank_name: str | None = Field(default=None, max_length=100)
+    profile_image_url: str | None = None
+
+
+class DriverKYCUpdate(BaseModel):
+    full_name: str | None = Field(default=None, min_length=2, max_length=200)
+    date_of_birth: date | None = None
+    gender: str | None = None
+    national_id_number: str | None = None
+    license_number: str | None = None
+    license_class: str | None = None
+    license_expiry: datetime | None = None
+    address: str | None = None
+    city: str | None = None
+    region: str | None = None
+    emergency_contact_name: str | None = None
+    emergency_contact_phone: str | None = None
+    next_of_kin: str | None = None
+    next_of_kin_phone: str | None = None
+    bank_account_name: str | None = None
+    bank_account_number: str | None = None
+    bank_name: str | None = None
+    profile_image_url: str | None = None
+
+
+class DriverKYCResponse(BaseModel):
+    id: UUID
+    driver_id: UUID
+    full_name: str
+    date_of_birth: date | None
+    gender: str | None
+    national_id_number: str | None
+    license_number: str | None
+    license_class: str | None
+    license_expiry: datetime | None
+    address: str | None
+    city: str | None
+    region: str | None
+    country: str
+    emergency_contact_name: str | None
+    emergency_contact_phone: str | None
+    next_of_kin: str | None
+    next_of_kin_phone: str | None
+    bank_account_name: str | None
+    bank_account_number: str | None
+    bank_name: str | None
+    profile_image_url: str | None
+    is_verified: bool
+    submitted_at: datetime | None
+    verified_at: datetime | None
+    rejection_reason: str | None
+    created_at: datetime
+    updated_at: datetime | None = None
+
+    class Config:
+        from_attributes = True
+
+
+class DriverKYCReviewRequest(BaseModel):
+    is_approved: bool
+    rejection_reason: str | None = Field(default=None, max_length=2000)
+
+
+class DriverDocumentReviewRequest(BaseModel):
+    is_approved: bool
+    rejection_reason: str | None = Field(default=None, max_length=2000)
+
+
+# =========================================================
+# DELIVERY ZONE & FARE SCHEMAS
+# =========================================================
+
+class DeliveryZoneCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=100)
+    description: str | None = None
+    city: str | None = Field(default=None, max_length=100)
+    region: str | None = Field(default=None, max_length=100)
+    country: str = Field(default="Tanzania", max_length=100)
+    boundaries: dict[str, Any] | None = None
+    center_latitude: float | None = None
+    center_longitude: float | None = None
+    radius_km: Decimal | None = None
+    is_active: bool = True
+
+
+class DeliveryZoneUpdate(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=100)
+    description: str | None = None
+    city: str | None = None
+    region: str | None = None
+    boundaries: dict[str, Any] | None = None
+    center_latitude: float | None = None
+    center_longitude: float | None = None
+    radius_km: Decimal | None = None
+    is_active: bool | None = None
+
+
+class DeliveryZoneResponse(BaseModel):
+    id: UUID
+    name: str
+    description: str | None
+    city: str | None
+    region: str | None
+    country: str
+    boundaries: dict[str, Any] | None
+    center_latitude: float | None
+    center_longitude: float | None
+    radius_km: Decimal | None
+    is_active: bool
+    created_at: datetime
+    updated_at: datetime | None = None
+
+    class Config:
+        from_attributes = True
+
+
+class DeliveryFareCreate(BaseModel):
+    zone_id: UUID
+    fare_type: FareType = FareType.delivery
+    vehicle_type: VehicleType | None = None
+    base_fare: Decimal = Field(default=Decimal("0"))
+    per_km_fare: Decimal = Field(default=Decimal("0"))
+    waiting_fee_per_min: Decimal = Field(default=Decimal("0"))
+    idle_fee_per_min: Decimal = Field(default=Decimal("0"))
+    cancellation_fee_percent: Decimal = Field(default=Decimal("0"))
+    min_cancellation_fee: Decimal = Field(default=Decimal("0"))
+    trip_delay_fee_per_min: Decimal = Field(default=Decimal("0"))
+    penalty_fee_for_cancel: Decimal = Field(default=Decimal("0"))
+    fee_add_to_next: Decimal = Field(default=Decimal("0"))
+    min_fare: Decimal = Field(default=Decimal("0"))
+    max_fare: Decimal | None = None
+    is_active: bool = True
+
+
+class DeliveryFareUpdate(BaseModel):
+    base_fare: Decimal | None = None
+    per_km_fare: Decimal | None = None
+    waiting_fee_per_min: Decimal | None = None
+    idle_fee_per_min: Decimal | None = None
+    cancellation_fee_percent: Decimal | None = None
+    min_cancellation_fee: Decimal | None = None
+    trip_delay_fee_per_min: Decimal | None = None
+    penalty_fee_for_cancel: Decimal | None = None
+    fee_add_to_next: Decimal | None = None
+    min_fare: Decimal | None = None
+    max_fare: Decimal | None = None
+    is_active: bool | None = None
+
+
+class DeliveryFareResponse(BaseModel):
+    id: UUID
+    zone_id: UUID
+    fare_type: FareType
+    vehicle_type: VehicleType | None
+    base_fare: Decimal
+    per_km_fare: Decimal
+    waiting_fee_per_min: Decimal
+    idle_fee_per_min: Decimal
+    cancellation_fee_percent: Decimal
+    min_cancellation_fee: Decimal
+    trip_delay_fee_per_min: Decimal
+    penalty_fee_for_cancel: Decimal
+    fee_add_to_next: Decimal
+    min_fare: Decimal
+    max_fare: Decimal | None
+    is_active: bool
+    created_at: datetime
+    updated_at: datetime | None = None
+
+    class Config:
+        from_attributes = True
+
+
+class SurgePricingCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=150)
+    zone_id: UUID | None = None
+    surge_type: SurgePricingType = SurgePricingType.all_vehicles
+    surge_percentage: Decimal = Field(default=Decimal("0"))
+    vehicle_type: VehicleType | None = None
+    schedule_type: SurgeScheduleType = SurgeScheduleType.always
+    start_time: Time | None = None
+    end_time: Time | None = None
+    days_of_week: list[int] | None = None
+    customer_note: str | None = None
+    is_active: bool = True
+
+
+class SurgePricingUpdate(BaseModel):
+    name: str | None = None
+    zone_id: UUID | None = None
+    surge_type: SurgePricingType | None = None
+    surge_percentage: Decimal | None = None
+    vehicle_type: VehicleType | None = None
+    schedule_type: SurgeScheduleType | None = None
+    start_time: Time | None = None
+    end_time: Time | None = None
+    days_of_week: list[int] | None = None
+    customer_note: str | None = None
+    is_active: bool | None = None
+
+
+class SurgePricingResponse(BaseModel):
+    id: UUID
+    name: str
+    zone_id: UUID | None
+    surge_type: SurgePricingType
+    surge_percentage: Decimal
+    vehicle_type: VehicleType | None
+    schedule_type: SurgeScheduleType
+    start_time: Time | None
+    end_time: Time | None
+    days_of_week: list[int] | None
+    customer_note: str | None
+    is_active: bool
+    created_at: datetime
+    updated_at: datetime | None = None
+
+    class Config:
+        from_attributes = True
+
+
+# =========================================================
+# DELIVERY TRIP COORDINATE & FEE SCHEMAS
+# =========================================================
+
+class DeliveryTripCoordinateResponse(BaseModel):
+    id: UUID
+    trip_id: UUID
+    pickup_latitude: float | None
+    pickup_longitude: float | None
+    pickup_address: str | None
+    destination_latitude: float | None
+    destination_longitude: float | None
+    destination_address: str | None
+    intermediate_coordinates: list[Any] | None
+    intermediate_addresses: list[Any] | None
+    driver_accept_latitude: float | None
+    driver_accept_longitude: float | None
+    start_latitude: float | None
+    start_longitude: float | None
+    drop_latitude: float | None
+    drop_longitude: float | None
+    is_reached_destination: bool
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class DeliveryTripFeeResponse(BaseModel):
+    id: UUID
+    trip_id: UUID
+    base_fare: Decimal
+    distance_fare: Decimal
+    waiting_fee: Decimal
+    idle_fee: Decimal
+    delay_fee: Decimal
+    cancellation_fee: Decimal
+    return_fee: Decimal
+    surge_fee: Decimal
+    vat_tax: Decimal
+    admin_commission: Decimal
+    tips: Decimal
+    total_fare: Decimal
+    currency: str
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+# =========================================================
+# DELIVERY FARE CALCULATION SCHEMA
+# =========================================================
+
+class FareCalculationRequest(BaseModel):
+    pickup_latitude: float
+    pickup_longitude: float
+    destination_latitude: float
+    destination_longitude: float
+    vehicle_type: VehicleType | None = None
+    zone_id: UUID | None = None
+    weight_kg: Decimal | None = None
+    waiting_minutes: int = 0
+    idle_minutes: int = 0
+    delay_minutes: int = 0
+    is_cancelled: bool = False
+    coupon_discount: Decimal | None = None
+
+
+class FareCalculationResponse(BaseModel):
+    base_fare: Decimal
+    distance_km: Decimal
+    distance_fare: Decimal
+    waiting_fee: Decimal
+    idle_fee: Decimal
+    delay_fee: Decimal
+    cancellation_fee: Decimal
+    surge_percentage: Decimal
+    surge_fee: Decimal
+    subtotal: Decimal
+    vat_tax: Decimal
+    coupon_discount: Decimal
+    total_fare: Decimal
+    currency: str
+    zone_name: str | None = None

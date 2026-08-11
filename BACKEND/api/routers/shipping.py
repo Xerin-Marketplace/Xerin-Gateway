@@ -15,6 +15,7 @@ from api.schemas import (
     ShippingQuoteOption, ShippingQuoteRequest, ShippingRateCreate, ShippingRateResponse,
     ShippingZoneCreate, ShippingZoneResponse, ShippingZoneUpdate,
     ShipmentResponse, ShipmentTrackingEventCreate,
+    PerSellerQuoteRequest, PerSellerQuoteResponse,
 )
 
 router = APIRouter(prefix="/shipping", tags=["Shipping"])
@@ -94,6 +95,109 @@ def quote_shipping(data: ShippingQuoteRequest, db: Session=Depends(get_db), curr
             amount=Decimal(rate.base_amount)
         options.append(ShippingQuoteOption(rate_id=rate.id, method_id=rate.method.id, method_name=rate.method.name, carrier_name=rate.method.carrier_name, amount=amount.quantize(Decimal("0.01")), min_delivery_days=rate.method.min_delivery_days, max_delivery_days=rate.method.max_delivery_days))
     return sorted(options, key=lambda x: x.amount)
+
+
+@router.post("/quote-per-seller", response_model=list[PerSellerQuoteResponse])
+def quote_per_seller(
+    data: PerSellerQuoteRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Calculate shipping per seller group based on seller origin → customer destination."""
+    address = db.query(Address).filter(
+        Address.id == data.address_id,
+        Address.user_id == current_user.id,
+    ).first()
+    if not address:
+        raise HTTPException(404, "Address not found")
+
+    # Group items by seller
+    seller_groups: dict[UUID, list] = {}
+    for item in data.items:
+        seller_groups.setdefault(item.seller_id, []).append(item)
+
+    # Get all active shipping zones for the customer's country
+    zones = db.query(ShippingZone).filter(
+        ShippingZone.is_active.is_(True),
+        ShippingZone.country.ilike(address.country),
+    ).all()
+
+    results: list[PerSellerQuoteResponse] = []
+
+    for seller_id, items in seller_groups.items():
+        seller_subtotal = sum((Decimal(item.unit_price) * item.quantity for item in items), Decimal("0.00"))
+
+        # Match zones: customer destination region must be in zone
+        matching_zone_ids = []
+        for zone in zones:
+            regions = {str(x).strip().lower() for x in (zone.regions or [])}
+            cities = {str(x).strip().lower() for x in (zone.cities or [])}
+            if regions and address.region.strip().lower() not in regions:
+                continue
+            if cities and address.city.strip().lower() not in cities:
+                continue
+            matching_zone_ids.append(zone.id)
+
+        if not matching_zone_ids:
+            # No matching zone — use a default flat rate
+            results.append(PerSellerQuoteResponse(
+                seller_id=seller_id,
+                seller_subtotal=seller_subtotal,
+                shipping_amount=Decimal("5000.00"),
+                total=seller_subtotal + Decimal("5000.00"),
+                method_name="Standard Delivery",
+                carrier_name="Xerin Express",
+                min_delivery_days=2,
+                max_delivery_days=7,
+            ))
+            continue
+
+        # Get the cheapest active rate for the matching zones
+        rates = db.query(ShippingRate).options(
+            joinedload(ShippingRate.method),
+        ).filter(
+            ShippingRate.zone_id.in_(matching_zone_ids),
+            ShippingRate.is_active.is_(True),
+        ).all()
+
+        best = None
+        for rate in rates:
+            if not rate.method or not rate.method.is_active:
+                continue
+            if rate.free_shipping_threshold is not None and seller_subtotal >= rate.free_shipping_threshold:
+                amount = Decimal("0.00")
+            elif rate.rate_type == ShippingRateType.free:
+                amount = Decimal("0.00")
+            else:
+                amount = Decimal(rate.base_amount)
+            if best is None or amount < best[0]:
+                best = (amount, rate)
+
+        if best:
+            amount, rate = best
+            results.append(PerSellerQuoteResponse(
+                seller_id=seller_id,
+                seller_subtotal=seller_subtotal,
+                shipping_amount=amount.quantize(Decimal("0.01")),
+                total=(seller_subtotal + amount).quantize(Decimal("0.01")),
+                method_name=rate.method.name,
+                carrier_name=rate.method.carrier_name,
+                min_delivery_days=rate.method.min_delivery_days,
+                max_delivery_days=rate.method.max_delivery_days,
+            ))
+        else:
+            results.append(PerSellerQuoteResponse(
+                seller_id=seller_id,
+                seller_subtotal=seller_subtotal,
+                shipping_amount=Decimal("5000.00"),
+                total=seller_subtotal + Decimal("5000.00"),
+                method_name="Standard Delivery",
+                carrier_name="Xerin Express",
+                min_delivery_days=2,
+                max_delivery_days=7,
+            ))
+
+    return results
 
 
 ALLOWED_SHIPMENT_TRANSITIONS = {

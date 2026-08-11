@@ -156,6 +156,38 @@ class PermissionCode(str, enum.Enum):
     shipping_manage_own = "shipping:manage_own"
     shipping_manage_all = "shipping:manage_all"
 
+    # Xerin Logistics – drivers, vehicles, delivery trips
+    logistics_read = "logistics:read"
+    logistics_manage = "logistics:manage"
+    logistics_driver_manage = "logistics:driver_manage"
+    logistics_vehicle_manage = "logistics:vehicle_manage"
+    logistics_trip_assign = "logistics:trip_assign"
+
+    # Seller stock transfer to warehouse
+    stock_transfer_read = "stock_transfer:read"
+    stock_transfer_create = "stock_transfer:create"
+    stock_transfer_manage = "stock_transfer:manage"
+
+    # System settings & notification management
+    settings_read = "settings:read"
+    settings_manage = "settings:manage"
+    notification_templates_manage = "notification_templates:manage"
+    notification_logs_read = "notification_logs:read"
+    notification_bulk_send = "notification:bulk_send"
+
+    # Driver KYC & verification
+    driver_kyc_read = "driver_kyc:read"
+    driver_kyc_manage = "driver_kyc:manage"
+    driver_kyc_review = "driver_kyc:review"
+
+    # Delivery fare, zone & surge pricing
+    delivery_fare_read = "delivery_fare:read"
+    delivery_fare_manage = "delivery_fare:manage"
+    delivery_zone_read = "delivery_zone:read"
+    delivery_zone_manage = "delivery_zone:manage"
+    surge_pricing_read = "surge_pricing:read"
+    surge_pricing_manage = "surge_pricing:manage"
+
     # Existing store permissions used by current routers.
     view_own_store = "view_own_store"
     update_own_store = "update_own_store"
@@ -370,6 +402,19 @@ class NotificationEvent(str, enum.Enum):
     seller_approval_required = "seller_approval_required"
     product_approval_required = "product_approval_required"
     system_alert = "system_alert"
+    # Xerin logistics & fulfilment events
+    warehouse_received = "warehouse_received"
+    ready_for_delivery = "ready_for_delivery"
+    driver_assigned = "driver_assigned"
+    out_for_delivery = "out_for_delivery"
+    delivery_failed = "delivery_failed"
+    stock_transfer_approved = "stock_transfer_approved"
+    stock_transfer_received = "stock_transfer_received"
+    stock_transfer_rejected = "stock_transfer_rejected"
+    admin_order_alert = "admin_order_alert"
+    admin_delivery_alert = "admin_delivery_alert"
+    seller_order_ready = "seller_order_ready"
+    otp_verification = "otp_verification"
 
 
 class QuestionStatus(str, enum.Enum):
@@ -385,3 +430,176 @@ class QuestionReportReason(str, enum.Enum):
     misleading = "misleading"
     inappropriate = "inappropriate"
     other = "other"
+
+
+# =========================================================
+# FULFILMENT & MULTI-WAREHOUSE
+# =========================================================
+
+class FulfilmentType(str, enum.Enum):
+    fbs = "fbs"
+    fbx = "fbx"
+
+
+class WarehouseStatus(str, enum.Enum):
+    active = "active"
+    inactive = "inactive"
+    maintenance = "maintenance"
+    decommissioned = "decommissioned"
+
+
+class InboundShipmentStatus(str, enum.Enum):
+    draft = "draft"
+    submitted = "submitted"
+    in_transit = "in_transit"
+    received = "received"
+    putaway_in_progress = "putaway_in_progress"
+    completed = "completed"
+    cancelled = "cancelled"
+    rejected = "rejected"
+
+
+class PutawayTaskStatus(str, enum.Enum):
+    pending = "pending"
+    in_progress = "in_progress"
+    completed = "completed"
+    skipped = "skipped"
+
+
+class PickListStatus(str, enum.Enum):
+    pending = "pending"
+    assigned = "assigned"
+    in_progress = "in_progress"
+    picked = "picked"
+    packed = "packed"
+    cancelled = "cancelled"
+
+
+class PackagingType(str, enum.Enum):
+    box = "box"
+    polybag = "polybag"
+    envelope = "envelope"
+    pallet = "pallet"
+    custom = "custom"
+
+
+class InventoryAdjustmentType(str, enum.Enum):
+    increase = "increase"
+    decrease = "decrease"
+
+
+class WarehouseInventoryMovementType(str, enum.Enum):
+    inbound_putaway = "inbound_putaway"
+    outbound_pick = "outbound_pick"
+    manual_adjustment = "manual_adjustment"
+    transfer_in = "transfer_in"
+    transfer_out = "transfer_out"
+    damaged = "damaged"
+    lost = "lost"
+    returned = "returned"
+
+
+# =========================================================
+# XERIN LOGISTICS – DRIVERS, VEHICLES, DELIVERY TRIPS
+# =========================================================
+
+class DriverStatus(str, enum.Enum):
+    offline = "offline"
+    online = "online"
+    on_delivery = "on_delivery"
+    suspended = "suspended"
+    terminated = "terminated"
+
+
+class DriverVerificationStatus(str, enum.Enum):
+    pending = "pending"
+    verified = "verified"
+    rejected = "rejected"
+    expired = "expired"
+
+
+class VehicleType(str, enum.Enum):
+    motorcycle = "motorcycle"
+    car = "car"
+    van = "van"
+    truck = "truck"
+    bicycle = "bicycle"
+    tuk_tuk = "tuk_tuk"
+
+
+class DeliveryTripStatus(str, enum.Enum):
+    assigned = "assigned"
+    out_for_pickup = "out_for_pickup"
+    picked_up = "picked_up"
+    in_transit = "in_transit"
+    out_for_delivery = "out_for_delivery"
+    delivered = "delivered"
+    failed = "failed"
+    cancelled = "cancelled"
+    returned = "returned"
+
+
+class StockTransferStatus(str, enum.Enum):
+    draft = "draft"
+    requested = "requested"
+    approved = "approved"
+    in_transit = "in_transit"
+    received = "received"
+    rejected = "rejected"
+    cancelled = "cancelled"
+
+
+# =========================================================
+# DRIVER KYC & VERIFICATION
+# =========================================================
+
+class DriverDocumentType(str, enum.Enum):
+    national_id = "national_id"
+    driving_license = "driving_license"
+    vehicle_registration = "vehicle_registration"
+    insurance_certificate = "insurance_certificate"
+    passport_photo = "passport_photo"
+    proof_of_address = "proof_of_address"
+    medical_certificate = "medical_certificate"
+    police_clearance = "police_clearance"
+    other = "other"
+
+
+class DriverDocumentStatus(str, enum.Enum):
+    pending = "pending"
+    approved = "approved"
+    rejected = "rejected"
+    expired = "expired"
+
+
+class VehicleOwnership(str, enum.Enum):
+    owned = "owned"
+    leased = "leased"
+    rented = "rented"
+
+
+class VehicleRequestStatus(str, enum.Enum):
+    approved = "approved"
+    denied = "denied"
+    pending = "pending"
+
+
+# =========================================================
+# DELIVERY FARE & ZONE
+# =========================================================
+
+class FareType(str, enum.Enum):
+    delivery = "delivery"
+    parcel = "parcel"
+    ride = "ride"
+
+
+class SurgePricingType(str, enum.Enum):
+    all_vehicles = "all_vehicles"
+    specific_category = "specific_category"
+    all_parcels = "all_parcels"
+
+
+class SurgeScheduleType(str, enum.Enum):
+    always = "always"
+    time_based = "time_based"
