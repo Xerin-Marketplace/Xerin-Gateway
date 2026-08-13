@@ -61,6 +61,8 @@ class Settings(BaseSettings):
     EMAIL_USER: str | None = None
     EMAIL_PASSWORD: str | None = None
     EMAIL_FROM: str | None = None
+    EMAIL_FROM_NAME: str = "Xerin Market"
+    EMAIL_REPLY_TO: str | None = None
     EMAIL_USE_TLS: bool = True
     EMAIL_USE_SSL: bool = False
 
@@ -68,6 +70,7 @@ class Settings(BaseSettings):
     AT_USERNAME: str | None = None
     AT_API_KEY: str | None = None
     AT_SENDER_ID: str | None = None
+    SMS_DEFAULT_COUNTRY_CODE: str = "+255"
     SMS_API_URL: str | None = None
 
     # Payment webhook security

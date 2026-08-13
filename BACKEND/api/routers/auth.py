@@ -38,11 +38,31 @@ from api.security import (
 )
 from api.config import settings
 # from api.utils import send_email, send_sms
-from api.routers.email import send_email as _send_email
+from api.routers.email import (
+    send_email as _send_email,
+    send_otp_email as _send_otp_email,
+)
 from api.routers.sms import send_sms as _send_sms
 
 def send_email(to: str, subject: str, body: str, html: str | None = None) -> None:
     return _send_email(to=to, subject=subject, body=body, html=html)
+
+
+def send_otp_email(
+    *,
+    to: str,
+    otp: str,
+    recipient_name: str | None = None,
+    purpose: str = "account_verification",
+) -> None:
+    return _send_otp_email(
+        to=to,
+        otp=otp,
+        recipient_name=recipient_name,
+        purpose=purpose,
+        expires_minutes=5,
+    )
+
 
 def send_sms(to: str, message: str) -> None:
     return _send_sms(to=to, message=message)
@@ -344,10 +364,11 @@ def register(data: RegisterRequest, db: Session = Depends(get_db)):
         )
 
     try:
-        send_email(
+        send_otp_email(
             to=email,
-            subject="Verify your account",
-            body=f"Your verification code is: {otp}",
+            otp=otp,
+            recipient_name=getattr(user, "first_name", None),
+            purpose="account_verification",
         )
     except Exception as exc:
         logger.exception("send_email failed for %s: %s", email, exc)
@@ -495,10 +516,11 @@ def register_seller(data: SellerRegisterRequest, db: Session = Depends(get_db)):
         )
 
     try:
-        send_email(
+        send_otp_email(
             to=email,
-            subject="Verify your seller account",
-            body=f"Your seller verification code is: {otp}",
+            otp=otp,
+            recipient_name=getattr(user, "first_name", None),
+            purpose="register_seller",
         )
     except Exception as exc:
         logger.exception("send_email failed for %s: %s", email, exc)
@@ -756,10 +778,15 @@ def send_otp(request: Request, data: SendOTPRequest, db: Session = Depends(get_d
     user = db.query(User).filter(User.phone == phone).first()
     if user:
         try:
-            send_email(
+            send_otp_email(
                 to=user.email,
-                subject="Your verification code",
-                body=f"Your verification code is: {otp}",
+                otp=otp,
+                recipient_name=getattr(user, "first_name", None),
+                purpose=(
+                    "register_seller"
+                    if purpose == "register_seller"
+                    else "account_verification"
+                ),
             )
         except Exception as e:
             logger.exception("send_email failed for %s: %s", user.email, e)
@@ -891,25 +918,56 @@ def resend_verification(
     )
     db.commit()
 
+    sms_sent = False
+    email_sent = False
+
     try:
         send_sms(
             to=phone,
-            message=f"Your Xerin Marketplace verification code is: {otp}",
+            message=(
+                f"Xerin Market verification code: {otp}. "
+                "It expires in 5 minutes. Please do not share this code."
+            ),
         )
+        sms_sent = True
     except Exception as exc:
         logger.exception("send_sms failed for %s: %s", phone, exc)
 
     try:
-        send_email(
+        send_otp_email(
             to=user.email,
-            subject="Your verification code",
-            body=f"Your Xerin Marketplace verification code is: {otp}",
+            otp=otp,
+            recipient_name=getattr(user, "first_name", None),
+            purpose=purpose,
         )
+        email_sent = True
     except Exception as exc:
         logger.exception("send_email failed for %s: %s", user.email, exc)
 
+    if not sms_sent and not email_sent:
+        # Do not tell the frontend that the OTP was sent when no delivery
+        # channel actually accepted the message.
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "We generated a new verification code, but we could not deliver it "
+                "right now. Please try again shortly or contact Xerin Market support."
+            ),
+        )
+
+    delivered_to = []
+    if email_sent:
+        delivered_to.append("email")
+    if sms_sent:
+        delivered_to.append("SMS")
+
     return {
-        "message": generic_message,
+        "message": (
+            "A fresh verification code has been sent to your "
+            + " and ".join(delivered_to)
+            + ". Please check your inbox or messages."
+        ),
+        "delivery_channels": delivered_to,
         "dev_otp": otp if settings.DEBUG else None,
     }
 
@@ -1006,10 +1064,11 @@ def forgot_password(request: Request, data: ForgotPasswordRequest, db: Session =
 
     # send password-reset OTP via email and SMS
     try:
-        send_email(
+        send_otp_email(
             to=user.email,
-            subject="Password reset code",
-            body=f"Your password reset code is: {otp}",
+            otp=otp,
+            recipient_name=getattr(user, "first_name", None),
+            purpose="password_reset",
         )
     except Exception as e:
         logger.exception("send_email failed for %s: %s", user.email, e)
