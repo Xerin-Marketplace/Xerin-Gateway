@@ -938,7 +938,7 @@ def get_seller_documents(
     )
 
 
-@router.post("/sellers/{seller_id}/documents/{document_id}/view")
+@router.get("/sellers/{seller_id}/documents/{document_id}/view")
 def view_seller_document(
     seller_id: UUID,
     document_id: UUID,
