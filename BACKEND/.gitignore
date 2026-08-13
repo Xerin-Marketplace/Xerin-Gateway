@@ -156,4 +156,6 @@ azampay_path
 azampay_path/*
 errors
 errors/*
+BACKEND.zip
+BACKEND.zip/*
 
