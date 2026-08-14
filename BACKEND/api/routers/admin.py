@@ -122,7 +122,46 @@ def _page_count(total: int, page_size: int) -> int:
 
 
 def _serialize_product_review(product: Product) -> dict:
-    return _serialize_product_review(product)
+    """
+    Convert a Product ORM object into the admin review response payload.
+
+    ProductResponse already includes the product images relationship, so this
+    keeps the normal product fields/images and adds the seller/category/brand
+    information required by the admin review drawer.
+    """
+    payload = ProductResponse.model_validate(product).model_dump()
+
+    payload.update(
+        {
+            "seller_business_name": (
+                product.seller.business_name
+                if product.seller is not None
+                else None
+            ),
+            "seller_contact_email": (
+                product.seller.contact_email
+                if product.seller is not None
+                else None
+            ),
+            "seller_contact_phone": (
+                product.seller.contact_phone
+                if product.seller is not None
+                else None
+            ),
+            "category_name": (
+                product.category.name
+                if product.category is not None
+                else None
+            ),
+            "brand_name": (
+                product.brand.name
+                if product.brand is not None
+                else None
+            ),
+        }
+    )
+
+    return payload
 
 
 def _serialize_staff_user(db: Session, user: User) -> dict:
