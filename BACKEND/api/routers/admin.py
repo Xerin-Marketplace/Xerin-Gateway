@@ -53,6 +53,7 @@ from api.schemas import (
     RoleUsersResponse,
     AdminStaffCreateRequest,
     AdminStaffResponse,
+    PaginatedAdminAccessUserResponse,
 )
 
 from api.models import Permission, UserPermission
@@ -190,6 +191,126 @@ def admin_get_users(
         "page": page,
         "page_size": page_size,
         "results": users,
+    }
+
+
+@router.get("/access-users", response_model=PaginatedAdminAccessUserResponse)
+def admin_get_access_users(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(
+        require_permission(PermissionCode.can_view_users.value)
+    ),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(10, ge=1, le=100),
+    search: str | None = Query(None, max_length=200),
+    status_filter: str | None = Query(None),
+    role_filter: str | None = Query(None, max_length=50),
+):
+    """Server-side paginated user access listing for the RBAC workspace."""
+    query = db.query(User)
+
+    if search and search.strip():
+        term = f"%{search.strip()}%"
+        query = query.filter(
+            or_(
+                User.first_name.ilike(term),
+                User.last_name.ilike(term),
+                User.email.ilike(term),
+                User.phone.ilike(term),
+                User.roles.any(UserRole.role.has(Role.name.ilike(term))),
+            )
+        )
+
+    if status_filter:
+        query = query.filter(User.status == status_filter)
+
+    if role_filter:
+        query = query.filter(
+            User.roles.any(UserRole.role.has(Role.name == role_filter))
+        )
+
+    total = query.count()
+    users = (
+        query.order_by(User.created_at.desc(), User.id.desc())
+        .offset((page - 1) * page_size)
+        .limit(page_size)
+        .all()
+    )
+
+    if not users:
+        return {
+            "total": total,
+            "page": page,
+            "page_size": page_size,
+            "results": [],
+        }
+
+    user_ids = [user.id for user in users]
+
+    role_rows = (
+        db.query(UserRole.user_id, Role.id, Role.name)
+        .join(Role, Role.id == UserRole.role_id)
+        .filter(UserRole.user_id.in_(user_ids))
+        .all()
+    )
+
+    role_names_by_user: dict[UUID, list[str]] = {user_id: [] for user_id in user_ids}
+    role_ids_by_user: dict[UUID, list[UUID]] = {user_id: [] for user_id in user_ids}
+    all_role_ids: set[UUID] = set()
+
+    for user_id, role_id, role_name in role_rows:
+        role_names_by_user[user_id].append(role_name)
+        role_ids_by_user[user_id].append(role_id)
+        all_role_ids.add(role_id)
+
+    role_permissions: dict[UUID, set[str]] = {}
+    if all_role_ids:
+        permission_rows = (
+            db.query(RolePermission.role_id, Permission.code)
+            .join(Permission, Permission.id == RolePermission.permission_id)
+            .filter(RolePermission.role_id.in_(all_role_ids))
+            .all()
+        )
+        for role_id, code in permission_rows:
+            role_permissions.setdefault(role_id, set()).add(code)
+
+    direct_permissions: dict[UUID, set[str]] = {user_id: set() for user_id in user_ids}
+    direct_rows = (
+        db.query(UserPermission.user_id, Permission.code)
+        .join(Permission, Permission.id == UserPermission.permission_id)
+        .filter(UserPermission.user_id.in_(user_ids))
+        .all()
+    )
+    for user_id, code in direct_rows:
+        direct_permissions[user_id].add(code)
+
+    results = []
+    for user in users:
+        effective = set(direct_permissions.get(user.id, set()))
+        for role_id in role_ids_by_user.get(user.id, []):
+            effective.update(role_permissions.get(role_id, set()))
+
+        results.append(
+            {
+                "id": user.id,
+                "first_name": user.first_name,
+                "last_name": user.last_name,
+                "email": user.email,
+                "phone": user.phone,
+                "status": user.status.value if hasattr(user.status, "value") else str(user.status),
+                "is_verified": user.is_verified,
+                "created_at": user.created_at,
+                "roles": sorted(role_names_by_user.get(user.id, [])),
+                "role_ids": role_ids_by_user.get(user.id, []),
+                "permissions": sorted(effective),
+            }
+        )
+
+    return {
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+        "results": results,
     }
 
 

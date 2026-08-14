@@ -1239,6 +1239,27 @@ class AdminStaffResponse(BaseModel):
     roles: list[str]
     permissions: list[str]
 
+
+class AdminAccessUserResponse(BaseModel):
+    id: UUID
+    first_name: str | None
+    last_name: str | None
+    email: EmailStr
+    phone: str | None
+    status: str
+    is_verified: bool
+    created_at: datetime
+    roles: list[str]
+    role_ids: list[UUID]
+    permissions: list[str]
+
+
+class PaginatedAdminAccessUserResponse(BaseModel):
+    total: int
+    page: int
+    page_size: int
+    results: list[AdminAccessUserResponse]
+
 # =========================================================
 # CART SCHEMAS
 # =========================================================
