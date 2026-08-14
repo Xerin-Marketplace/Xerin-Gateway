@@ -5,9 +5,9 @@ from decimal import Decimal
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import func
+from sqlalchemy import func, or_
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
 from api.deps import get_current_user, get_db
 from api.enums import PermissionCode, ReviewStatus, SellerOrderStatus
@@ -23,6 +23,9 @@ from api.models import (
 )
 from api.permissions import require_permission
 from api.schemas import (
+    AdminReviewResponse,
+    AdminReviewUpdateRequest,
+    PaginatedAdminReviewResponse,
     ReviewCreate,
     ReviewListResponse,
     ReviewModerationRequest,
@@ -263,18 +266,160 @@ def report_review(
     return {"reported": True, "review_id": str(review.id)}
 
 
-@router.get("/admin/reviews", response_model=ReviewListResponse)
-def admin_reviews(
-    page: int = Query(default=1, ge=1),
-    page_size: int = Query(default=20, ge=1, le=100),
+def _admin_review_response(review: ProductReview) -> AdminReviewResponse:
+    customer_name = " ".join(
+        part
+        for part in [
+            review.customer.first_name if review.customer else None,
+            review.customer.last_name if review.customer else None,
+        ]
+        if part
+    ).strip() or None
+
+    return AdminReviewResponse(
+        id=review.id,
+        product_id=review.product_id,
+        user_id=review.customer_id,
+        seller_id=review.seller_id,
+        order_id=review.order_item.order_id if review.order_item else None,
+        rating=review.rating,
+        title=review.title,
+        comment=review.comment,
+        status=review.status,
+        admin_reply=review.admin_reply,
+        seller_reply=review.seller_reply,
+        created_at=review.created_at,
+        updated_at=review.updated_at,
+        customer_name=customer_name,
+        customer_email=review.customer.email if review.customer else None,
+        product_name=review.product.name if review.product else None,
+        seller_name=review.seller.business_name if review.seller else None,
+        reported=bool(review.reports),
+        report_count=len(review.reports),
+    )
+
+
+@router.get("/admin/reviews/{review_id}", response_model=AdminReviewResponse)
+def admin_review_detail(
+    review_id: UUID,
     db: Session = Depends(get_db),
     _: User = Depends(require_permission(PermissionCode.admin_reviews_read.value)),
 ):
-    query = db.query(ProductReview)
+    review = (
+        db.query(ProductReview)
+        .options(
+            selectinload(ProductReview.customer),
+            selectinload(ProductReview.product),
+            selectinload(ProductReview.seller),
+            selectinload(ProductReview.order_item),
+            selectinload(ProductReview.reports),
+        )
+        .filter(ProductReview.id == review_id)
+        .first()
+    )
+    if not review:
+        raise HTTPException(status_code=404, detail="Review not found")
+    return _admin_review_response(review)
+
+
+@router.patch("/admin/reviews/{review_id}", response_model=AdminReviewResponse)
+def admin_update_review(
+    review_id: UUID,
+    data: AdminReviewUpdateRequest,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_permission(PermissionCode.admin_reviews_moderate.value)),
+):
+    review = (
+        db.query(ProductReview)
+        .options(
+            selectinload(ProductReview.customer),
+            selectinload(ProductReview.product),
+            selectinload(ProductReview.seller),
+            selectinload(ProductReview.order_item),
+            selectinload(ProductReview.reports),
+        )
+        .filter(ProductReview.id == review_id)
+        .first()
+    )
+    if not review:
+        raise HTTPException(status_code=404, detail="Review not found")
+
+    if data.status is not None:
+        review.status = data.status
+    if data.admin_reply is not None:
+        review.admin_reply = data.admin_reply
+
+    _commit(db)
+    db.refresh(review)
+    return _admin_review_response(review)
+
+
+@router.get("/admin/reviews", response_model=PaginatedAdminReviewResponse)
+def admin_reviews(
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=20, ge=1, le=100),
+    search: str | None = Query(default=None, max_length=150),
+    review_status: ReviewStatus | None = Query(default=None, alias="status"),
+    rating: int | None = Query(default=None, ge=1, le=5),
+    reported: bool | None = Query(default=None),
+    db: Session = Depends(get_db),
+    _: User = Depends(require_permission(PermissionCode.admin_reviews_read.value)),
+):
+    query = (
+        db.query(ProductReview)
+        .join(ProductReview.customer)
+        .join(ProductReview.product)
+        .join(ProductReview.seller)
+    )
+
+    if review_status is not None:
+        query = query.filter(ProductReview.status == review_status)
+    if rating is not None:
+        query = query.filter(ProductReview.rating == rating)
+    if reported is True:
+        query = query.filter(ProductReview.reports.any())
+    elif reported is False:
+        query = query.filter(~ProductReview.reports.any())
+
+    term = (search or "").strip()
+    if term:
+        pattern = f"%{term}%"
+        query = query.filter(or_(
+            User.first_name.ilike(pattern),
+            User.last_name.ilike(pattern),
+            User.email.ilike(pattern),
+            Product.name.ilike(pattern),
+            ProductReview.comment.ilike(pattern),
+            ProductReview.title.ilike(pattern),
+        ))
+
     total = query.count()
-    rows = query.order_by(ProductReview.created_at.desc()).offset((page - 1) * page_size).limit(page_size).all()
-    average = db.query(func.avg(ProductReview.rating)).filter(ProductReview.status == ReviewStatus.approved).scalar() or 0
-    return ReviewListResponse(total=total, page=page, page_size=page_size, average_rating=Decimal(str(round(float(average), 2))), results=[_review_response(row) for row in rows])
+    rows = (
+        query.options(
+            selectinload(ProductReview.customer),
+            selectinload(ProductReview.product),
+            selectinload(ProductReview.seller),
+            selectinload(ProductReview.order_item),
+            selectinload(ProductReview.reports),
+        )
+        .order_by(ProductReview.created_at.desc(), ProductReview.id.desc())
+        .offset((page - 1) * page_size)
+        .limit(page_size)
+        .all()
+    )
+
+    average = db.query(func.avg(ProductReview.rating)).filter(
+        ProductReview.status == ReviewStatus.approved
+    ).scalar() or 0
+
+    return PaginatedAdminReviewResponse(
+        total=total,
+        page=page,
+        page_size=page_size,
+        total_pages=0 if total == 0 else (total + page_size - 1) // page_size,
+        average_rating=Decimal(str(round(float(average), 2))),
+        results=[_admin_review_response(row) for row in rows],
+    )
 
 
 @router.patch("/admin/reviews/{review_id}/moderate", response_model=ReviewResponse)

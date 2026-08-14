@@ -1526,6 +1526,7 @@ class ProductReview(Base):
     status = Column(Enum(ReviewStatus), nullable=False, default=ReviewStatus.pending, server_default="pending", index=True)
     seller_reply = Column(Text, nullable=True)
     seller_replied_at = Column(DateTime(timezone=True), nullable=True)
+    admin_reply = Column(Text, nullable=True)
     helpful_count = Column(Integer, nullable=False, default=0, server_default="0")
     created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
     updated_at = Column(DateTime(timezone=True), nullable=True, onupdate=func.now())
@@ -1609,6 +1610,72 @@ class ReviewReport(Base):
     product_review = relationship("ProductReview", back_populates="reports")
     store_review = relationship("StoreReview", back_populates="reports")
     __table_args__ = (CheckConstraint("(product_review_id IS NOT NULL) <> (store_review_id IS NOT NULL)", name="ck_review_report_single_target"),)
+
+
+
+# Customer care / marketplace support tickets.
+# Access is controlled in routers by permissions, not hard-coded role names.
+class SupportTicket(Base):
+    __tablename__ = "support_tickets"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    ticket_number = Column(String(40), nullable=False, unique=True, index=True)
+    customer_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    seller_id = Column(UUID(as_uuid=True), ForeignKey("sellers.id", ondelete="SET NULL"), nullable=True, index=True)
+    order_id = Column(UUID(as_uuid=True), ForeignKey("orders.id", ondelete="SET NULL"), nullable=True, index=True)
+    shipment_id = Column(UUID(as_uuid=True), ForeignKey("shipments.id", ondelete="SET NULL"), nullable=True, index=True)
+    subject = Column(String(255), nullable=False)
+    description = Column(Text, nullable=True)
+    category = Column(String(80), nullable=True, index=True)
+    channel = Column(String(50), nullable=False, default="customer", server_default="customer", index=True)
+    priority = Column(String(20), nullable=False, default="medium", server_default="medium", index=True)
+    status = Column(String(30), nullable=False, default="open", server_default="open", index=True)
+    assigned_to_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
+    resolution_note = Column(Text, nullable=True)
+    resolved_at = Column(DateTime(timezone=True), nullable=True)
+    closed_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now(), index=True)
+    updated_at = Column(DateTime(timezone=True), nullable=True, onupdate=func.now())
+
+    customer = relationship("User", foreign_keys=[customer_id])
+    assigned_to = relationship("User", foreign_keys=[assigned_to_id])
+    seller = relationship("Seller")
+    order = relationship("Order")
+    shipment = relationship("Shipment")
+    messages = relationship(
+        "SupportTicketMessage",
+        back_populates="ticket",
+        cascade="all, delete-orphan",
+        order_by="SupportTicketMessage.created_at",
+    )
+
+    __table_args__ = (
+        CheckConstraint("priority IN ('low','medium','high','urgent')", name="ck_support_ticket_priority"),
+        CheckConstraint(
+            "status IN ('open','pending','in_progress','processing','resolved','closed')",
+            name="ck_support_ticket_status",
+        ),
+        Index("ix_support_tickets_status_priority_created", "status", "priority", "created_at"),
+    )
+
+
+class SupportTicketMessage(Base):
+    __tablename__ = "support_ticket_messages"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    ticket_id = Column(UUID(as_uuid=True), ForeignKey("support_tickets.id", ondelete="CASCADE"), nullable=False, index=True)
+    sender_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
+    sender_role = Column(String(50), nullable=True)
+    message = Column(Text, nullable=False)
+    visibility = Column(String(20), nullable=False, default="all", server_default="all")
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now(), index=True)
+
+    ticket = relationship("SupportTicket", back_populates="messages")
+    sender = relationship("User")
+
+    __table_args__ = (
+        CheckConstraint("visibility IN ('all','internal')", name="ck_support_ticket_message_visibility"),
+    )
 
 
 # Phase 3 Task 13: customer wishlist and favorite stores

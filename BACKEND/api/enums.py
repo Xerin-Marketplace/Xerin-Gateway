@@ -88,6 +88,17 @@ class PermissionCode(str, enum.Enum):
     seller_reviews_report = "seller_reviews:report"
     admin_reviews_read = "admin_reviews:read"
     admin_reviews_moderate = "admin_reviews:moderate"
+
+    # Support tickets / customer care.
+    # Permission-based by design: any custom role can receive these.
+    support_tickets_create = "support_tickets:create"
+    support_tickets_read_own = "support_tickets:read_own"
+    support_tickets_reply_own = "support_tickets:reply_own"
+    support_tickets_read = "support_tickets:read"
+    support_tickets_manage = "support_tickets:manage"
+    support_tickets_reply = "support_tickets:reply"
+    support_tickets_assign = "support_tickets:assign"
+    support_tickets_resolve = "support_tickets:resolve"
     wishlist_read = "wishlist:read"
     wishlist_manage = "wishlist:manage"
     promotions_read = "promotions:read"

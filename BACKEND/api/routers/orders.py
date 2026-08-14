@@ -569,3 +569,5 @@ def update_order_status(
     except SQLAlchemyError as exc:
         db.rollback()
         raise HTTPException(status_code=500, detail="Could not update order status") from exc
+
+

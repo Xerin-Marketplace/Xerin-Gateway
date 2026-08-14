@@ -2460,6 +2460,120 @@ class ReviewListResponse(BaseModel):
     results: list[ReviewResponse]
 
 
+class AdminReviewResponse(BaseModel):
+    id: UUID
+    product_id: UUID
+    user_id: UUID
+    seller_id: UUID
+    order_id: Optional[UUID] = None
+    rating: int
+    title: Optional[str] = None
+    comment: Optional[str] = None
+    status: ReviewStatus
+    admin_reply: Optional[str] = None
+    seller_reply: Optional[str] = None
+    created_at: datetime
+    updated_at: Optional[datetime] = None
+    customer_name: Optional[str] = None
+    customer_email: Optional[str] = None
+    product_name: Optional[str] = None
+    seller_name: Optional[str] = None
+    reported: bool = False
+    report_count: int = 0
+
+
+class PaginatedAdminReviewResponse(BaseModel):
+    total: int
+    page: int
+    page_size: int
+    total_pages: int
+    average_rating: Decimal
+    results: list[AdminReviewResponse]
+
+
+class AdminReviewUpdateRequest(BaseModel):
+    status: Optional[ReviewStatus] = None
+    admin_reply: Optional[str] = Field(default=None, max_length=3000)
+
+
+
+class SupportTicketCreate(BaseModel):
+    subject: str = Field(min_length=3, max_length=255)
+    description: Optional[str] = Field(default=None, max_length=10000)
+    category: Optional[str] = Field(default=None, max_length=80)
+    channel: str = Field(default="customer", max_length=50)
+    priority: str = Field(default="medium")
+    order_id: Optional[UUID] = None
+    seller_id: Optional[UUID] = None
+    shipment_id: Optional[UUID] = None
+
+
+class SupportTicketUpdate(BaseModel):
+    status: Optional[str] = None
+    priority: Optional[str] = None
+    assigned_to_id: Optional[UUID] = None
+    resolution_note: Optional[str] = Field(default=None, max_length=10000)
+
+
+class SupportTicketMessageCreate(BaseModel):
+    message: str = Field(min_length=1, max_length=10000)
+    visibility: str = Field(default="all")
+
+
+class SupportTicketParticipantResponse(BaseModel):
+    id: Optional[UUID] = None
+    user_id: Optional[UUID] = None
+    name: Optional[str] = None
+    email: Optional[str] = None
+    role: str
+
+
+class SupportTicketMessageResponse(BaseModel):
+    id: UUID
+    sender_id: Optional[UUID] = None
+    sender_name: Optional[str] = None
+    sender_role: Optional[str] = None
+    message: str
+    visibility: str
+    created_at: datetime
+
+
+class SupportTicketResponse(BaseModel):
+    id: UUID
+    ticket_number: str
+    user_id: UUID
+    customer_name: Optional[str] = None
+    customer_email: Optional[str] = None
+    subject: str
+    description: Optional[str] = None
+    category: Optional[str] = None
+    channel: Optional[str] = None
+    priority: str
+    status: str
+    assigned_to_id: Optional[UUID] = None
+    assigned_to_name: Optional[str] = None
+    order_id: Optional[UUID] = None
+    seller_id: Optional[UUID] = None
+    seller_name: Optional[str] = None
+    shipment_id: Optional[UUID] = None
+    logistics_provider: Optional[str] = None
+    participants: list[SupportTicketParticipantResponse] = Field(default_factory=list)
+    messages: list[SupportTicketMessageResponse] = Field(default_factory=list)
+    resolution_note: Optional[str] = None
+    resolved_at: Optional[datetime] = None
+    closed_at: Optional[datetime] = None
+    created_at: datetime
+    updated_at: Optional[datetime] = None
+
+
+class PaginatedSupportTicketResponse(BaseModel):
+    total: int
+    page: int
+    page_size: int
+    total_pages: int
+    results: list[SupportTicketResponse]
+
+
 # Phase 3 Task 13: wishlist and favorite stores
 class WishlistProductItemResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)

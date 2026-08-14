@@ -41,6 +41,7 @@ from api.routers import (
     product_qa,
     search_recommendations,
     admin_dashboard,
+    support,
 )
 
 logging.basicConfig(
@@ -169,5 +170,6 @@ for router in (
     product_qa.router,
     search_recommendations.router,
     admin_dashboard.router,
+    support.router,
 ):
     api.include_router(router, prefix=settings.API_PREFIX)
