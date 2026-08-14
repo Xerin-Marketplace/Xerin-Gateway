@@ -1316,7 +1316,7 @@ def get_product_categories(
 @router.patch("/product-categories/{category_id}", response_model=CategoryResponse)
 def update_product_category(
     category_id: UUID, data: CategoryUpdate, db: Session = Depends(get_db),
-    current_user: User = Depends(require_permission(PermissionCode.can_update_product_categories.value)),
+    current_user: User = Depends(require_permission(PermissionCode.can_create_product_categories.value)),
 ):
     category = db.query(Category).filter(Category.id == category_id).first()
     if not category:
@@ -1399,7 +1399,7 @@ def get_brands(
 @router.patch("/brands/{brand_id}", response_model=BrandResponse)
 def update_brand(
     brand_id: UUID, data: BrandUpdate, db: Session = Depends(get_db),
-    current_user: User = Depends(require_permission(PermissionCode.can_update_brands.value)),
+    current_user: User = Depends(require_permission(PermissionCode.can_create_brands.value)),
 ):
     brand = db.query(Brand).filter(Brand.id == brand_id).first()
     if not brand:
