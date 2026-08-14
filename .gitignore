@@ -155,3 +155,16 @@ errors/*
 Frontend
 
 
+# Python virtual environment
+BACKEND/.venv/
+
+# Large archives
+*.zip
+
+# Python cache
+__pycache__/
+*.py[cod]
+
+# Environment variables
+.env
+.env.*
