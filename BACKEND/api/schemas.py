@@ -1436,6 +1436,55 @@ class PaginatedOrderResponse(BaseModel):
     results: list[OrderResponse]
 
 
+class AdminOrderUserSummary(BaseModel):
+    id: UUID
+    first_name: Optional[str] = None
+    last_name: Optional[str] = None
+    email: Optional[str] = None
+    phone: Optional[str] = None
+
+    model_config = ORM_CONFIG
+
+
+class AdminOrderPaymentSummary(BaseModel):
+    id: UUID
+    method: str
+    status: str
+    amount: Decimal
+    currency: str
+    provider: Optional[str] = None
+    transaction_reference: Optional[str] = None
+    paid_at: Optional[datetime] = None
+
+
+class AdminOrderAddressSummary(BaseModel):
+    country: Optional[str] = None
+    region: Optional[str] = None
+    city: Optional[str] = None
+    street: Optional[str] = None
+    postal_code: Optional[str] = None
+
+
+class AdminOrderResponse(OrderResponse):
+    payment_status: Optional[str] = None
+    user: Optional[AdminOrderUserSummary] = None
+    payments: list[AdminOrderPaymentSummary] = []
+    address: Optional[AdminOrderAddressSummary] = None
+    delivery_method: Optional[str] = None
+    courier_name: Optional[str] = None
+    tracking_number: Optional[str] = None
+    estimated_delivery_date: Optional[datetime] = None
+    delivered_at: Optional[datetime] = None
+
+
+class PaginatedAdminOrderResponse(BaseModel):
+    total: int
+    page: int
+    page_size: int
+    total_pages: int
+    results: list[AdminOrderResponse]
+
+
 # =========================================================
 # INVENTORY SCHEMAS
 # =========================================================

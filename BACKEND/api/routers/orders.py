@@ -1,10 +1,11 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from sqlalchemy import String, cast, or_
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session, selectinload
 
@@ -29,7 +30,14 @@ from api.models import (
     User,
 )
 from api.permissions import get_user_permissions, get_user_role_names, require_permission
-from api.schemas import OrderCreateRequest, OrderResponse, OrderStatusUpdateRequest, PaginatedOrderResponse
+from api.schemas import (
+    AdminOrderResponse,
+    OrderCreateRequest,
+    OrderResponse,
+    OrderStatusUpdateRequest,
+    PaginatedAdminOrderResponse,
+    PaginatedOrderResponse,
+)
 from api.enums import InventoryReservationStatus
 from api.services.inventory_reservations import create_reservation, release_order_reservations
 
@@ -272,6 +280,119 @@ def create_order(
         raise HTTPException(status_code=500, detail="Could not create order") from exc
 
 
+def _admin_order_payment_status(order: Order) -> str | None:
+    if not order.payments:
+        return None
+
+    priority = {
+        PaymentStatus.completed: 5,
+        PaymentStatus.processing: 4,
+        PaymentStatus.pending: 3,
+        PaymentStatus.failed: 2,
+        PaymentStatus.refunded: 1,
+        PaymentStatus.cancelled: 0,
+    }
+
+    payment = max(
+        order.payments,
+        key=lambda item: priority.get(item.status, -1),
+    )
+    return payment.status.value if hasattr(payment.status, "value") else str(payment.status)
+
+
+def _serialize_admin_order(order: Order) -> dict:
+    payload = OrderResponse.model_validate(order).model_dump()
+
+    primary_shipment = None
+    if order.shipments:
+        primary_shipment = sorted(
+            order.shipments,
+            key=lambda shipment: shipment.created_at or datetime.min.replace(tzinfo=timezone.utc),
+        )[0]
+
+    payload.update(
+        {
+            "payment_status": _admin_order_payment_status(order),
+            "user": (
+                {
+                    "id": order.user.id,
+                    "first_name": order.user.first_name,
+                    "last_name": order.user.last_name,
+                    "email": order.user.email,
+                    "phone": order.user.phone,
+                }
+                if order.user
+                else None
+            ),
+            "payments": [
+                {
+                    "id": payment.id,
+                    "method": (
+                        payment.method.value
+                        if hasattr(payment.method, "value")
+                        else str(payment.method)
+                    ),
+                    "status": (
+                        payment.status.value
+                        if hasattr(payment.status, "value")
+                        else str(payment.status)
+                    ),
+                    "amount": payment.amount,
+                    "currency": payment.currency,
+                    "provider": payment.provider,
+                    "transaction_reference": payment.provider_transaction_id,
+                    "paid_at": payment.paid_at,
+                }
+                for payment in sorted(
+                    order.payments,
+                    key=lambda item: item.created_at or datetime.min.replace(tzinfo=timezone.utc),
+                    reverse=True,
+                )
+            ],
+            "address": (
+                {
+                    "country": order.shipping_address.country,
+                    "region": order.shipping_address.region,
+                    "city": order.shipping_address.city,
+                    "street": order.shipping_address.street,
+                    "postal_code": order.shipping_address.postal_code,
+                }
+                if order.shipping_address
+                else None
+            ),
+            "delivery_method": order.shipping_method_name,
+            "courier_name": (
+                primary_shipment.carrier_name
+                if primary_shipment and primary_shipment.carrier_name
+                else order.shipping_carrier
+            ),
+            "tracking_number": (
+                primary_shipment.tracking_number
+                if primary_shipment
+                else None
+            ),
+            "estimated_delivery_date": (
+                primary_shipment.estimated_delivery_to
+                if primary_shipment and primary_shipment.estimated_delivery_to
+                else order.estimated_delivery_to
+            ),
+            "delivered_at": (
+                primary_shipment.delivered_at
+                if primary_shipment
+                else None
+            ),
+        }
+    )
+
+    return payload
+
+
+def _page_count(total: int, page_size: int) -> int:
+    if total <= 0:
+        return 0
+    return (total + page_size - 1) // page_size
+
+
 @router.get("/my-orders", response_model=PaginatedOrderResponse)
 def get_my_orders(
     page: int = Query(1, ge=1),
@@ -288,23 +409,97 @@ def get_my_orders(
     }
 
 
-@router.get("/admin/all", response_model=PaginatedOrderResponse)
+@router.get("/admin/all", response_model=PaginatedAdminOrderResponse)
 def list_all_orders(
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
     order_status: OrderStatus | None = Query(None, alias="status"),
+    search: str | None = Query(None, max_length=150),
+    payment_status: PaymentStatus | None = Query(None),
+    date_from: date | None = Query(None),
+    date_to: date | None = Query(None),
     db: Session = Depends(get_db),
     current_user: User = Depends(require_permission("orders:read")),
 ):
-    query = db.query(Order)
+    """
+    Scalable admin order listing.
+
+    Search is performed in PostgreSQL before LIMIT/OFFSET pagination and covers:
+    order id, customer name/email/phone, product name, tracking number, courier,
+    and payment provider transaction reference.
+    """
+    query = db.query(Order).join(User, Order.user_id == User.id)
+
     if order_status is not None:
         query = query.filter(Order.status == order_status)
-    query = query.order_by(Order.created_at.desc())
+
+    if payment_status is not None:
+        query = query.filter(
+            Order.payments.any(Payment.status == payment_status)
+        )
+
+    if date_from is not None:
+        start = datetime.combine(date_from, datetime.min.time()).replace(
+            tzinfo=timezone.utc
+        )
+        query = query.filter(Order.created_at >= start)
+
+    if date_to is not None:
+        end_exclusive = (
+            datetime.combine(date_to, datetime.min.time())
+            .replace(tzinfo=timezone.utc)
+            + timedelta(days=1)
+        )
+        query = query.filter(Order.created_at < end_exclusive)
+
+    term = (search or "").strip()
+    if term:
+        pattern = f"%{term}%"
+
+        from api.models import Shipment
+
+        query = query.filter(
+            or_(
+                cast(Order.id, String).ilike(pattern),
+                User.first_name.ilike(pattern),
+                User.last_name.ilike(pattern),
+                User.email.ilike(pattern),
+                User.phone.ilike(pattern),
+                Order.items.any(OrderItem.product_name.ilike(pattern)),
+                Order.payments.any(
+                    Payment.provider_transaction_id.ilike(pattern)
+                ),
+                Order.payments.any(Payment.provider.ilike(pattern)),
+                Order.shipments.any(Shipment.tracking_number.ilike(pattern)),
+                Order.shipments.any(Shipment.carrier_name.ilike(pattern)),
+                Order.shipping_carrier.ilike(pattern),
+                Order.shipping_method_name.ilike(pattern),
+            )
+        )
+
+    total = query.count()
+
+    rows = (
+        query.options(
+            selectinload(Order.user),
+            selectinload(Order.items),
+            selectinload(Order.status_history),
+            selectinload(Order.payments),
+            selectinload(Order.shipping_address),
+            selectinload(Order.shipments),
+        )
+        .order_by(Order.created_at.desc(), Order.id.desc())
+        .offset((page - 1) * page_size)
+        .limit(page_size)
+        .all()
+    )
+
     return {
-        "total": query.count(),
+        "total": total,
         "page": page,
         "page_size": page_size,
-        "results": query.offset((page - 1) * page_size).limit(page_size).all(),
+        "total_pages": _page_count(total, page_size),
+        "results": [_serialize_admin_order(order) for order in rows],
     }
 
 
