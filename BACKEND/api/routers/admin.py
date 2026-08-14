@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status,
 from sqlalchemy.orm import Session
 from api.models import Role, UserRole, UserStatus
 from api.routers.email import send_email
-from api.permissions import require_permission
+from api.permissions import require_permission, require_all_permissions, get_user_role_names, get_user_permissions
 from api.enums import PermissionCode
 from api.models import Permission, RolePermission
 from api.schemas import *
@@ -46,6 +46,13 @@ from api.schemas import (
     RolePermissionsUpdateRequest,
     RolePermissionsResponse,
     PermissionResponse,
+    RoleCreateRequest,
+    RoleUpdateRequest,
+    UserRolesUpdateRequest,
+    UserRolesResponse,
+    RoleUsersResponse,
+    AdminStaffCreateRequest,
+    AdminStaffResponse,
 )
 
 from api.models import Permission, UserPermission
@@ -56,6 +63,65 @@ from api.services.category_image_service import (
 
 
 router = APIRouter(prefix="/admin", tags=["Admin"])
+
+SYSTEM_ROLE_NAMES = {"super_admin", "admin", "customer", "seller"}
+SUPER_ADMIN_ROLE_NAME = "super_admin"
+
+
+def _get_role_or_404(db: Session, role_id: UUID) -> Role:
+    role = db.query(Role).filter(Role.id == role_id).first()
+    if not role:
+        raise HTTPException(status_code=404, detail="Role not found")
+    return role
+
+
+def _get_user_or_404(db: Session, user_id: UUID) -> User:
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    return user
+
+
+def _resolve_permissions(db: Session, permission_codes: list[str]) -> list[Permission]:
+    unique_codes = list(dict.fromkeys(permission_codes))
+    if not unique_codes:
+        return []
+
+    permissions = (
+        db.query(Permission)
+        .filter(Permission.code.in_(unique_codes))
+        .all()
+    )
+
+    found = {permission.code for permission in permissions}
+    invalid = sorted(set(unique_codes) - found)
+
+    if invalid:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "message": "One or more permission codes are invalid",
+                "invalid_permission_codes": invalid,
+            },
+        )
+
+    return permissions
+
+
+def _serialize_staff_user(db: Session, user: User) -> dict:
+    return {
+        "id": user.id,
+        "first_name": user.first_name,
+        "last_name": user.last_name,
+        "email": user.email,
+        "phone": user.phone,
+        "status": user.status.value if hasattr(user.status, "value") else str(user.status),
+        "is_verified": user.is_verified,
+        "created_at": user.created_at,
+        "roles": sorted(get_user_role_names(user)),
+        "permissions": sorted(get_user_permissions(db, user)),
+    }
+
 
 
 def get_or_create_role(db: Session, name: str, description: str | None = None):
@@ -304,6 +370,93 @@ XERIM Marketplace Team
     )
 
 
+@router.post(
+    "/staff",
+    response_model=AdminStaffResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+def admin_create_staff_account(
+    data: AdminStaffCreateRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(
+        require_all_permissions(
+            PermissionCode.can_create_users.value,
+            PermissionCode.can_assign_permissions.value,
+        )
+    ),
+):
+    email = data.email.strip().lower()
+    phone = data.phone.strip() if data.phone else None
+
+    duplicate_query = db.query(User).filter(User.email == email)
+    if phone:
+        duplicate_query = db.query(User).filter(
+            or_(User.email == email, User.phone == phone)
+        )
+
+    if duplicate_query.first():
+        raise HTTPException(
+            status_code=409,
+            detail="A user with this email or phone already exists",
+        )
+
+    roles = (
+        db.query(Role)
+        .filter(Role.id.in_(data.role_ids))
+        .all()
+    )
+
+    found_ids = {role.id for role in roles}
+    missing_ids = [role_id for role_id in data.role_ids if role_id not in found_ids]
+    if missing_ids:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "message": "One or more role IDs are invalid",
+                "invalid_role_ids": [str(role_id) for role_id in missing_ids],
+            },
+        )
+
+    actor_roles = get_user_role_names(current_user)
+    if (
+        any(role.name == SUPER_ADMIN_ROLE_NAME for role in roles)
+        and SUPER_ADMIN_ROLE_NAME not in actor_roles
+    ):
+        raise HTTPException(
+            status_code=403,
+            detail="Only a super_admin can create another super_admin account",
+        )
+
+    try:
+        user_status = UserStatus(data.status)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid user status: {data.status}",
+        ) from exc
+
+    user = User(
+        first_name=data.first_name.strip(),
+        last_name=data.last_name.strip(),
+        email=email,
+        phone=phone,
+        password_hash=hash_password(data.password),
+        status=user_status,
+        is_verified=data.is_verified,
+    )
+
+    db.add(user)
+    db.flush()
+
+    for role in roles:
+        db.add(UserRole(user_id=user.id, role_id=role.id))
+
+    db.commit()
+    db.refresh(user)
+
+    return _serialize_staff_user(db, user)
+
+
 @router.post("/admins", response_model=AdminUserResponse)
 def admin_create_admin(
     data: AdminUserCreate,
@@ -467,9 +620,11 @@ def assign_permissions_to_user(
 
     db.commit()
 
+    db.refresh(user)
+
     return {
         "user_id": user.id,
-        "permissions": data.permission_codes,
+        "permissions": sorted(get_user_permissions(db, user)),
     }
 
 
@@ -483,14 +638,253 @@ def get_roles(
     return db.query(Role).order_by(Role.name.asc()).all()
 
 
-@router.get("/permissions", response_model=list[PermissionResponse])
-def get_permissions(
+
+
+@router.post(
+    "/roles",
+    response_model=RolePermissionsResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+def create_role(
+    data: RoleCreateRequest,
     db: Session = Depends(get_db),
     current_user: User = Depends(
         require_permission(PermissionCode.can_assign_permissions.value)
     ),
 ):
-    return db.query(Permission).order_by(Permission.code.asc()).all()
+    existing = db.query(Role).filter(Role.name == data.name).first()
+    if existing:
+        raise HTTPException(status_code=409, detail="Role name already exists")
+
+    if data.name == SUPER_ADMIN_ROLE_NAME:
+        raise HTTPException(
+            status_code=400,
+            detail="The super_admin role is reserved and cannot be created manually",
+        )
+
+    permissions = _resolve_permissions(db, data.permission_codes)
+
+    role = Role(name=data.name, description=data.description)
+    db.add(role)
+    db.flush()
+
+    for permission in permissions:
+        db.add(
+            RolePermission(
+                role_id=role.id,
+                permission_id=permission.id,
+            )
+        )
+
+    db.commit()
+    db.refresh(role)
+
+    return {
+        "role_id": role.id,
+        "role_name": role.name,
+        "permissions": sorted(permission.code for permission in permissions),
+    }
+
+
+@router.patch("/roles/{role_id}", response_model=RoleResponse)
+def update_role(
+    role_id: UUID,
+    data: RoleUpdateRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(
+        require_permission(PermissionCode.can_assign_permissions.value)
+    ),
+):
+    role = _get_role_or_404(db, role_id)
+
+    if role.name in SYSTEM_ROLE_NAMES:
+        raise HTTPException(
+            status_code=409,
+            detail=f"System role '{role.name}' cannot be renamed or edited here",
+        )
+
+    update_data = data.model_dump(exclude_unset=True)
+
+    if "name" in update_data:
+        new_name = update_data["name"]
+
+        if new_name in SYSTEM_ROLE_NAMES:
+            raise HTTPException(
+                status_code=400,
+                detail="That role name is reserved by the system",
+            )
+
+        duplicate = (
+            db.query(Role)
+            .filter(Role.name == new_name, Role.id != role.id)
+            .first()
+        )
+        if duplicate:
+            raise HTTPException(status_code=409, detail="Role name already exists")
+
+        role.name = new_name
+
+    if "description" in update_data:
+        role.description = update_data["description"]
+
+    db.commit()
+    db.refresh(role)
+    return role
+
+
+@router.delete("/roles/{role_id}")
+def delete_role(
+    role_id: UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(
+        require_permission(PermissionCode.can_assign_permissions.value)
+    ),
+):
+    role = _get_role_or_404(db, role_id)
+
+    if role.name in SYSTEM_ROLE_NAMES:
+        raise HTTPException(
+            status_code=409,
+            detail=f"System role '{role.name}' cannot be deleted",
+        )
+
+    assigned_count = (
+        db.query(UserRole)
+        .filter(UserRole.role_id == role.id)
+        .count()
+    )
+    if assigned_count:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Role is assigned to {assigned_count} user(s). "
+                "Remove the role from those users before deleting it."
+            ),
+        )
+
+    db.query(RolePermission).filter(
+        RolePermission.role_id == role.id
+    ).delete(synchronize_session=False)
+
+    db.delete(role)
+    db.commit()
+
+    return {"message": "Role deleted successfully"}
+
+
+@router.get("/roles/{role_id}/users", response_model=RoleUsersResponse)
+def get_role_users(
+    role_id: UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(
+        require_permission(PermissionCode.can_assign_permissions.value)
+    ),
+):
+    role = _get_role_or_404(db, role_id)
+
+    rows = (
+        db.query(UserRole)
+        .filter(UserRole.role_id == role.id)
+        .all()
+    )
+
+    return {
+        "role_id": role.id,
+        "role_name": role.name,
+        "user_ids": [row.user_id for row in rows],
+    }
+
+
+@router.get("/users/{user_id}/roles", response_model=UserRolesResponse)
+def get_user_roles_admin(
+    user_id: UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(
+        require_permission(PermissionCode.can_assign_permissions.value)
+    ),
+):
+    user = _get_user_or_404(db, user_id)
+
+    roles = [
+        user_role.role
+        for user_role in user.roles
+        if user_role.role is not None
+    ]
+
+    return {
+        "user_id": user.id,
+        "roles": roles,
+    }
+
+
+@router.put("/users/{user_id}/roles", response_model=UserRolesResponse)
+def replace_user_roles_admin(
+    user_id: UUID,
+    data: UserRolesUpdateRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(
+        require_permission(PermissionCode.can_assign_permissions.value)
+    ),
+):
+    user = _get_user_or_404(db, user_id)
+
+    roles = (
+        db.query(Role)
+        .filter(Role.id.in_(data.role_ids))
+        .all()
+        if data.role_ids
+        else []
+    )
+
+    found_ids = {role.id for role in roles}
+    missing_ids = [role_id for role_id in data.role_ids if role_id not in found_ids]
+
+    if missing_ids:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "message": "One or more role IDs are invalid",
+                "invalid_role_ids": [str(role_id) for role_id in missing_ids],
+            },
+        )
+
+    requested_role_names = {role.name for role in roles}
+    current_actor_roles = get_user_role_names(current_user)
+
+    if (
+        SUPER_ADMIN_ROLE_NAME in requested_role_names
+        and SUPER_ADMIN_ROLE_NAME not in current_actor_roles
+    ):
+        raise HTTPException(
+            status_code=403,
+            detail="Only a super_admin can assign the super_admin role",
+        )
+
+    target_current_roles = get_user_role_names(user)
+    if (
+        user.id == current_user.id
+        and SUPER_ADMIN_ROLE_NAME in target_current_roles
+        and SUPER_ADMIN_ROLE_NAME not in requested_role_names
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail="You cannot remove your own super_admin role",
+        )
+
+    db.query(UserRole).filter(
+        UserRole.user_id == user.id
+    ).delete(synchronize_session=False)
+
+    for role in roles:
+        db.add(UserRole(user_id=user.id, role_id=role.id))
+
+    db.commit()
+    db.refresh(user)
+
+    return {
+        "user_id": user.id,
+        "roles": roles,
+    }
 
 
 @router.get("/roles/{role_id}/permissions", response_model=RolePermissionsResponse)
@@ -524,24 +918,15 @@ def update_role_permissions(
         require_permission(PermissionCode.can_assign_permissions.value)
     ),
 ):
-    role = db.query(Role).filter(Role.id == role_id).first()
+    role = _get_role_or_404(db, role_id)
 
-    if not role:
-        raise HTTPException(status_code=404, detail="Role not found")
-
-    if role.name == "super_admin":
+    if role.name == SUPER_ADMIN_ROLE_NAME:
         raise HTTPException(
-            status_code=400, detail="Super admin permissions cannot be edited"
+            status_code=409,
+            detail="Super admin permissions cannot be edited",
         )
 
-    permissions = (
-        db.query(Permission).filter(Permission.code.in_(data.permission_codes)).all()
-    )
-
-    if len(permissions) != len(set(data.permission_codes)):
-        raise HTTPException(
-            status_code=400, detail="One or more permission codes are invalid"
-        )
+    permissions = _resolve_permissions(db, data.permission_codes)
 
     db.query(RolePermission).filter(RolePermission.role_id == role.id).delete()
 
@@ -553,7 +938,7 @@ def update_role_permissions(
     return {
         "role_id": role.id,
         "role_name": role.name,
-        "permissions": data.permission_codes,
+        "permissions": sorted(permission.code for permission in permissions),
     }
 
 

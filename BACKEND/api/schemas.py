@@ -1,3 +1,4 @@
+import re
 from api.enums import NotificationChannel, NotificationDeliveryStatus, NotificationEvent, QuestionStatus, QuestionReportReason
 from api.enums import DeliveryStatus, ReviewStatus, ReviewReportReason
 from api.enums import CommissionScope, CommissionRuleType
@@ -1094,14 +1095,59 @@ class AdminCreateAdminRequest(BaseModel):
     password: str
 
 
+class RoleCreateRequest(BaseModel):
+    name: str = Field(min_length=2, max_length=50)
+    description: str | None = Field(default=None, max_length=1000)
+    permission_codes: list[str] = Field(default_factory=list)
+
+    @field_validator("name")
+    @classmethod
+    def normalize_role_name(cls, value: str) -> str:
+        value = value.strip().lower().replace(" ", "_").replace("-", "_")
+        value = re.sub(r"[^a-z0-9_]", "", value)
+        value = re.sub(r"_+", "_", value).strip("_")
+
+        if len(value) < 2:
+            raise ValueError("Role name must contain at least 2 valid characters")
+
+        return value
+
+    @field_validator("permission_codes")
+    @classmethod
+    def clean_permission_codes(cls, value: list[str]) -> list[str]:
+        cleaned = [item.strip() for item in value if item and item.strip()]
+        return list(dict.fromkeys(cleaned))
+
+
+class RoleUpdateRequest(BaseModel):
+    name: str | None = Field(default=None, min_length=2, max_length=50)
+    description: str | None = Field(default=None, max_length=1000)
+
+    @field_validator("name")
+    @classmethod
+    def normalize_role_name(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+
+        value = value.strip().lower().replace(" ", "_").replace("-", "_")
+        value = re.sub(r"[^a-z0-9_]", "", value)
+        value = re.sub(r"_+", "_", value).strip("_")
+
+        if len(value) < 2:
+            raise ValueError("Role name must contain at least 2 valid characters")
+
+        return value
+
+
 class RoleResponse(BaseModel):
     id: UUID
     name: str
     description: str | None
+    created_at: datetime | None = None
 
-    class Config:
-        from_attributes = True  
-        
+    model_config = ORM_CONFIG
+
+
 class PermissionResponse(BaseModel):
     id: UUID
     code: str
@@ -1123,14 +1169,7 @@ class AssignUserPermissionsRequest(BaseModel):
 
 class UserPermissionsResponse(BaseModel):
     user_id: UUID
-    permissions: list[str]    
-    
-class RoleResponse(BaseModel):
-    id: UUID
-    name: str
-    description: str | None
-
-    model_config = ORM_CONFIG
+    permissions: list[str]
 
 
 class RolePermissionsUpdateRequest(BaseModel):
@@ -1147,6 +1186,59 @@ class RolePermissionsResponse(BaseModel):
     role_id: UUID
     role_name: str
     permissions: list[str]
+
+
+class UserRolesUpdateRequest(BaseModel):
+    role_ids: list[UUID]
+
+    @field_validator("role_ids")
+    @classmethod
+    def unique_role_ids(cls, value: list[UUID]) -> list[UUID]:
+        return list(dict.fromkeys(value))
+
+
+class UserRolesResponse(BaseModel):
+    user_id: UUID
+    roles: list[RoleResponse]
+
+
+class RoleUsersResponse(BaseModel):
+    role_id: UUID
+    role_name: str
+    user_ids: list[UUID]
+
+
+class AdminStaffCreateRequest(BaseModel):
+    first_name: str = Field(min_length=1, max_length=100)
+    last_name: str = Field(min_length=1, max_length=100)
+    email: EmailStr
+    phone: str | None = Field(default=None, max_length=30)
+    password: str = Field(min_length=8)
+    role_ids: list[UUID]
+    status: str = "active"
+    is_verified: bool = True
+
+    @field_validator("role_ids")
+    @classmethod
+    def require_roles(cls, value: list[UUID]) -> list[UUID]:
+        value = list(dict.fromkeys(value))
+        if not value:
+            raise ValueError("At least one role is required")
+        return value
+
+
+class AdminStaffResponse(BaseModel):
+    id: UUID
+    first_name: str | None
+    last_name: str | None
+    email: EmailStr
+    phone: str | None
+    status: str
+    is_verified: bool
+    created_at: datetime
+    roles: list[str]
+    permissions: list[str]
+
 # =========================================================
 # CART SCHEMAS
 # =========================================================
