@@ -140,45 +140,29 @@ def payment_name_lookup(
     Verify a Mobile Money account before payment/disbursement.
     """
 
-    provider = data.provider.upper()
-
-    allowed = {
-        "MPESA",
-        "AIRTEL",
-        "TIGOPESA",
-        "HALOPESA",
-    }
-
-    if provider not in allowed:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Unsupported provider. Allowed: {', '.join(allowed)}"
-        )
-
     client = AzamPayClient()
-
     try:
+        normalized_provider = client.normalize_mno(data.provider)
         result = client.name_lookup(
             phone_number=data.phone_number,
-            provider=provider,
+            provider=normalized_provider,
         )
-
         return {
             "success": True,
-            "account_name": result.get("accountName"),
-            "provider": provider,
+            "account_name": result.get("accountName") or result.get("data", {}).get("accountName"),
+            "provider": normalized_provider,
             "phone_number": data.phone_number,
             "message": result.get("message"),
         }
-
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except AzamPayConfigurationError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     except AzamPayAPIError as exc:
         raise HTTPException(
             status_code=502,
-            detail={
-                "provider": "azampay",
-                "message": str(exc),
-            },
-        )
+            detail={"provider": "azampay", "message": str(exc)},
+        ) from exc
 
 @router.post("/initiate", response_model=PaymentResponse, status_code=status.HTTP_201_CREATED)
 def initiate_payment(data: PaymentInitiateRequest, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):

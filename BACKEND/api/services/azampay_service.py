@@ -252,32 +252,33 @@ class AzamPayClient:
         self,
         phone_number: str,
         provider: str,
-    ):
+    ) -> dict[str, Any]:
+        """Resolve the account name for a supported mobile-money number."""
         token = self.get_token()
-
-        url = f"{self.base_url}/azampay/mno/lookup"
-
+        url = f"{self.base_url}/{settings.AZAMPAY_NAME_LOOKUP_PATH.lstrip('/')}"
         payload = {
-        "accountNumber": phone_number,
-        "provider": provider.upper()
-    }
-
-        headers = {
-        "Authorization": f"Bearer {token}",
-        "Content-Type": "application/json",
-    }
-
+            "accountNumber": phone_number,
+            "provider": provider.upper(),
+        }
         response = requests.post(
             url,
             json=payload,
-            headers=headers,
-            timeout=30,
-    )
-
-        if response.status_code >= 400:
-            raise AzamPayAPIError(
-            response.text,
-            response.status_code,
+            headers=self._headers(token),
+            timeout=self.timeout,
         )
-
-        return response.json()    
+        if response.status_code == 401:
+            token = self.get_token(force_refresh=True)
+            response = requests.post(
+                url,
+                json=payload,
+                headers=self._headers(token),
+                timeout=self.timeout,
+            )
+        data = self._json_response(response)
+        if not response.ok or data.get("success") is False:
+            raise AzamPayAPIError(
+                data.get("message") or data.get("msg") or "AzamPay name lookup failed",
+                status_code=response.status_code,
+                payload=data,
+            )
+        return data
