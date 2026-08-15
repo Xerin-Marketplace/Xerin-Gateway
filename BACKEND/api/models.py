@@ -964,6 +964,133 @@ class PaymentTransaction(Base):
 
 
 # =========================================================
+# PAYMENT ADMINISTRATION / PROVIDERS / FX / RISK
+# =========================================================
+
+class PaymentProviderConfig(Base):
+    __tablename__ = "payment_provider_configs"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    name = Column(String(120), nullable=False)
+    code = Column(String(80), nullable=False, unique=True, index=True)
+    provider_type = Column(String(50), nullable=False, default="gateway", server_default="gateway")
+    status = Column(String(30), nullable=False, default="active", server_default="active", index=True)
+    supported_currencies = Column(JSONB, nullable=False, default=list, server_default="[]")
+    supported_methods = Column(JSONB, nullable=False, default=list, server_default="[]")
+    environment = Column(String(30), nullable=True)
+    is_default = Column(Boolean, nullable=False, default=False, server_default="false", index=True)
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), nullable=True, onupdate=func.now())
+
+
+class PaymentCurrency(Base):
+    __tablename__ = "payment_currencies"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    code = Column(String(10), nullable=False, unique=True, index=True)
+    name = Column(String(80), nullable=False)
+    symbol = Column(String(12), nullable=False)
+    is_base = Column(Boolean, nullable=False, default=False, server_default="false", index=True)
+    is_active = Column(Boolean, nullable=False, default=True, server_default="true", index=True)
+    decimal_places = Column(Integer, nullable=False, default=2, server_default="2")
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), nullable=True, onupdate=func.now())
+
+
+class PaymentFxRate(Base):
+    __tablename__ = "payment_fx_rates"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    base_currency = Column(String(10), nullable=False, index=True)
+    quote_currency = Column(String(10), nullable=False, index=True)
+    rate = Column(Numeric(20, 8), nullable=False)
+    source = Column(String(120), nullable=True)
+    effective_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now(), index=True)
+    is_active = Column(Boolean, nullable=False, default=True, server_default="true", index=True)
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    __table_args__ = (
+        CheckConstraint("rate > 0", name="ck_payment_fx_rate_positive"),
+        CheckConstraint("base_currency <> quote_currency", name="ck_payment_fx_distinct_currency"),
+        UniqueConstraint("base_currency", "quote_currency", "effective_at", name="uq_payment_fx_pair_effective"),
+    )
+
+
+class PaymentCountry(Base):
+    __tablename__ = "payment_countries"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    code = Column(String(3), nullable=False, unique=True, index=True)
+    name = Column(String(100), nullable=False)
+    currency_code = Column(String(10), nullable=False, index=True)
+    is_active = Column(Boolean, nullable=False, default=True, server_default="true")
+    payments_enabled = Column(Boolean, nullable=False, default=True, server_default="true")
+    payouts_enabled = Column(Boolean, nullable=False, default=True, server_default="true")
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), nullable=True, onupdate=func.now())
+
+
+class PaymentDispute(Base):
+    __tablename__ = "payment_disputes"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    payment_id = Column(UUID(as_uuid=True), ForeignKey("payments.id", ondelete="SET NULL"), nullable=True, index=True)
+    order_id = Column(UUID(as_uuid=True), ForeignKey("orders.id", ondelete="SET NULL"), nullable=True, index=True)
+    amount = Column(Numeric(18,2), nullable=False)
+    currency = Column(String(10), nullable=False)
+    reason = Column(Text, nullable=False)
+    status = Column(String(30), nullable=False, default="open", server_default="open", index=True)
+    provider = Column(String(100), nullable=True, index=True)
+    provider_reference = Column(String(255), nullable=True, index=True)
+    resolution_note = Column(Text, nullable=True)
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now(), index=True)
+    updated_at = Column(DateTime(timezone=True), nullable=True, onupdate=func.now())
+    resolved_at = Column(DateTime(timezone=True), nullable=True)
+    payment = relationship("Payment")
+    order = relationship("Order")
+    __table_args__ = (CheckConstraint("amount >= 0", name="ck_payment_dispute_amount_nonnegative"),)
+
+
+class PaymentRiskEvent(Base):
+    __tablename__ = "payment_risk_events"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    event_type = Column(String(80), nullable=False, index=True)
+    severity = Column(String(20), nullable=False, default="medium", server_default="medium", index=True)
+    status = Column(String(30), nullable=False, default="open", server_default="open", index=True)
+    payment_id = Column(UUID(as_uuid=True), ForeignKey("payments.id", ondelete="SET NULL"), nullable=True, index=True)
+    order_id = Column(UUID(as_uuid=True), ForeignKey("orders.id", ondelete="SET NULL"), nullable=True, index=True)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
+    score = Column(Numeric(8,2), nullable=True)
+    reason = Column(Text, nullable=True)
+    resolution_note = Column(Text, nullable=True)
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now(), index=True)
+    resolved_at = Column(DateTime(timezone=True), nullable=True)
+    payment = relationship("Payment")
+    order = relationship("Order")
+    user = relationship("User")
+
+
+class PaymentReconciliationRecord(Base):
+    __tablename__ = "payment_reconciliation_records"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    payment_id = Column(UUID(as_uuid=True), ForeignKey("payments.id", ondelete="SET NULL"), nullable=True, index=True)
+    order_id = Column(UUID(as_uuid=True), ForeignKey("orders.id", ondelete="SET NULL"), nullable=True, index=True)
+    provider = Column(String(100), nullable=True, index=True)
+    provider_reference = Column(String(255), nullable=True, index=True)
+    expected_amount = Column(Numeric(18,2), nullable=False)
+    provider_amount = Column(Numeric(18,2), nullable=False)
+    currency = Column(String(10), nullable=False)
+    difference = Column(Numeric(18,2), nullable=False, default=0, server_default="0")
+    status = Column(String(30), nullable=False, default="pending", server_default="pending", index=True)
+    reconciliation_note = Column(Text, nullable=True)
+    reconciled_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now(), index=True)
+    payment = relationship("Payment")
+    order = relationship("Order")
+
+
+# =========================================================
 # MARKETPLACE COMMISSIONS AND LEDGER
 # =========================================================
 
