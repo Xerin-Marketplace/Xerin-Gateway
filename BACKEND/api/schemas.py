@@ -3018,3 +3018,93 @@ class NameLookupResponse(BaseModel):
     provider: str | None = None
     account_number: str
     message: str | None = None    
+
+# =========================================================
+# PAYMENT ADMINISTRATION
+# =========================================================
+
+class PaymentAdminPage(BaseModel):
+    total: int
+    page: int
+    page_size: int
+    total_pages: int
+    results: list[dict]
+
+
+class PaymentProviderCreate(BaseModel):
+    name: str = Field(min_length=2, max_length=120)
+    code: str = Field(min_length=2, max_length=80)
+    provider_type: str = "gateway"
+    status: str = "active"
+    supported_currencies: list[str] = Field(default_factory=list)
+    supported_methods: list[str] = Field(default_factory=list)
+    environment: str | None = None
+    is_default: bool = False
+
+
+class PaymentProviderUpdate(BaseModel):
+    name: str | None = None
+    provider_type: str | None = None
+    status: str | None = None
+    supported_currencies: list[str] | None = None
+    supported_methods: list[str] | None = None
+    environment: str | None = None
+    is_default: bool | None = None
+
+
+class PaymentCurrencyCreate(BaseModel):
+    code: str = Field(min_length=3, max_length=10)
+    name: str
+    symbol: str
+    is_base: bool = False
+    is_active: bool = True
+    decimal_places: int = Field(default=2, ge=0, le=8)
+
+
+class PaymentCurrencyUpdate(BaseModel):
+    name: str | None = None
+    symbol: str | None = None
+    is_base: bool | None = None
+    is_active: bool | None = None
+    decimal_places: int | None = Field(default=None, ge=0, le=8)
+
+
+class PaymentFxRateCreate(BaseModel):
+    base_currency: str
+    quote_currency: str
+    rate: Decimal = Field(gt=0)
+    source: str | None = None
+    effective_at: datetime | None = None
+    is_active: bool = True
+
+
+class PaymentCountryCreate(BaseModel):
+    code: str = Field(min_length=2, max_length=3)
+    name: str
+    currency_code: str
+    is_active: bool = True
+    payments_enabled: bool = True
+    payouts_enabled: bool = True
+
+
+class PaymentCountryUpdate(BaseModel):
+    name: str | None = None
+    currency_code: str | None = None
+    is_active: bool | None = None
+    payments_enabled: bool | None = None
+    payouts_enabled: bool | None = None
+
+
+class PaymentDisputeUpdate(BaseModel):
+    status: str | None = None
+    resolution_note: str | None = None
+
+
+class PaymentRiskUpdate(BaseModel):
+    status: str | None = None
+    resolution_note: str | None = None
+
+
+class PaymentReconciliationUpdate(BaseModel):
+    status: str | None = None
+    reconciliation_note: str | None = None
