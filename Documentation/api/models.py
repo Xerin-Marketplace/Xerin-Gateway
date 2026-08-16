@@ -1070,6 +1070,105 @@ class PaymentTransaction(Base):
 # PAYMENT ADMINISTRATION / PROVIDERS / FX / RISK
 # =========================================================
 
+class FinanceSettings(Base):
+    __tablename__ = "finance_settings"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    singleton_key = Column(String(30), nullable=False, unique=True, default="default", server_default="default")
+
+    default_payment_provider_code = Column(String(80), nullable=True)
+    settlement_currency = Column(String(10), nullable=False, default="TZS", server_default="TZS")
+
+    minimum_payout_amount = Column(Numeric(18, 2), nullable=False, default=1000, server_default="1000")
+    payout_fee_type = Column(String(30), nullable=False, default="fixed", server_default="fixed")
+    payout_fee_value = Column(Numeric(18, 4), nullable=False, default=0, server_default="0")
+    payout_processing_days = Column(Integer, nullable=False, default=1, server_default="1")
+    auto_payout_enabled = Column(Boolean, nullable=False, default=False, server_default="false")
+
+    escrow_enabled = Column(Boolean, nullable=False, default=True, server_default="true")
+    auto_release_enabled = Column(Boolean, nullable=False, default=True, server_default="true")
+    allow_partial_release = Column(Boolean, nullable=False, default=True, server_default="true")
+    hold_commission_until_release = Column(Boolean, nullable=False, default=True, server_default="true")
+
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), nullable=True, onupdate=func.now())
+
+    __table_args__ = (
+        CheckConstraint("minimum_payout_amount >= 0", name="ck_finance_minimum_payout_nonnegative"),
+        CheckConstraint("payout_fee_value >= 0", name="ck_finance_payout_fee_nonnegative"),
+        CheckConstraint("payout_processing_days >= 0", name="ck_finance_payout_processing_days_nonnegative"),
+        CheckConstraint("payout_fee_type IN ('fixed','percentage')", name="ck_finance_payout_fee_type"),
+    )
+
+
+class EscrowHold(Base):
+    __tablename__ = "escrow_holds"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    payment_id = Column(UUID(as_uuid=True), ForeignKey("payments.id", ondelete="SET NULL"), nullable=True, index=True)
+    order_id = Column(UUID(as_uuid=True), ForeignKey("orders.id", ondelete="RESTRICT"), nullable=False, index=True)
+    order_item_id = Column(UUID(as_uuid=True), ForeignKey("order_items.id", ondelete="SET NULL"), nullable=True, index=True)
+    seller_id = Column(UUID(as_uuid=True), ForeignKey("sellers.id", ondelete="RESTRICT"), nullable=True, index=True)
+
+    currency = Column(String(10), nullable=False)
+    gross_amount = Column(Numeric(18, 2), nullable=False)
+    seller_amount = Column(Numeric(18, 2), nullable=False, default=0, server_default="0")
+    commission_amount = Column(Numeric(18, 2), nullable=False, default=0, server_default="0")
+    refunded_amount = Column(Numeric(18, 2), nullable=False, default=0, server_default="0")
+    released_amount = Column(Numeric(18, 2), nullable=False, default=0, server_default="0")
+
+    status = Column(String(30), nullable=False, default="held", server_default="held", index=True)
+    release_after = Column(DateTime(timezone=True), nullable=True, index=True)
+    released_at = Column(DateTime(timezone=True), nullable=True)
+    disputed_at = Column(DateTime(timezone=True), nullable=True)
+    refunded_at = Column(DateTime(timezone=True), nullable=True)
+
+    reference = Column(String(180), nullable=False, unique=True, index=True)
+    note = Column(Text, nullable=True)
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), nullable=True, onupdate=func.now())
+
+    payment = relationship("Payment")
+    order = relationship("Order")
+    seller = relationship("Seller")
+    events = relationship("EscrowEvent", back_populates="hold", cascade="all, delete-orphan")
+
+    __table_args__ = (
+        CheckConstraint("gross_amount >= 0", name="ck_escrow_gross_nonnegative"),
+        CheckConstraint("seller_amount >= 0", name="ck_escrow_seller_nonnegative"),
+        CheckConstraint("commission_amount >= 0", name="ck_escrow_commission_nonnegative"),
+        CheckConstraint("refunded_amount >= 0", name="ck_escrow_refunded_nonnegative"),
+        CheckConstraint("released_amount >= 0", name="ck_escrow_released_nonnegative"),
+        CheckConstraint(
+            "seller_amount + commission_amount <= gross_amount",
+            name="ck_escrow_allocations_within_gross",
+        ),
+        CheckConstraint(
+            "refunded_amount + released_amount <= gross_amount",
+            name="ck_escrow_settled_within_gross",
+        ),
+    )
+
+
+class EscrowEvent(Base):
+    __tablename__ = "escrow_events"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    escrow_hold_id = Column(UUID(as_uuid=True), ForeignKey("escrow_holds.id", ondelete="CASCADE"), nullable=False, index=True)
+    event_type = Column(String(40), nullable=False, index=True)
+    amount = Column(Numeric(18, 2), nullable=True)
+    note = Column(Text, nullable=True)
+    created_by_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+    hold = relationship("EscrowHold", back_populates="events")
+    created_by = relationship("User")
+
+    __table_args__ = (
+        CheckConstraint("amount IS NULL OR amount >= 0", name="ck_escrow_event_amount_nonnegative"),
+    )
+
+
 class PaymentProviderConfig(Base):
     __tablename__ = "payment_provider_configs"
 

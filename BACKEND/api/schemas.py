@@ -3250,6 +3250,128 @@ class PaymentAdminPage(BaseModel):
     results: list[dict]
 
 
+class FinanceSettingsUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    default_payment_provider_code: Optional[str] = Field(default=None, max_length=80)
+    settlement_currency: Optional[str] = Field(default=None, min_length=3, max_length=10)
+
+    minimum_payout_amount: Optional[Decimal] = Field(default=None, ge=0)
+    payout_fee_type: Optional[Literal["fixed", "percentage"]] = None
+    payout_fee_value: Optional[Decimal] = Field(default=None, ge=0)
+    payout_processing_days: Optional[int] = Field(default=None, ge=0, le=90)
+    auto_payout_enabled: Optional[bool] = None
+
+    escrow_enabled: Optional[bool] = None
+    auto_release_enabled: Optional[bool] = None
+    allow_partial_release: Optional[bool] = None
+    hold_commission_until_release: Optional[bool] = None
+
+    @field_validator("settlement_currency")
+    @classmethod
+    def normalise_settlement_currency(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        value = value.strip().upper()
+        if len(value) != 3 or not value.isalpha():
+            raise ValueError("settlement_currency must be a three-letter currency code")
+        return value
+
+    @field_validator("default_payment_provider_code")
+    @classmethod
+    def normalise_provider_code(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        value = value.strip().lower()
+        return value or None
+
+
+class FinanceSettingsResponse(BaseModel):
+    id: UUID
+    singleton_key: str
+    default_payment_provider_code: Optional[str]
+    settlement_currency: str
+    minimum_payout_amount: Decimal
+    payout_fee_type: str
+    payout_fee_value: Decimal
+    payout_processing_days: int
+    auto_payout_enabled: bool
+    escrow_enabled: bool
+    auto_release_enabled: bool
+    allow_partial_release: bool
+    hold_commission_until_release: bool
+    created_at: datetime
+    updated_at: Optional[datetime] = None
+
+    model_config = ORM_CONFIG
+
+
+class FxConversionRequest(BaseModel):
+    amount: Decimal = Field(gt=0)
+    from_currency: str = Field(min_length=3, max_length=10)
+    to_currency: str = Field(min_length=3, max_length=10)
+    at: Optional[datetime] = None
+
+    @field_validator("from_currency", "to_currency")
+    @classmethod
+    def normalise_currency_code(cls, value: str) -> str:
+        return value.strip().upper()
+
+
+class FxConversionResponse(BaseModel):
+    from_currency: str
+    to_currency: str
+    original_amount: Decimal
+    converted_amount: Decimal
+    rate: Decimal
+    rate_source: Optional[str]
+    effective_at: datetime
+
+
+class EscrowHoldResponse(BaseModel):
+    id: UUID
+    payment_id: Optional[UUID]
+    order_id: UUID
+    order_item_id: Optional[UUID]
+    seller_id: Optional[UUID]
+    currency: str
+    gross_amount: Decimal
+    seller_amount: Decimal
+    commission_amount: Decimal
+    refunded_amount: Decimal
+    released_amount: Decimal
+    status: str
+    release_after: Optional[datetime]
+    released_at: Optional[datetime]
+    disputed_at: Optional[datetime]
+    refunded_at: Optional[datetime]
+    reference: str
+    note: Optional[str]
+    created_at: datetime
+    updated_at: Optional[datetime] = None
+
+    model_config = ORM_CONFIG
+
+
+class PaginatedEscrowHoldResponse(BaseModel):
+    total: int
+    page: int
+    page_size: int
+    total_pages: int
+    results: list[EscrowHoldResponse]
+
+
+class EscrowStatusUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    note: Optional[str] = Field(default=None, max_length=2000)
+
+
+class EscrowReleaseRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    amount: Optional[Decimal] = Field(default=None, gt=0)
+    note: Optional[str] = Field(default=None, max_length=2000)
+
+
 class PaymentProviderCreate(BaseModel):
     name: str = Field(min_length=2, max_length=120)
     code: str = Field(min_length=2, max_length=80)

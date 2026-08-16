@@ -156,6 +156,14 @@ class PermissionCode(str, enum.Enum):
     countries_manage = "countries:manage"
     finance_reports_read = "finance_reports:read"
     payment_audit_read = "payment_audit:read"
+
+    # Finance configuration and escrow controls.
+    # These permissions are role-name independent.
+    finance_settings_read = "finance_settings:read"
+    finance_settings_manage = "finance_settings:manage"
+    escrow_read = "escrow:read"
+    escrow_manage = "escrow:manage"
+    escrow_release = "escrow:release"
     inventory_manage = "inventory:manage"
     coupons_write = "coupons:write"
     coupons_read = "coupons:read"
