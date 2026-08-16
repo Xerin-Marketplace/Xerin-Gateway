@@ -501,7 +501,12 @@ class SellerPayoutResponse(BaseModel):
     account_number: str
     currency: str
     is_default: bool
+    is_active: bool = True
+    verification_status: str = "pending"
+    provider_reference: Optional[str] = None
+    verified_at: Optional[datetime] = None
     created_at: datetime
+    updated_at: Optional[datetime] = None
 
     model_config = ORM_CONFIG
         
@@ -862,6 +867,10 @@ class ProductResponse(BaseModel):
     name: str
     slug: str
     description: Optional[str]
+    seller_base_price: Decimal
+    seller_sale_price: Optional[Decimal]
+    commission_rate_snapshot: Decimal
+    commission_amount_snapshot: Decimal
     price: Decimal
     sale_price: Optional[Decimal]
     currency: str
@@ -1054,6 +1063,10 @@ class ProductVariantResponse(BaseModel):
     variant_name: str
     sku: str
     barcode: Optional[str] = None
+    seller_base_price: Optional[Decimal] = None
+    seller_sale_price: Optional[Decimal] = None
+    commission_rate_snapshot: Optional[Decimal] = None
+    commission_amount_snapshot: Optional[Decimal] = None
     price: Optional[Decimal]
     sale_price: Optional[Decimal] = None
     weight: Optional[Decimal] = None
@@ -2520,6 +2533,138 @@ class SecurityEventResolve(BaseModel):
 
 
 # Phase 3 Task 8: seller order management and fulfilment
+class SellerPricingPreviewRequest(BaseModel):
+    seller_base_price: Decimal = Field(gt=0, max_digits=18, decimal_places=2)
+    seller_sale_price: Optional[Decimal] = Field(default=None, gt=0, max_digits=18, decimal_places=2)
+    category_id: UUID
+    product_id: Optional[UUID] = None
+    currency: str = "TZS"
+
+    @model_validator(mode="after")
+    def validate_sale(self):
+        if self.seller_sale_price is not None and self.seller_sale_price > self.seller_base_price:
+            raise ValueError("seller_sale_price cannot exceed seller_base_price")
+        return self
+
+
+class SellerPricingPreviewResponse(BaseModel):
+    seller_base_price: Decimal
+    seller_sale_price: Optional[Decimal] = None
+    commission_rate: Decimal
+    commission_amount: Decimal
+    customer_price: Decimal
+    customer_sale_price: Optional[Decimal] = None
+    commission_scope: Optional[str] = None
+    currency: str
+
+
+class SellerOrderMessageCreate(BaseModel):
+    message: str = Field(min_length=1, max_length=5000)
+    is_internal: bool = False
+    attachment_urls: list[str] = Field(default_factory=list, max_length=10)
+
+
+class SellerOrderMessageAttachmentResponse(BaseModel):
+    id: UUID
+    file_url: str
+    file_name: Optional[str]
+    mime_type: Optional[str]
+    created_at: datetime
+    model_config = ORM_CONFIG
+
+
+class SellerOrderMessageResponse(BaseModel):
+    id: UUID
+    seller_order_id: UUID
+    sender_user_id: Optional[UUID]
+    sender_role_label: Optional[str]
+    message: str
+    is_internal: bool
+    attachments: list[SellerOrderMessageAttachmentResponse] = Field(default_factory=list)
+    created_at: datetime
+    model_config = ORM_CONFIG
+
+
+class SellerOrderPackageUpsert(BaseModel):
+    weight_kg: Optional[Decimal] = Field(default=None, ge=0)
+    length_cm: Optional[Decimal] = Field(default=None, ge=0)
+    width_cm: Optional[Decimal] = Field(default=None, ge=0)
+    height_cm: Optional[Decimal] = Field(default=None, ge=0)
+    package_count: int = Field(default=1, gt=0)
+    notes: Optional[str] = Field(default=None, max_length=2000)
+    is_ready: bool = False
+    attachment_urls: list[str] = Field(default_factory=list, max_length=10)
+
+
+class SellerOrderPackageAttachmentResponse(BaseModel):
+    id: UUID
+    file_url: str
+    file_name: Optional[str]
+    mime_type: Optional[str]
+    created_at: datetime
+    model_config = ORM_CONFIG
+
+
+class SellerOrderPackageResponse(BaseModel):
+    id: UUID
+    seller_order_id: UUID
+    weight_kg: Optional[Decimal]
+    length_cm: Optional[Decimal]
+    width_cm: Optional[Decimal]
+    height_cm: Optional[Decimal]
+    package_count: int
+    notes: Optional[str]
+    is_ready: bool
+    prepared_at: Optional[datetime]
+    attachments: list[SellerOrderPackageAttachmentResponse] = Field(default_factory=list)
+    created_at: datetime
+    updated_at: Optional[datetime]
+    model_config = ORM_CONFIG
+
+
+class SellerDashboardResponse(BaseModel):
+    products_total: int
+    products_approved: int
+    products_pending_review: int
+    active_promotions: int
+    orders_total: int
+    orders_new: int
+    orders_processing: int
+    orders_ready_to_ship: int
+    wallet_currency: str
+    wallet_pending: Decimal
+    wallet_available: Decimal
+    wallet_reserved: Decimal
+    pending_payouts: int
+    rating_average: Decimal
+    review_count: int
+    unanswered_questions: int
+
+
+class PaginatedWalletTransactionResponse(BaseModel):
+    total: int
+    page: int
+    page_size: int
+    total_pages: int
+    results: list[WalletTransactionResponse]
+
+
+class PaginatedPayoutRequestResponse(BaseModel):
+    total: int
+    page: int
+    page_size: int
+    total_pages: int
+    results: list[PayoutRequestResponse]
+
+
+class PaginatedPromotionResponse(BaseModel):
+    total: int
+    page: int
+    page_size: int
+    total_pages: int
+    results: list[PromotionResponse]
+
+
 class SellerOrderActionRequest(BaseModel):
     notes: Optional[str] = Field(default=None, max_length=2000)
 
@@ -2931,6 +3076,7 @@ class PromotionResponse(BaseModel):
     usage_count: int
     stackable: bool
     automatic: bool
+    funding_source: str = "seller"
     is_active: bool
     starts_at: datetime | None
     ends_at: datetime | None

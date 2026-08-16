@@ -257,8 +257,13 @@ class SellerPayoutAccount(Base):
     account_number = Column(String(255), nullable=False)
     currency = Column(String(10), default="TZS")
     is_default = Column(Boolean, default=False)
+    is_active = Column(Boolean, nullable=False, default=True, server_default="true")
+    verification_status = Column(String(30), nullable=False, default="pending", server_default="pending", index=True)
+    provider_reference = Column(String(180), nullable=True)
+    verified_at = Column(DateTime(timezone=True), nullable=True)
 
     created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
 
     seller = relationship("Seller", back_populates="payout_accounts")
     
@@ -344,6 +349,12 @@ class Product(Base):
     slug = Column(String(255), unique=True, index=True, nullable=False)
     description = Column(Text)
 
+    # Seller enters base prices. `price` / `sale_price` remain marketplace-facing
+    # prices for backwards compatibility with storefront/cart code.
+    seller_base_price = Column(Numeric(18, 2), nullable=False, default=0, server_default="0")
+    seller_sale_price = Column(Numeric(18, 2), nullable=True)
+    commission_rate_snapshot = Column(Numeric(10, 4), nullable=False, default=0, server_default="0")
+    commission_amount_snapshot = Column(Numeric(18, 2), nullable=False, default=0, server_default="0")
     price = Column(Numeric(18, 2), nullable=False)
     sale_price = Column(Numeric(18, 2), nullable=True)
     currency = Column(String(10), default="TZS")
@@ -453,6 +464,10 @@ class ProductVariant(Base):
     variant_name = Column(String(255), nullable=False)
     sku = Column(String(100), unique=True, index=True, nullable=False)
     barcode = Column(String(100), unique=True, nullable=True, index=True)
+    seller_base_price = Column(Numeric(18, 2), nullable=True)
+    seller_sale_price = Column(Numeric(18, 2), nullable=True)
+    commission_rate_snapshot = Column(Numeric(10, 4), nullable=True)
+    commission_amount_snapshot = Column(Numeric(18, 2), nullable=True)
     price = Column(Numeric(18, 2), nullable=True)
     sale_price = Column(Numeric(18, 2), nullable=True)
     weight = Column(Numeric(10, 3), nullable=True)
@@ -810,12 +825,81 @@ class SellerOrder(Base):
 
     order = relationship("Order", back_populates="seller_orders")
     seller = relationship("Seller")
+    packages = relationship("SellerOrderPackage", back_populates="seller_order", cascade="all, delete-orphan")
+    messages = relationship("SellerOrderMessage", back_populates="seller_order", cascade="all, delete-orphan")
 
     __table_args__ = (
         UniqueConstraint("order_id", "seller_id", name="uq_seller_order_order_seller"),
         CheckConstraint("seller_subtotal >= 0", name="ck_seller_order_subtotal_nonnegative"),
         CheckConstraint("item_count >= 0", name="ck_seller_order_item_count_nonnegative"),
     )
+
+
+class SellerOrderPackage(Base):
+    __tablename__ = "seller_order_packages"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    seller_order_id = Column(UUID(as_uuid=True), ForeignKey("seller_orders.id", ondelete="CASCADE"), nullable=False, index=True)
+    weight_kg = Column(Numeric(10, 3), nullable=True)
+    length_cm = Column(Numeric(10, 2), nullable=True)
+    width_cm = Column(Numeric(10, 2), nullable=True)
+    height_cm = Column(Numeric(10, 2), nullable=True)
+    package_count = Column(Integer, nullable=False, default=1, server_default="1")
+    notes = Column(Text, nullable=True)
+    is_ready = Column(Boolean, nullable=False, default=False, server_default="false")
+    prepared_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), nullable=True, onupdate=func.now())
+
+    seller_order = relationship("SellerOrder", back_populates="packages")
+    attachments = relationship("SellerOrderPackageAttachment", back_populates="package", cascade="all, delete-orphan")
+
+    __table_args__ = (
+        CheckConstraint("package_count > 0", name="ck_seller_order_package_count_positive"),
+        CheckConstraint("weight_kg IS NULL OR weight_kg >= 0", name="ck_seller_order_package_weight_nonnegative"),
+    )
+
+
+class SellerOrderPackageAttachment(Base):
+    __tablename__ = "seller_order_package_attachments"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    package_id = Column(UUID(as_uuid=True), ForeignKey("seller_order_packages.id", ondelete="CASCADE"), nullable=False, index=True)
+    file_url = Column(Text, nullable=False)
+    file_name = Column(String(255), nullable=True)
+    mime_type = Column(String(120), nullable=True)
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+    package = relationship("SellerOrderPackage", back_populates="attachments")
+
+
+class SellerOrderMessage(Base):
+    __tablename__ = "seller_order_messages"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    seller_order_id = Column(UUID(as_uuid=True), ForeignKey("seller_orders.id", ondelete="CASCADE"), nullable=False, index=True)
+    sender_user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
+    sender_role_label = Column(String(60), nullable=True)
+    message = Column(Text, nullable=False)
+    is_internal = Column(Boolean, nullable=False, default=False, server_default="false")
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now(), index=True)
+
+    seller_order = relationship("SellerOrder", back_populates="messages")
+    sender = relationship("User")
+    attachments = relationship("SellerOrderMessageAttachment", back_populates="message", cascade="all, delete-orphan")
+
+
+class SellerOrderMessageAttachment(Base):
+    __tablename__ = "seller_order_message_attachments"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    message_id = Column(UUID(as_uuid=True), ForeignKey("seller_order_messages.id", ondelete="CASCADE"), nullable=False, index=True)
+    file_url = Column(Text, nullable=False)
+    file_name = Column(String(255), nullable=True)
+    mime_type = Column(String(120), nullable=True)
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+    message = relationship("SellerOrderMessage", back_populates="attachments")
 
 
 class OrderStatusHistory(Base):
@@ -2095,6 +2179,7 @@ class Promotion(Base):
     usage_count = Column(Integer, nullable=False, default=0, server_default="0")
     stackable = Column(Boolean, nullable=False, default=False, server_default="false")
     automatic = Column(Boolean, nullable=False, default=False, server_default="false")
+    funding_source = Column(String(30), nullable=False, default="seller", server_default="seller")
     is_active = Column(Boolean, nullable=False, default=True, server_default="true")
     starts_at = Column(DateTime(timezone=True), nullable=True)
     ends_at = Column(DateTime(timezone=True), nullable=True)
