@@ -157,6 +157,8 @@ DEFAULT_ROLE_PERMISSIONS: dict[str, set[str]] = {
         PermissionCode.shipping_write.value,
         PermissionCode.shipping_track.value,
         PermissionCode.shipping_manage_all.value,
+        PermissionCode.marketplace_settings_read.value,
+        PermissionCode.marketplace_settings_manage.value,
         PermissionCode.commissions_read.value,
         PermissionCode.commissions_write.value,
         PermissionCode.commissions_manage.value,

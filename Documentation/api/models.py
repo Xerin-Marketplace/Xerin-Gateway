@@ -1091,6 +1091,38 @@ class PaymentReconciliationRecord(Base):
 
 
 # =========================================================
+# MARKETPLACE SETTINGS
+# =========================================================
+
+class MarketplaceSettings(Base):
+    __tablename__ = "marketplace_settings"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    singleton_key = Column(Integer, nullable=False, default=1, server_default="1", unique=True)
+    escrow_release_hours = Column(Integer, nullable=True)
+    dispute_period_hours = Column(Integer, nullable=True)
+    cod_allowed = Column(Boolean, nullable=True)
+    international_delivery_allowed = Column(Boolean, nullable=True)
+    updated_by_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), nullable=True, onupdate=func.now())
+
+    updated_by = relationship("User")
+
+    __table_args__ = (
+        CheckConstraint("singleton_key = 1", name="ck_marketplace_settings_singleton_key"),
+        CheckConstraint(
+            "escrow_release_hours IS NULL OR escrow_release_hours BETWEEN 1 AND 720",
+            name="ck_marketplace_settings_escrow_release_hours",
+        ),
+        CheckConstraint(
+            "dispute_period_hours IS NULL OR dispute_period_hours BETWEEN 1 AND 720",
+            name="ck_marketplace_settings_dispute_period_hours",
+        ),
+    )
+
+
+# =========================================================
 # MARKETPLACE COMMISSIONS AND LEDGER
 # =========================================================
 

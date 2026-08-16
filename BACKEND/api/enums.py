@@ -160,6 +160,10 @@ class PermissionCode(str, enum.Enum):
     coupons_write = "coupons:write"
     coupons_read = "coupons:read"
 
+    # Marketplace settings. Permission-based: custom staff roles may receive these.
+    marketplace_settings_read = "marketplace_settings:read"
+    marketplace_settings_manage = "marketplace_settings:manage"
+
     # Marketplace finance and commissions
     commissions_read = "commissions:read"
     commissions_write = "commissions:write"

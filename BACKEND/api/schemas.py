@@ -2031,6 +2031,61 @@ class CommissionRuleResponse(BaseModel):
     ends_at: datetime | None
     created_at: datetime
 
+class PaginatedCommissionRuleResponse(BaseModel):
+    total: int
+    page: int
+    page_size: int
+    total_pages: int
+    results: list[CommissionRuleResponse]
+
+
+class MarketplaceSettingsUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    escrow_release_hours: int = Field(ge=1, le=720)
+    dispute_period_hours: int = Field(ge=1, le=720)
+    cod_allowed: bool
+    international_delivery_allowed: bool
+
+
+class MarketplaceSettingsResponse(BaseModel):
+    model_config = ORM_CONFIG
+    id: UUID | None = None
+    escrow_release_hours: int | None = None
+    dispute_period_hours: int | None = None
+    cod_allowed: bool | None = None
+    international_delivery_allowed: bool | None = None
+    configured: bool = False
+    updated_by_id: UUID | None = None
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+
+class CommissionPricingPreviewRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    seller_base_price: Decimal = Field(ge=0, max_digits=18, decimal_places=2)
+    currency: str = Field(default="TZS", min_length=3, max_length=10)
+    seller_id: UUID | None = None
+    category_id: UUID | None = None
+    product_id: UUID | None = None
+
+    @field_validator("currency")
+    @classmethod
+    def normalize_currency(cls, value: str) -> str:
+        return value.strip().upper()
+
+
+class CommissionPricingPreviewResponse(BaseModel):
+    seller_base_price: Decimal
+    commission_rule_id: UUID | None = None
+    commission_scope: CommissionScope | None = None
+    commission_rule_type: CommissionRuleType | None = None
+    commission_rate: Decimal
+    commission_amount: Decimal
+    customer_price: Decimal
+    seller_receivable_before_other_adjustments: Decimal
+    currency: str
+
+
 class OrderItemCommissionResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     id: UUID
