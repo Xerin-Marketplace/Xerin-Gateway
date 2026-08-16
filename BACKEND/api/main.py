@@ -70,7 +70,6 @@ async def lifespan(_: FastAPI):
     yield
     logger.info("Stopping %s", settings.APP_NAME)
 
-
 api = FastAPI(
     title=settings.APP_NAME,
     version="1.0.0",

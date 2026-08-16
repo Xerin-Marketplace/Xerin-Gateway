@@ -9,9 +9,9 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session, selectinload
 
 from api.deps import get_db
-from api.enums import PermissionCode, ProductStatus, SellerOrderStatus
+from api.enums import PermissionCode, SellerOrderStatus
 from api.models import (
-    PayoutRequest, Product, ProductQuestion, ProductReview, Promotion, Seller,
+    PayoutRequest, Product, ProductQuestion, ProductReview, Promotion, Seller, ProductStatus,
     SellerOrder, SellerOrderMessage, SellerOrderMessageAttachment,
     SellerOrderPackage, SellerOrderPackageAttachment, SellerWallet, User,
 )
