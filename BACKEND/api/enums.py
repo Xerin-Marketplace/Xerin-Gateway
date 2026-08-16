@@ -189,6 +189,21 @@ class PermissionCode(str, enum.Enum):
     shipping_manage_own = "shipping:manage_own"
     shipping_manage_all = "shipping:manage_all"
 
+    # Logistics administration and provider operations.
+    # Permission-based: custom roles can receive these without role-name checks.
+    logistics_companies_read = "logistics_companies:read"
+    logistics_companies_manage = "logistics_companies:manage"
+    logistics_services_read = "logistics_services:read"
+    logistics_services_manage = "logistics_services:manage"
+    logistics_zones_read = "logistics_zones:read"
+    logistics_zones_manage = "logistics_zones:manage"
+    logistics_rates_read = "logistics_rates:read"
+    logistics_rates_manage = "logistics_rates:manage"
+    logistics_integrations_read = "logistics_integrations:read"
+    logistics_integrations_manage = "logistics_integrations:manage"
+    logistics_shipments_read = "logistics_shipments:read"
+    logistics_shipments_update = "logistics_shipments:update"
+
     # Existing store permissions used by current routers.
     view_own_store = "view_own_store"
     update_own_store = "update_own_store"
@@ -239,6 +254,28 @@ class SellerOrderStatus(str, enum.Enum):
     delivered = "delivered"
     cancellation_requested = "cancellation_requested"
     cancelled = "cancelled"
+
+
+class LogisticsCompanyStatus(str, enum.Enum):
+    pending = "pending"
+    active = "active"
+    suspended = "suspended"
+    inactive = "inactive"
+
+
+class LogisticsScope(str, enum.Enum):
+    local = "local"
+    international = "international"
+    both = "both"
+
+
+class LogisticsIntegrationAuthType(str, enum.Enum):
+    none = "none"
+    api_key = "api_key"
+    bearer = "bearer"
+    basic = "basic"
+    oauth2 = "oauth2"
+    custom = "custom"
 
 
 class ShippingRateType(str, enum.Enum):

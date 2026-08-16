@@ -16,6 +16,7 @@ from api.enums import (
     WalletTransactionType, PayoutStatus, RefundStatus, RefundReason, InventoryMovementType,
     AuditSeverity, SecurityEventType, SellerOrderStatus, DeliveryStatus, ReviewStatus, ReviewReportReason,
     NotificationChannel, NotificationDeliveryStatus, NotificationEvent, QuestionStatus, QuestionReportReason,
+    LogisticsCompanyStatus, LogisticsScope, LogisticsIntegrationAuthType,
 )
 
 
@@ -57,6 +58,7 @@ class User(Base):
     notifications = relationship("Notification", back_populates="user", cascade="all, delete-orphan")
     notification_preference = relationship("NotificationPreference", back_populates="user", uselist=False, cascade="all, delete-orphan")
     device_tokens = relationship("DeviceToken", back_populates="user", cascade="all, delete-orphan")
+    logistics_memberships = relationship("LogisticsCompanyUser", back_populates="user", cascade="all, delete-orphan")
     
 class Role(Base):
     __tablename__ = "roles"
@@ -540,12 +542,104 @@ class CartItem(Base):
 # SHIPPING CONFIGURATION
 # =========================================================
 
+class LogisticsCompany(Base):
+    __tablename__ = "logistics_companies"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    name = Column(String(150), nullable=False, unique=True)
+    code = Column(String(80), nullable=False, unique=True, index=True)
+    description = Column(Text, nullable=True)
+    contact_name = Column(String(150), nullable=True)
+    contact_email = Column(String(255), nullable=True)
+    contact_phone = Column(String(50), nullable=True)
+    website_url = Column(Text, nullable=True)
+    scope = Column(Enum(LogisticsScope), nullable=False, default=LogisticsScope.local, server_default="local", index=True)
+    status = Column(Enum(LogisticsCompanyStatus), nullable=False, default=LogisticsCompanyStatus.pending, server_default="pending", index=True)
+    supports_cod = Column(Boolean, nullable=False, default=False, server_default="false")
+    supports_tracking = Column(Boolean, nullable=False, default=True, server_default="true")
+    supports_webhooks = Column(Boolean, nullable=False, default=False, server_default="false")
+    metadata_json = Column(JSONB, nullable=False, default=dict, server_default="{}")
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+    users = relationship("LogisticsCompanyUser", back_populates="company", cascade="all, delete-orphan")
+    services = relationship("ShippingMethod", back_populates="logistics_company")
+    integrations = relationship("LogisticsIntegrationConfig", back_populates="company", cascade="all, delete-orphan")
+    webhook_events = relationship("LogisticsWebhookEvent", back_populates="company", cascade="all, delete-orphan")
+    shipments = relationship("Shipment", back_populates="logistics_company")
+
+
+class LogisticsCompanyUser(Base):
+    __tablename__ = "logistics_company_users"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    logistics_company_id = Column(UUID(as_uuid=True), ForeignKey("logistics_companies.id", ondelete="CASCADE"), nullable=False, index=True)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    title = Column(String(120), nullable=True)
+    is_primary_contact = Column(Boolean, nullable=False, default=False, server_default="false")
+    is_active = Column(Boolean, nullable=False, default=True, server_default="true")
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    company = relationship("LogisticsCompany", back_populates="users")
+    user = relationship("User", back_populates="logistics_memberships")
+
+    __table_args__ = (
+        UniqueConstraint("logistics_company_id", "user_id", name="uq_logistics_company_user"),
+    )
+
+
+class LogisticsIntegrationConfig(Base):
+    __tablename__ = "logistics_integration_configs"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    logistics_company_id = Column(UUID(as_uuid=True), ForeignKey("logistics_companies.id", ondelete="CASCADE"), nullable=False, unique=True, index=True)
+    api_base_url = Column(Text, nullable=True)
+    outbound_webhook_url = Column(Text, nullable=True)
+    auth_type = Column(Enum(LogisticsIntegrationAuthType), nullable=False, default=LogisticsIntegrationAuthType.none, server_default="none")
+    credential_reference = Column(String(255), nullable=True)
+    webhook_secret_reference = Column(String(255), nullable=True)
+    api_key_header = Column(String(120), nullable=True)
+    extra_config = Column(JSONB, nullable=False, default=dict, server_default="{}")
+    is_active = Column(Boolean, nullable=False, default=False, server_default="false")
+    last_tested_at = Column(DateTime(timezone=True), nullable=True)
+    last_test_success = Column(Boolean, nullable=True)
+    last_test_message = Column(Text, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+    company = relationship("LogisticsCompany", back_populates="integrations")
+
+
+class LogisticsWebhookEvent(Base):
+    __tablename__ = "logistics_webhook_events"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    logistics_company_id = Column(UUID(as_uuid=True), ForeignKey("logistics_companies.id", ondelete="CASCADE"), nullable=False, index=True)
+    direction = Column(String(20), nullable=False)
+    event_type = Column(String(120), nullable=False, index=True)
+    external_event_id = Column(String(255), nullable=True)
+    shipment_id = Column(UUID(as_uuid=True), ForeignKey("shipments.id", ondelete="SET NULL"), nullable=True, index=True)
+    request_payload = Column(JSONB, nullable=True)
+    response_payload = Column(JSONB, nullable=True)
+    http_status = Column(Integer, nullable=True)
+    processed = Column(Boolean, nullable=False, default=False, server_default="false")
+    error_message = Column(Text, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    company = relationship("LogisticsCompany", back_populates="webhook_events")
+
+    __table_args__ = (
+        UniqueConstraint("logistics_company_id", "external_event_id", name="uq_logistics_webhook_external_event"),
+    )
+
+
 class ShippingZone(Base):
     __tablename__ = "shipping_zones"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     name = Column(String(120), nullable=False, unique=True)
     country = Column(String(100), nullable=False, server_default="Tanzania")
+    scope = Column(Enum(LogisticsScope), nullable=False, default=LogisticsScope.local, server_default="local", index=True)
     regions = Column(JSONB, nullable=False, default=list, server_default="[]")
     cities = Column(JSONB, nullable=False, default=list, server_default="[]")
     is_active = Column(Boolean, nullable=False, default=True, server_default="true")
@@ -559,9 +653,14 @@ class ShippingMethod(Base):
     __tablename__ = "shipping_methods"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    logistics_company_id = Column(UUID(as_uuid=True), ForeignKey("logistics_companies.id", ondelete="RESTRICT"), nullable=True, index=True)
     name = Column(String(120), nullable=False, unique=True)
+    service_code = Column(String(100), nullable=True, index=True)
     description = Column(Text, nullable=True)
     carrier_name = Column(String(120), nullable=True)
+    scope = Column(Enum(LogisticsScope), nullable=False, default=LogisticsScope.local, server_default="local", index=True)
+    supports_cod = Column(Boolean, nullable=False, default=False, server_default="false")
+    supports_tracking = Column(Boolean, nullable=False, default=True, server_default="true")
     min_delivery_days = Column(Integer, nullable=False, default=1)
     max_delivery_days = Column(Integer, nullable=False, default=7)
     is_active = Column(Boolean, nullable=False, default=True, server_default="true")
@@ -569,6 +668,7 @@ class ShippingMethod(Base):
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
 
     rates = relationship("ShippingRate", back_populates="method", cascade="all, delete-orphan")
+    logistics_company = relationship("LogisticsCompany", back_populates="services")
 
     __table_args__ = (
         CheckConstraint("min_delivery_days >= 0", name="ck_shipping_method_min_days_nonnegative"),
@@ -583,6 +683,7 @@ class ShippingRate(Base):
     zone_id = Column(UUID(as_uuid=True), ForeignKey("shipping_zones.id", ondelete="CASCADE"), nullable=False, index=True)
     method_id = Column(UUID(as_uuid=True), ForeignKey("shipping_methods.id", ondelete="CASCADE"), nullable=False, index=True)
     rate_type = Column(Enum(ShippingRateType), nullable=False, default=ShippingRateType.flat)
+    currency = Column(String(10), nullable=False, default="TZS", server_default="TZS")
     base_amount = Column(Numeric(18, 2), nullable=False, default=0)
     amount_per_kg = Column(Numeric(18, 2), nullable=False, default=0)
     free_shipping_threshold = Column(Numeric(18, 2), nullable=True)
@@ -742,6 +843,7 @@ class Shipment(Base):
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     order_id = Column(UUID(as_uuid=True), ForeignKey("orders.id", ondelete="CASCADE"), nullable=False, index=True)
     seller_id = Column(UUID(as_uuid=True), ForeignKey("sellers.id", ondelete="RESTRICT"), nullable=False, index=True)
+    logistics_company_id = Column(UUID(as_uuid=True), ForeignKey("logistics_companies.id", ondelete="SET NULL"), nullable=True, index=True)
     shipping_method_id = Column(UUID(as_uuid=True), ForeignKey("shipping_methods.id", ondelete="RESTRICT"), nullable=True)
     status = Column(Enum(ShipmentStatus), nullable=False, default=ShipmentStatus.pending, server_default="pending", index=True)
     carrier_name = Column(String(120), nullable=True)
@@ -756,6 +858,7 @@ class Shipment(Base):
     order = relationship("Order", back_populates="shipments")
     seller = relationship("Seller")
     shipping_method = relationship("ShippingMethod")
+    logistics_company = relationship("LogisticsCompany", back_populates="shipments")
     items = relationship("ShipmentItem", back_populates="shipment", cascade="all, delete-orphan")
     tracking_events = relationship("ShipmentTrackingEvent", back_populates="shipment", cascade="all, delete-orphan", order_by="ShipmentTrackingEvent.created_at")
 

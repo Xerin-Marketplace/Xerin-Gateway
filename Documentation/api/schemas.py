@@ -18,7 +18,11 @@ from decimal import Decimal
 from typing import Optional, List, Dict, Any, Literal
 import enum
 from api.enums import DayOfWeek, StoreStatus, ShippingRateType
-from api.enums import ShipmentStatus, WalletTransactionType, PayoutStatus, RefundStatus, RefundReason, SellerOrderStatus, InventoryMovementType
+from api.enums import (
+    ShipmentStatus, WalletTransactionType, PayoutStatus, RefundStatus, RefundReason,
+    SellerOrderStatus, InventoryMovementType, LogisticsCompanyStatus, LogisticsScope,
+    LogisticsIntegrationAuthType,
+)
 
 
 class UserStatus(str, enum.Enum):
@@ -1820,9 +1824,151 @@ class CouponResponse(BaseModel):
 # SHIPPING SCHEMAS
 # =========================================================
 
+class LogisticsCompanyCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    name: str = Field(min_length=2, max_length=150)
+    code: str = Field(min_length=2, max_length=80)
+    description: Optional[str] = None
+    contact_name: Optional[str] = Field(default=None, max_length=150)
+    contact_email: Optional[EmailStr] = None
+    contact_phone: Optional[str] = Field(default=None, max_length=50)
+    website_url: Optional[str] = None
+    scope: LogisticsScope = LogisticsScope.local
+    status: LogisticsCompanyStatus = LogisticsCompanyStatus.pending
+    supports_cod: bool = False
+    supports_tracking: bool = True
+    supports_webhooks: bool = False
+    metadata_json: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("code")
+    @classmethod
+    def normalize_code(cls, value: str) -> str:
+        value = value.strip().lower().replace(" ", "-")
+        if not re.fullmatch(r"[a-z0-9][a-z0-9_-]*", value):
+            raise ValueError("code may contain lowercase letters, numbers, hyphens and underscores")
+        return value
+
+
+class LogisticsCompanyUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    name: Optional[str] = Field(default=None, min_length=2, max_length=150)
+    description: Optional[str] = None
+    contact_name: Optional[str] = Field(default=None, max_length=150)
+    contact_email: Optional[EmailStr] = None
+    contact_phone: Optional[str] = Field(default=None, max_length=50)
+    website_url: Optional[str] = None
+    scope: Optional[LogisticsScope] = None
+    status: Optional[LogisticsCompanyStatus] = None
+    supports_cod: Optional[bool] = None
+    supports_tracking: Optional[bool] = None
+    supports_webhooks: Optional[bool] = None
+    metadata_json: Optional[dict[str, Any]] = None
+
+
+class LogisticsCompanyResponse(LogisticsCompanyCreate):
+    id: UUID
+    created_at: datetime
+    updated_at: Optional[datetime] = None
+    model_config = ORM_CONFIG
+
+
+class PaginatedLogisticsCompanyResponse(BaseModel):
+    total: int
+    page: int
+    page_size: int
+    total_pages: int
+    results: list[LogisticsCompanyResponse]
+
+
+class LogisticsCompanyUserCreate(BaseModel):
+    user_id: UUID
+    title: Optional[str] = Field(default=None, max_length=120)
+    is_primary_contact: bool = False
+    is_active: bool = True
+
+
+class LogisticsCompanyUserResponse(BaseModel):
+    id: UUID
+    logistics_company_id: UUID
+    user_id: UUID
+    title: Optional[str]
+    is_primary_contact: bool
+    is_active: bool
+    created_at: datetime
+    model_config = ORM_CONFIG
+
+
+class LogisticsIntegrationCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    api_base_url: Optional[str] = None
+    outbound_webhook_url: Optional[str] = None
+    auth_type: LogisticsIntegrationAuthType = LogisticsIntegrationAuthType.none
+    credential_reference: Optional[str] = Field(default=None, max_length=255)
+    webhook_secret_reference: Optional[str] = Field(default=None, max_length=255)
+    api_key_header: Optional[str] = Field(default=None, max_length=120)
+    extra_config: dict[str, Any] = Field(default_factory=dict)
+    is_active: bool = False
+
+
+class LogisticsIntegrationUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    api_base_url: Optional[str] = None
+    outbound_webhook_url: Optional[str] = None
+    auth_type: Optional[LogisticsIntegrationAuthType] = None
+    credential_reference: Optional[str] = Field(default=None, max_length=255)
+    webhook_secret_reference: Optional[str] = Field(default=None, max_length=255)
+    api_key_header: Optional[str] = Field(default=None, max_length=120)
+    extra_config: Optional[dict[str, Any]] = None
+    is_active: Optional[bool] = None
+
+
+class LogisticsIntegrationResponse(LogisticsIntegrationCreate):
+    id: UUID
+    logistics_company_id: UUID
+    last_tested_at: Optional[datetime] = None
+    last_test_success: Optional[bool] = None
+    last_test_message: Optional[str] = None
+    created_at: datetime
+    updated_at: Optional[datetime] = None
+    model_config = ORM_CONFIG
+
+
+class PaginatedShippingMethodResponse(BaseModel):
+    total: int
+    page: int
+    page_size: int
+    total_pages: int
+    results: list["ShippingMethodResponse"]
+
+
+class PaginatedShippingZoneResponse(BaseModel):
+    total: int
+    page: int
+    page_size: int
+    total_pages: int
+    results: list["ShippingZoneResponse"]
+
+
+class PaginatedShippingRateResponse(BaseModel):
+    total: int
+    page: int
+    page_size: int
+    total_pages: int
+    results: list["ShippingRateResponse"]
+
+
+class PaginatedShipmentResponse(BaseModel):
+    total: int
+    page: int
+    page_size: int
+    total_pages: int
+    results: list["ShipmentResponse"]
+
+
 class ShippingZoneCreate(BaseModel):
     name: str = Field(min_length=2, max_length=120)
     country: str = Field(default="Tanzania", min_length=2, max_length=100)
+    scope: LogisticsScope = LogisticsScope.local
     regions: list[str] = Field(default_factory=list)
     cities: list[str] = Field(default_factory=list)
     is_active: bool = True
@@ -1844,6 +1990,7 @@ class ShippingZoneCreate(BaseModel):
 class ShippingZoneUpdate(BaseModel):
     name: Optional[str] = Field(default=None, min_length=2, max_length=120)
     country: Optional[str] = Field(default=None, min_length=2, max_length=100)
+    scope: Optional[LogisticsScope] = None
     regions: Optional[list[str]] = None
     cities: Optional[list[str]] = None
     is_active: Optional[bool] = None
@@ -1857,9 +2004,14 @@ class ShippingZoneResponse(ShippingZoneCreate):
 
 
 class ShippingMethodCreate(BaseModel):
+    logistics_company_id: Optional[UUID] = None
     name: str = Field(min_length=2, max_length=120)
+    service_code: Optional[str] = Field(default=None, max_length=100)
     description: Optional[str] = None
     carrier_name: Optional[str] = Field(default=None, max_length=120)
+    scope: LogisticsScope = LogisticsScope.local
+    supports_cod: bool = False
+    supports_tracking: bool = True
     min_delivery_days: int = Field(default=1, ge=0, le=365)
     max_delivery_days: int = Field(default=7, ge=0, le=365)
     is_active: bool = True
@@ -1872,9 +2024,14 @@ class ShippingMethodCreate(BaseModel):
 
 
 class ShippingMethodUpdate(BaseModel):
+    logistics_company_id: Optional[UUID] = None
     name: Optional[str] = Field(default=None, min_length=2, max_length=120)
+    service_code: Optional[str] = Field(default=None, max_length=100)
     description: Optional[str] = None
     carrier_name: Optional[str] = Field(default=None, max_length=120)
+    scope: Optional[LogisticsScope] = None
+    supports_cod: Optional[bool] = None
+    supports_tracking: Optional[bool] = None
     min_delivery_days: Optional[int] = Field(default=None, ge=0, le=365)
     max_delivery_days: Optional[int] = Field(default=None, ge=0, le=365)
     is_active: Optional[bool] = None
@@ -1891,6 +2048,7 @@ class ShippingRateCreate(BaseModel):
     zone_id: UUID
     method_id: UUID
     rate_type: ShippingRateType = ShippingRateType.flat
+    currency: str = Field(default="TZS", min_length=3, max_length=10)
     base_amount: Decimal = Field(default=Decimal("0.00"), ge=0)
     amount_per_kg: Decimal = Field(default=Decimal("0.00"), ge=0)
     free_shipping_threshold: Optional[Decimal] = Field(default=None, ge=0)
@@ -1923,8 +2081,13 @@ class ShippingQuoteRequest(BaseModel):
 class ShippingQuoteOption(BaseModel):
     rate_id: UUID
     method_id: UUID
+    logistics_company_id: Optional[UUID] = None
+    logistics_company_name: Optional[str] = None
     method_name: str
     carrier_name: Optional[str]
+    scope: LogisticsScope = LogisticsScope.local
+    supports_cod: bool = False
+    supports_tracking: bool = True
     amount: Decimal
     currency: str = "TZS"
     min_delivery_days: int
@@ -1965,6 +2128,7 @@ class ShipmentResponse(BaseModel):
     id: UUID
     order_id: UUID
     seller_id: UUID
+    logistics_company_id: Optional[UUID] = None
     shipping_method_id: Optional[UUID]
     status: ShipmentStatus
     carrier_name: Optional[str]
