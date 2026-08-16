@@ -2662,7 +2662,7 @@ class PaginatedPromotionResponse(BaseModel):
     page: int
     page_size: int
     total_pages: int
-    results: list[PromotionResponse]
+    results: list["PromotionResponse"]
 
 
 class SellerOrderActionRequest(BaseModel):
