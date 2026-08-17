@@ -1441,7 +1441,16 @@ class CommissionRule(Base):
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     name = Column(String(150), nullable=False)
-    scope = Column(Enum(CommissionScope), nullable=False, index=True)
+    scope = Column(
+    Enum(
+        CommissionScope,
+        name="commissionscope",
+        values_callable=lambda enum_cls: [member.value for member in enum_cls],
+        create_type=False,
+    ),
+    nullable=False,
+    index=True,
+)
     rule_type = Column(Enum(CommissionRuleType), nullable=False, default=CommissionRuleType.percentage)
     rate = Column(Numeric(10, 4), nullable=False)
     seller_id = Column(UUID(as_uuid=True), ForeignKey("sellers.id", ondelete="CASCADE"), nullable=True, index=True)
