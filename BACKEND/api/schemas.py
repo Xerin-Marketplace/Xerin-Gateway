@@ -1756,6 +1756,7 @@ class PaymentResponse(BaseModel):
     status: PaymentStatus
     provider_transaction_id: Optional[str]
     provider_response: Optional[Dict[str, Any]] = None
+    failure_reason: Optional[str] = None
     paid_at: Optional[datetime]
     transactions: list[PaymentTransactionResponse]
     created_at: datetime

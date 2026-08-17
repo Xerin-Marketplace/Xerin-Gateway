@@ -301,10 +301,22 @@ def initiate_payment(data: PaymentInitiateRequest, db: Session = Depends(get_db)
     if method in {PaymentMethod.mobile_money, PaymentMethod.card} and provider != "azampay" and method == PaymentMethod.card:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail="Card payments currently support AzamPay only")
 
-    existing = db.query(Payment).filter(
-        Payment.order_id == order.id,
-        Payment.status.in_([PaymentStatus.pending, PaymentStatus.processing, PaymentStatus.completed]),
-    ).with_for_update().first()
+    existing = (
+        db.query(Payment)
+        .filter(
+            Payment.order_id == order.id,
+            Payment.status.in_(
+                [
+                    PaymentStatus.pending,
+                    PaymentStatus.processing,
+                    PaymentStatus.completed,
+                ]
+            ),
+        )
+        .order_by(Payment.created_at.desc())
+        .with_for_update()
+        .first()
+    )
     if existing:
         detail = "Order is already paid" if existing.status == PaymentStatus.completed else "A payment is already in progress for this order"
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=detail)
@@ -414,16 +426,103 @@ def initiate_payment(data: PaymentInitiateRequest, db: Session = Depends(get_db)
         else:
             raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail="AzamPay supports mobile_money and card methods")
     except ValueError as exc:
-        db.rollback()
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)) from exc
-    except AzamPayConfigurationError as exc:
-        db.rollback()
-        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
-    except AzamPayAPIError as exc:
-        db.rollback()
+        payment.status = PaymentStatus.failed
+        payment.failure_reason = str(exc)
+        _record_transaction(
+            db,
+            payment,
+            "provider_rejected",
+            PaymentStatus.failed.value,
+            order.total,
+            {
+                "provider": "azampay",
+                "code": "invalid_payment_request",
+                "message": str(exc),
+                "retryable": False,
+            },
+        )
+        _commit(db)
         raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail={"message": str(exc), "provider": "azampay", "provider_status": exc.status_code},
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail={
+                "code": "INVALID_PAYMENT_REQUEST",
+                "message": str(exc),
+                "provider": "azampay",
+                "order_id": str(order.id),
+                "payment_id": str(payment.id),
+                "retryable": False,
+            },
+        ) from exc
+    except AzamPayConfigurationError as exc:
+        payment.status = PaymentStatus.failed
+        payment.failure_reason = str(exc)
+        _record_transaction(
+            db,
+            payment,
+            "provider_configuration_error",
+            PaymentStatus.failed.value,
+            order.total,
+            {
+                "provider": "azampay",
+                "code": "provider_configuration_error",
+                "message": str(exc),
+                "retryable": False,
+            },
+        )
+        _commit(db)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={
+                "code": "PAYMENT_PROVIDER_CONFIGURATION_ERROR",
+                "message": str(exc),
+                "provider": "azampay",
+                "order_id": str(order.id),
+                "payment_id": str(payment.id),
+                "retryable": False,
+            },
+        ) from exc
+    except AzamPayAPIError as exc:
+        payment.status = PaymentStatus.failed
+        payment.failure_reason = str(exc)
+        provider_code = str(
+            exc.payload.get("code")
+            or exc.payload.get("error")
+            or "provider_error"
+        )
+        _record_transaction(
+            db,
+            payment,
+            "provider_error",
+            PaymentStatus.failed.value,
+            order.total,
+            {
+                "provider": "azampay",
+                "provider_status": exc.status_code,
+                "code": provider_code,
+                "message": str(exc),
+                "retryable": exc.retryable,
+            },
+        )
+        _commit(db)
+
+        http_status = (
+            exc.status_code
+            if exc.status_code in {502, 503, 504}
+            else status.HTTP_502_BAD_GATEWAY
+        )
+        raise HTTPException(
+            status_code=http_status,
+            detail={
+                "code": "PAYMENT_PROVIDER_UNAVAILABLE"
+                if exc.retryable
+                else "PAYMENT_PROVIDER_ERROR",
+                "message": str(exc),
+                "provider": "azampay",
+                "provider_status": exc.status_code,
+                "order_id": str(order.id),
+                "payment_id": str(payment.id),
+                "retryable": exc.retryable,
+            },
         ) from exc
 
     payment.status = PaymentStatus.processing

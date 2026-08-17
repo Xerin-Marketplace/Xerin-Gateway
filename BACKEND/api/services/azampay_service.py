@@ -16,10 +16,18 @@ class AzamPayConfigurationError(RuntimeError):
 
 
 class AzamPayAPIError(RuntimeError):
-    def __init__(self, message: str, *, status_code: int | None = None, payload: dict[str, Any] | None = None):
+    def __init__(
+        self,
+        message: str,
+        *,
+        status_code: int | None = None,
+        payload: dict[str, Any] | None = None,
+        retryable: bool = False,
+    ):
         super().__init__(message)
         self.status_code = status_code
         self.payload = payload or {}
+        self.retryable = retryable
 
 
 @dataclass(frozen=True)
@@ -76,6 +84,44 @@ class AzamPayClient:
             else settings.AZAMPAY_LIVE_BASE_URL
         ).rstrip("/")
 
+    def _request(
+        self,
+        method: str,
+        url: str,
+        *,
+        json_payload: dict[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+    ) -> requests.Response:
+        try:
+            return requests.request(
+                method,
+                url,
+                json=json_payload,
+                headers=headers,
+                timeout=self.timeout,
+            )
+        except requests.exceptions.Timeout as exc:
+            raise AzamPayAPIError(
+                "AzamPay request timed out. Please retry payment.",
+                status_code=504,
+                payload={"code": "provider_timeout"},
+                retryable=True,
+            ) from exc
+        except requests.exceptions.ConnectionError as exc:
+            raise AzamPayAPIError(
+                "AzamPay is temporarily unreachable. Please retry payment.",
+                status_code=503,
+                payload={"code": "provider_connection_error"},
+                retryable=True,
+            ) from exc
+        except requests.exceptions.RequestException as exc:
+            raise AzamPayAPIError(
+                "AzamPay communication failed. Please retry payment.",
+                status_code=502,
+                payload={"code": "provider_request_error"},
+                retryable=True,
+            ) from exc
+
     def _json_response(self, response: requests.Response) -> dict[str, Any]:
         try:
             data = response.json()
@@ -99,14 +145,14 @@ class AzamPayClient:
             if not force_refresh and self.__class__._token and now < self.__class__._token_expires_at:
                 return self.__class__._token
 
-            response = requests.post(
+            response = self._request(
+                "POST",
                 self.auth_url,
-                json={
+                json_payload={
                     "appName": settings.AZAMPAY_APP_NAME,
                     "clientId": settings.AZAMPAY_CLIENT_ID,
                     "clientSecret": settings.AZAMPAY_CLIENT_SECRET,
                 },
-                timeout=self.timeout,
             )
             data = self._json_response(response)
             if not response.ok:
@@ -139,16 +185,27 @@ class AzamPayClient:
     def _post(self, path: str, payload: dict[str, Any]) -> dict[str, Any]:
         token = self.get_token()
         url = f"{self.base_url}/{path.lstrip('/')}"
-        response = requests.post(url, json=payload, headers=self._headers(token), timeout=self.timeout)
+        response = self._request(
+            "POST",
+            url,
+            json_payload=payload,
+            headers=self._headers(token),
+        )
         if response.status_code == 401:
             token = self.get_token(force_refresh=True)
-            response = requests.post(url, json=payload, headers=self._headers(token), timeout=self.timeout)
+            response = self._request(
+                "POST",
+                url,
+                json_payload=payload,
+                headers=self._headers(token),
+            )
         data = self._json_response(response)
         if not response.ok or data.get("success") is False:
             raise AzamPayAPIError(
                 data.get("message") or data.get("msg") or "AzamPay request failed",
                 status_code=response.status_code,
                 payload=data,
+                retryable=response.status_code >= 500,
             )
         return data
 
@@ -260,19 +317,19 @@ class AzamPayClient:
             "accountNumber": phone_number,
             "provider": provider.upper(),
         }
-        response = requests.post(
+        response = self._request(
+            "POST",
             url,
-            json=payload,
+            json_payload=payload,
             headers=self._headers(token),
-            timeout=self.timeout,
         )
         if response.status_code == 401:
             token = self.get_token(force_refresh=True)
-            response = requests.post(
+            response = self._request(
+                "POST",
                 url,
-                json=payload,
+                json_payload=payload,
                 headers=self._headers(token),
-                timeout=self.timeout,
             )
         data = self._json_response(response)
         if not response.ok or data.get("success") is False:
