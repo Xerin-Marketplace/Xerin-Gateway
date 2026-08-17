@@ -378,9 +378,9 @@ class ProductTag(Base):
     product = relationship("Product", back_populates="tags")
 
 
-# =========================================================
+#  
 # CART
-# =========================================================
+#  
 
 class Cart(Base):
     __tablename__ = "carts"
@@ -418,9 +418,9 @@ class CartItem(Base):
     )
 
 
-# =========================================================
+#  
 # ORDERS
-# =========================================================
+#  
 
 class OrderStatus(str, enum.Enum):
     pending = "pending"
@@ -501,9 +501,9 @@ class OrderStatusHistory(Base):
     created_by = relationship("User")
 
 
-# =========================================================
+#  
 # INVENTORY
-# =========================================================
+#  
 
 class Inventory(Base):
     __tablename__ = "inventory"
@@ -542,9 +542,9 @@ class Inventory(Base):
     )
 
 
-# =========================================================
+#  
 # PAYMENTS
-# =========================================================
+#  
 
 class PaymentStatus(str, enum.Enum):
     pending = "pending"
@@ -607,9 +607,9 @@ class PaymentTransaction(Base):
     payment = relationship("Payment", back_populates="transactions")
 
 
-# =========================================================
+#  
 # COUPONS
-# =========================================================
+#  
 
 class Coupon(Base):
     __tablename__ = "coupons"

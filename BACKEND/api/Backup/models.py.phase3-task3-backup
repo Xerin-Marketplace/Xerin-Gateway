@@ -392,9 +392,9 @@ class ProductTag(Base):
     product = relationship("Product", back_populates="tags")
 
 
-# =========================================================
+#  
 # CART
-# =========================================================
+#  
 
 class Cart(Base):
     __tablename__ = "carts"
@@ -433,9 +433,9 @@ class CartItem(Base):
 
 
 
-# =========================================================
+#  
 # SHIPPING CONFIGURATION
-# =========================================================
+#  
 
 class ShippingZone(Base):
     __tablename__ = "shipping_zones"
@@ -501,9 +501,9 @@ class ShippingRate(Base):
         CheckConstraint("max_weight_kg IS NULL OR max_weight_kg >= min_weight_kg", name="ck_shipping_rate_weight_range"),
     )
 
-# =========================================================
+#  
 # ORDERS
-# =========================================================
+#  
 
 class OrderStatus(str, enum.Enum):
     pending = "pending"
@@ -596,9 +596,9 @@ class OrderStatusHistory(Base):
 
 
 
-# =========================================================
+#  
 # SHIPMENTS AND TRACKING
-# =========================================================
+#  
 
 class Shipment(Base):
     __tablename__ = "shipments"
@@ -656,9 +656,9 @@ class ShipmentTrackingEvent(Base):
     shipment = relationship("Shipment", back_populates="tracking_events")
     created_by = relationship("User")
 
-# =========================================================
+#  
 # INVENTORY
-# =========================================================
+#  
 
 class Inventory(Base):
     __tablename__ = "inventory"
@@ -725,9 +725,9 @@ class InventoryReservation(Base):
     )
 
 
-# =========================================================
+#  
 # PAYMENTS
-# =========================================================
+#  
 
 class PaymentStatus(str, enum.Enum):
     pending = "pending"
@@ -790,9 +790,9 @@ class PaymentTransaction(Base):
     payment = relationship("Payment", back_populates="transactions")
 
 
-# =========================================================
+#  
 # MARKETPLACE COMMISSIONS AND LEDGER
-# =========================================================
+#  
 
 class CommissionRule(Base):
     __tablename__ = "commission_rules"
@@ -875,9 +875,9 @@ class MarketplaceTransaction(Base):
     __table_args__ = (CheckConstraint("amount >= 0", name="ck_marketplace_transaction_amount_nonnegative"),)
 
 
-# =========================================================
+#  
 # COUPONS
-# =========================================================
+#  
 
 class Coupon(Base):
     __tablename__ = "coupons"

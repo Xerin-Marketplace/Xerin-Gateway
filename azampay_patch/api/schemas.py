@@ -1066,9 +1066,6 @@ class RolePermissionsResponse(BaseModel):
     role_id: UUID
     role_name: str
     permissions: list[str]
-# =========================================================
-# CART SCHEMAS
-# =========================================================
 
 class CartItemCreate(BaseModel):
     product_id: UUID
@@ -1106,10 +1103,6 @@ class CartResponse(BaseModel):
 class ApplyCouponRequest(BaseModel):
     code: str
 
-
-# =========================================================
-# ORDER SCHEMAS
-# =========================================================
 
 class OrderItemResponse(BaseModel):
     id: UUID
@@ -1181,9 +1174,9 @@ class PaginatedOrderResponse(BaseModel):
     results: list[OrderResponse]
 
 
-# =========================================================
+ 
 # INVENTORY SCHEMAS
-# =========================================================
+ 
 
 class InventoryCreate(BaseModel):
     product_id: UUID
@@ -1297,9 +1290,9 @@ class SellerInventoryMovementResponse(BaseModel):
     created_at: datetime
 
 
-# =========================================================
+ 
 # PAYMENT SCHEMAS
-# =========================================================
+ 
 
 class PaymentInitiateRequest(BaseModel):
     order_id: UUID
@@ -1360,9 +1353,9 @@ class PaymentResponse(BaseModel):
     model_config = ORM_CONFIG
 
 
-# =========================================================
+ 
 # COUPON SCHEMAS
-# =========================================================
+ 
 
 class CouponCreate(BaseModel):
     code: str
@@ -1512,9 +1505,9 @@ class CouponResponse(BaseModel):
     class Config:
         from_attributes = True
 
-# =========================================================
+ 
 # SHIPPING SCHEMAS
-# =========================================================
+ 
 
 class ShippingZoneCreate(BaseModel):
     name: str = Field(min_length=2, max_length=120)
@@ -1627,9 +1620,9 @@ class ShippingQuoteOption(BaseModel):
     max_delivery_days: int
 
 
-# =========================================================
+ 
 # SHIPMENT SCHEMAS
-# =========================================================
+ 
 
 class ShipmentItemResponse(BaseModel):
     id: UUID
@@ -2213,9 +2206,9 @@ class WishlistMutationResponse(BaseModel):
     message: str
 
 
-# =========================================================
+ 
 # PHASE 3 TASK 14: PROMOTION SCHEMAS
-# =========================================================
+ 
 
 PromotionTypeLiteral = Literal[
     "percentage", "fixed_amount", "free_shipping", "buy_x_get_y",

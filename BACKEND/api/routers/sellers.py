@@ -61,19 +61,25 @@ def _assign_role(db: Session, user_id: UUID, role_name: str) -> None:
             "Run: python -m api.seed_permissions"
         )
 
-    existing = db.query(UserRole).filter(
-        UserRole.user_id == user_id,
-        UserRole.role_id == role.id,
-    ).first()
+    existing = (
+        db.query(UserRole)
+        .filter(
+            UserRole.user_id == user_id,
+            UserRole.role_id == role.id,
+        )
+        .first()
+    )
     if existing is None:
         db.add(UserRole(user_id=user_id, role_id=role.id))
 
 
-def _validated_categories(db: Session, category_ids: list[UUID]) -> list[BusinessCategory]:
+def _validated_categories(
+    db: Session, category_ids: list[UUID]
+) -> list[BusinessCategory]:
     unique_ids = list(dict.fromkeys(category_ids))
-    categories = db.query(BusinessCategory).filter(
-        BusinessCategory.id.in_(unique_ids)
-    ).all()
+    categories = (
+        db.query(BusinessCategory).filter(BusinessCategory.id.in_(unique_ids)).all()
+    )
     if len(categories) != len(unique_ids):
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
@@ -94,15 +100,11 @@ def get_my_seller(db: Session, current_user: User) -> Seller:
 def require_admin(current_user: User):
     allowed_roles = ["super_admin", "admin"]
 
-    user_roles = [
-        user_role.role.name
-        for user_role in current_user.roles
-    ]
+    user_roles = [user_role.role.name for user_role in current_user.roles]
 
     if not any(role in allowed_roles for role in user_roles):
         raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Admin access required"
+            status_code=status.HTTP_403_FORBIDDEN, detail="Admin access required"
         )
 
 
@@ -128,7 +130,9 @@ def apply_to_become_seller(
             detail={
                 "message": "This account already has a seller application",
                 "seller_id": str(existing.id),
-                "status": existing.status.value if hasattr(existing.status, "value") else str(existing.status),
+                "status": existing.status.value
+                if hasattr(existing.status, "value")
+                else str(existing.status),
             },
         )
 
@@ -137,7 +141,9 @@ def apply_to_become_seller(
     seller = Seller(
         user_id=current_user.id,
         business_name=data.business_name.strip(),
-        contact_email=str(data.contact_email).strip().lower() if data.contact_email else current_user.email,
+        contact_email=str(data.contact_email).strip().lower()
+        if data.contact_email
+        else current_user.email,
         contact_phone=data.contact_phone or current_user.phone,
         agreement_accepted=True,
         status=SellerStatus.pending,
@@ -190,14 +196,17 @@ def get_seller_application_status(
     if seller is None:
         return SellerApplicationStatusResponse(has_application=False)
 
-    seller_status = seller.status.value if hasattr(seller.status, "value") else str(seller.status)
+    seller_status = (
+        seller.status.value if hasattr(seller.status, "value") else str(seller.status)
+    )
     return SellerApplicationStatusResponse(
         has_application=True,
         seller_id=seller.id,
         status=seller_status,
         business_name=seller.business_name,
         can_access_seller_dashboard=seller.status == SellerStatus.approved,
-        can_upload_kyc=seller.status in {
+        can_upload_kyc=seller.status
+        in {
             SellerStatus.pending,
             SellerStatus.under_review,
             SellerStatus.rejected,
@@ -233,6 +242,7 @@ def update_my_seller_profile(
 
     return seller
 
+
 @router.get("/profile", response_model=SellerProfileResponse)
 def get_my_seller_business_profile(
     db: Session = Depends(get_db),
@@ -240,9 +250,9 @@ def get_my_seller_business_profile(
 ):
     seller = get_my_seller(db, current_user)
 
-    profile = db.query(SellerProfile).filter(
-        SellerProfile.seller_id == seller.id
-    ).first()
+    profile = (
+        db.query(SellerProfile).filter(SellerProfile.seller_id == seller.id).first()
+    )
 
     if not profile:
         profile = SellerProfile(seller_id=seller.id)
@@ -261,9 +271,9 @@ def update_my_seller_business_profile(
 ):
     seller = get_my_seller(db, current_user)
 
-    profile = db.query(SellerProfile).filter(
-        SellerProfile.seller_id == seller.id
-    ).first()
+    profile = (
+        db.query(SellerProfile).filter(SellerProfile.seller_id == seller.id).first()
+    )
 
     if not profile:
         profile = SellerProfile(seller_id=seller.id)
@@ -282,9 +292,9 @@ def update_my_seller_business_profile(
     return profile
 
 
-# =========================================================
+#
 # KYC DOCUMENTS
-# =========================================================
+#
 
 ALLOWED_KYC_EXTENSIONS = {".pdf"}
 MAX_KYC_FILE_SIZE = 10 * 1024 * 1024  # 10 MB
@@ -315,7 +325,9 @@ def _ensure_kyc_is_editable(seller: Seller) -> None:
         )
 
 
-def _ensure_document_is_not_under_admin_review(document: SellerKYCDocument | None) -> None:
+def _ensure_document_is_not_under_admin_review(
+    document: SellerKYCDocument | None,
+) -> None:
     if document is not None and document.status == "under_review":
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -327,10 +339,14 @@ def _ensure_document_is_not_under_admin_review(document: SellerKYCDocument | Non
 
 
 def _ensure_no_documents_are_under_admin_review(db: Session, seller_id: UUID) -> None:
-    reviewing = db.query(SellerKYCDocument).filter(
-        SellerKYCDocument.seller_id == seller_id,
-        SellerKYCDocument.status == "under_review",
-    ).first()
+    reviewing = (
+        db.query(SellerKYCDocument)
+        .filter(
+            SellerKYCDocument.seller_id == seller_id,
+            SellerKYCDocument.status == "under_review",
+        )
+        .first()
+    )
     if reviewing is not None:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -343,10 +359,14 @@ def _get_owned_kyc_document(
     seller_id: UUID,
     document_id: UUID,
 ) -> SellerKYCDocument:
-    document = db.query(SellerKYCDocument).filter(
-        SellerKYCDocument.id == document_id,
-        SellerKYCDocument.seller_id == seller_id,
-    ).first()
+    document = (
+        db.query(SellerKYCDocument)
+        .filter(
+            SellerKYCDocument.id == document_id,
+            SellerKYCDocument.seller_id == seller_id,
+        )
+        .first()
+    )
 
     if document is None:
         raise HTTPException(
@@ -431,9 +451,7 @@ async def _save_kyc_upload(
             detail="KYC PDF must not exceed 10 MB",
         )
 
-    file_name = (
-        f"{seller_id}_{document_type}_{uuid4().hex}{extension}"
-    )
+    file_name = f"{seller_id}_{document_type}_{uuid4().hex}{extension}"
     file_path = UPLOAD_DIR / file_name
     file_path.write_bytes(content)
 
@@ -443,14 +461,13 @@ async def _save_kyc_upload(
 def _synchronize_seller_kyc_status(db: Session, seller: Seller) -> None:
     uploaded_types = {
         row.document_type
-        for row in db.query(SellerKYCDocument).filter(
-            SellerKYCDocument.seller_id == seller.id
-        ).all()
+        for row in db.query(SellerKYCDocument)
+        .filter(SellerKYCDocument.seller_id == seller.id)
+        .all()
     }
 
     has_all_required_documents = all(
-        required_type in uploaded_types
-        for required_type in REQUIRED_KYC_DOCUMENTS
+        required_type in uploaded_types for required_type in REQUIRED_KYC_DOCUMENTS
     )
 
     seller.status = (
@@ -477,10 +494,14 @@ async def upload_kyc_document(
     _ensure_kyc_is_editable(seller)
 
     normalized_type = _normalize_document_type(document_type)
-    existing_document = db.query(SellerKYCDocument).filter(
-        SellerKYCDocument.seller_id == seller.id,
-        SellerKYCDocument.document_type == normalized_type,
-    ).first()
+    existing_document = (
+        db.query(SellerKYCDocument)
+        .filter(
+            SellerKYCDocument.seller_id == seller.id,
+            SellerKYCDocument.document_type == normalized_type,
+        )
+        .first()
+    )
     _ensure_document_is_not_under_admin_review(existing_document)
 
     new_document_url = await _save_kyc_upload(
@@ -534,9 +555,7 @@ def get_my_kyc_documents(
     """List the authenticated seller's KYC document records."""
     seller = get_my_seller(db, current_user)
 
-    query = db.query(SellerKYCDocument).filter(
-        SellerKYCDocument.seller_id == seller.id
-    )
+    query = db.query(SellerKYCDocument).filter(SellerKYCDocument.seller_id == seller.id)
 
     if document_type:
         query = query.filter(
@@ -544,9 +563,7 @@ def get_my_kyc_documents(
         )
 
     if status_filter:
-        query = query.filter(
-            SellerKYCDocument.status == status_filter.strip().lower()
-        )
+        query = query.filter(SellerKYCDocument.status == status_filter.strip().lower())
 
     total = query.count()
     documents = (
@@ -601,10 +618,14 @@ async def upload_bulk_kyc_documents(
             )
 
         for document_type, document_url in saved_urls.items():
-            existing_document = db.query(SellerKYCDocument).filter(
-                SellerKYCDocument.seller_id == seller.id,
-                SellerKYCDocument.document_type == document_type,
-            ).first()
+            existing_document = (
+                db.query(SellerKYCDocument)
+                .filter(
+                    SellerKYCDocument.seller_id == seller.id,
+                    SellerKYCDocument.document_type == document_type,
+                )
+                .first()
+            )
 
             if existing_document is not None:
                 if existing_document.document_url:
@@ -706,11 +727,15 @@ async def update_my_kyc_document(
     if document_type is not None:
         new_document_type = _normalize_document_type(document_type)
 
-        duplicate = db.query(SellerKYCDocument).filter(
-            SellerKYCDocument.seller_id == seller.id,
-            SellerKYCDocument.document_type == new_document_type,
-            SellerKYCDocument.id != document.id,
-        ).first()
+        duplicate = (
+            db.query(SellerKYCDocument)
+            .filter(
+                SellerKYCDocument.seller_id == seller.id,
+                SellerKYCDocument.document_type == new_document_type,
+                SellerKYCDocument.id != document.id,
+            )
+            .first()
+        )
 
         if duplicate is not None:
             raise HTTPException(
@@ -786,9 +811,11 @@ def get_my_kyc_status(
 ):
     seller = get_my_seller(db, current_user)
 
-    documents = db.query(SellerKYCDocument).filter(
-        SellerKYCDocument.seller_id == seller.id
-    ).all()
+    documents = (
+        db.query(SellerKYCDocument)
+        .filter(SellerKYCDocument.seller_id == seller.id)
+        .all()
+    )
 
     uploaded_documents = [doc.document_type for doc in documents]
     missing_documents = [
@@ -806,7 +833,11 @@ def get_my_kyc_status(
     }
 
 
-@router.post("/payout-accounts", response_model=SellerPayoutResponse, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/payout-accounts",
+    response_model=SellerPayoutResponse,
+    status_code=status.HTTP_201_CREATED,
+)
 def create_payout_account(
     data: SellerPayoutCreate,
     db: Session = Depends(get_db),
@@ -851,10 +882,12 @@ def get_my_payout_accounts(
 
     total = query.count()
 
-    accounts = query.order_by(SellerPayoutAccount.created_at.desc()) \
-        .offset((page - 1) * page_size) \
-        .limit(page_size) \
+    accounts = (
+        query.order_by(SellerPayoutAccount.created_at.desc())
+        .offset((page - 1) * page_size)
+        .limit(page_size)
         .all()
+    )
 
     return {
         "total": total,
@@ -872,10 +905,14 @@ def delete_payout_account(
 ):
     seller = get_my_seller(db, current_user)
 
-    payout = db.query(SellerPayoutAccount).filter(
-        SellerPayoutAccount.id == account_id,
-        SellerPayoutAccount.seller_id == seller.id,
-    ).first()
+    payout = (
+        db.query(SellerPayoutAccount)
+        .filter(
+            SellerPayoutAccount.id == account_id,
+            SellerPayoutAccount.seller_id == seller.id,
+        )
+        .first()
+    )
 
     if not payout:
         raise HTTPException(status_code=404, detail="Payout account not found")
@@ -884,6 +921,7 @@ def delete_payout_account(
     db.commit()
 
     return {"message": "Payout account deleted successfully"}
+
 
 @router.get("/admin/pending", response_model=PaginatedSellerResponse)
 def admin_get_pending_sellers(
@@ -894,16 +932,16 @@ def admin_get_pending_sellers(
 ):
     require_admin(current_user)
 
-    query = db.query(Seller).filter(
-        Seller.status == SellerStatus.under_review
-    )
+    query = db.query(Seller).filter(Seller.status == SellerStatus.under_review)
 
     total = query.count()
 
-    sellers = query.order_by(Seller.created_at.desc()) \
-        .offset((page - 1) * page_size) \
-        .limit(page_size) \
+    sellers = (
+        query.order_by(Seller.created_at.desc())
+        .offset((page - 1) * page_size)
+        .limit(page_size)
         .all()
+    )
 
     return {
         "total": total,
@@ -922,9 +960,9 @@ def admin_view_seller_kyc_document(
     """Stream a seller KYC document inline for an administrator."""
     require_admin(current_user)
 
-    document = db.query(SellerKYCDocument).filter(
-        SellerKYCDocument.id == document_id
-    ).first()
+    document = (
+        db.query(SellerKYCDocument).filter(SellerKYCDocument.id == document_id).first()
+    )
 
     if document is None:
         raise HTTPException(
@@ -952,9 +990,9 @@ def admin_download_seller_kyc_document(
     """Download a seller KYC document as an administrator."""
     require_admin(current_user)
 
-    document = db.query(SellerKYCDocument).filter(
-        SellerKYCDocument.id == document_id
-    ).first()
+    document = (
+        db.query(SellerKYCDocument).filter(SellerKYCDocument.id == document_id).first()
+    )
 
     if document is None:
         raise HTTPException(
@@ -981,9 +1019,11 @@ def admin_get_seller_documents(
 ):
     require_admin(current_user)
 
-    return db.query(SellerKYCDocument).filter(
-        SellerKYCDocument.seller_id == seller_id
-    ).all()
+    return (
+        db.query(SellerKYCDocument)
+        .filter(SellerKYCDocument.seller_id == seller_id)
+        .all()
+    )
 
 
 @router.post("/admin/{seller_id}/approve", response_model=SellerResponse)
@@ -999,14 +1039,17 @@ def admin_approve_seller(
     if not seller:
         raise HTTPException(status_code=404, detail="Seller not found")
 
-    documents = db.query(SellerKYCDocument).filter(
-        SellerKYCDocument.seller_id == seller.id
-    ).all()
+    documents = (
+        db.query(SellerKYCDocument)
+        .filter(SellerKYCDocument.seller_id == seller.id)
+        .all()
+    )
 
     uploaded_types = [doc.document_type for doc in documents]
 
     missing = [
-        doc_type for doc_type in REQUIRED_KYC_DOCUMENTS
+        doc_type
+        for doc_type in REQUIRED_KYC_DOCUMENTS
         if doc_type not in uploaded_types
     ]
 
@@ -1024,6 +1067,7 @@ def admin_approve_seller(
 
     return seller
 
+
 @router.post("/admin/{seller_id}/reject", response_model=SellerResponse)
 def admin_reject_seller(
     seller_id: UUID,
@@ -1040,12 +1084,12 @@ def admin_reject_seller(
 
     seller.status = SellerStatus.rejected
 
-    db.query(SellerKYCDocument).filter(
-        SellerKYCDocument.seller_id == seller.id
-    ).update({
-        "status": "rejected",
-        "rejection_reason": reason,
-    })
+    db.query(SellerKYCDocument).filter(SellerKYCDocument.seller_id == seller.id).update(
+        {
+            "status": "rejected",
+            "rejection_reason": reason,
+        }
+    )
 
     db.commit()
     db.refresh(seller)

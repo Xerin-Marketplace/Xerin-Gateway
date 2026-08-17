@@ -583,10 +583,8 @@ def remove_permission_from_user(
 
     return {"message": "Permission removed successfully"}
 
-# =========================
-# BUSINESS CATEGORIES
-# =========================
-
+  # BUSINESS CATEGORIES
+  
 @router.post("/business-categories", response_model=BusinessCategoryResponse)
 def create_business_category(
     data: BusinessCategoryCreate,
@@ -681,10 +679,8 @@ def delete_business_category(
     return {"message": "Business category deleted successfully"}
 
 
-# =========================
-# PRODUCT CATEGORIES
-# =========================
-
+  # PRODUCT CATEGORIES
+  
 @router.post("/product-categories", response_model=CategoryResponse)
 def create_product_category(
     data: CategoryCreate,
@@ -746,10 +742,8 @@ def delete_product_category(
     return {"message": "Product category deleted successfully"}
 
 
-# =========================
-# BRANDS
-# =========================
-
+  # BRANDS
+  
 @router.post("/brands", response_model=BrandResponse)
 def create_brand(
     data: BrandCreate,
@@ -807,10 +801,8 @@ def delete_brand(
     return {"message": "Brand deleted successfully"}
 
 
-# =========================
-# SELLER VERIFICATION
-# =========================
-
+  # SELLER VERIFICATION
+  
 @router.get("/sellers", response_model=list[SellerResponse])
 def get_all_sellers(
     db: Session = Depends(get_db),
@@ -941,10 +933,8 @@ def reject_seller(
     return seller
 
 
-# =========================
-# PRODUCT APPROVAL
-# =========================
-
+  # PRODUCT APPROVAL
+  
 @router.get("/products/pending", response_model=list[ProductResponse])
 def get_pending_products(
     db: Session = Depends(get_db),
