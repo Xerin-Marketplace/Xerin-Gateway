@@ -210,6 +210,75 @@ class AzamPayClient:
             )
         return data
 
+    def _get(self, path: str) -> requests.Response:
+        token = self.get_token()
+        url = f"{self.base_url}/{path.lstrip('/')}"
+        response = self._request(
+            "GET",
+            url,
+            headers=self._headers(token),
+        )
+        if response.status_code == 401:
+            token = self.get_token(force_refresh=True)
+            response = self._request(
+                "GET",
+                url,
+                headers=self._headers(token),
+            )
+        return response
+
+    def payment_partners(self) -> list[dict[str, Any]]:
+        """Return payment partners registered for the authenticated merchant."""
+        response = self._get(settings.AZAMPAY_PAYMENT_PARTNERS_PATH)
+
+        try:
+            data = response.json()
+        except ValueError as exc:
+            raise AzamPayAPIError(
+                "AzamPay payment-partners endpoint returned a non-JSON response",
+                status_code=response.status_code,
+            ) from exc
+
+        if not response.ok:
+            message = "AzamPay payment-partners request failed"
+            payload: dict[str, Any] = {}
+            if isinstance(data, dict):
+                payload = data
+                message = (
+                    data.get("message")
+                    or data.get("msg")
+                    or message
+                )
+            raise AzamPayAPIError(
+                message,
+                status_code=response.status_code,
+                payload=payload,
+                retryable=response.status_code >= 500,
+            )
+
+        if not isinstance(data, list):
+            raise AzamPayAPIError(
+                "AzamPay payment-partners response was not a list",
+                status_code=response.status_code,
+            )
+
+        safe_rows: list[dict[str, Any]] = []
+        for row in data:
+            if not isinstance(row, dict):
+                continue
+            safe_rows.append(
+                {
+                    "logoUrl": row.get("logoUrl"),
+                    "partnerName": row.get("partnerName"),
+                    "provider": row.get("provider"),
+                    "vendorName": row.get("vendorName"),
+                    "paymentVendorId": row.get("paymentVendorId"),
+                    "paymentPartnerId": row.get("paymentPartnerId"),
+                    "currency": row.get("currency"),
+                }
+            )
+        return safe_rows
+
     @staticmethod
     def normalize_mno(provider: str) -> str:
         normalized = provider.lower().replace(" ", "").replace("_", "").replace("-", "")

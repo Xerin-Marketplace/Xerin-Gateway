@@ -31,6 +31,7 @@ from api.models import (
 )
 from api.permissions import require_permission
 from api.schemas import (
+    AzamPayDiagnosticsResponse,
     PaymentCallbackRequest,
     PaymentInitiateRequest,
     PaginatedPaymentResponse,
@@ -281,6 +282,87 @@ def _finalise_online_payment(
             ),
         )
     )
+
+
+@router.get(
+    "/azampay/diagnostics",
+    response_model=AzamPayDiagnosticsResponse,
+)
+def azampay_diagnostics(
+    current_user: User = Depends(
+        require_permission("payment_providers:read")
+    ),
+):
+    """Safe merchant diagnostics. Never returns tokens, secrets, or API keys."""
+    del current_user
+    client = AzamPayClient()
+
+    base = {
+        "environment": "sandbox" if settings.AZAMPAY_SANDBOX else "live",
+        "base_url": client.base_url,
+        "authentication": "failed",
+        "merchant_configured": False,
+        "payment_partners_status": "skipped",
+        "partners": [],
+        "provider_names": [],
+        "error_code": None,
+        "error_message": None,
+        "provider_status": None,
+    }
+
+    try:
+        # Do not expose the token. This call only proves authentication works.
+        client.get_token(force_refresh=True)
+        base["authentication"] = "ok"
+    except AzamPayConfigurationError as exc:
+        base["error_code"] = "configuration_error"
+        base["error_message"] = str(exc)
+        return base
+    except AzamPayAPIError as exc:
+        base["error_code"] = str(
+            exc.payload.get("code") or "authentication_error"
+        )
+        base["error_message"] = str(exc)
+        base["provider_status"] = exc.status_code
+        return base
+
+    try:
+        rows = client.payment_partners()
+    except AzamPayAPIError as exc:
+        base["payment_partners_status"] = "failed"
+        base["error_code"] = str(
+            exc.payload.get("code") or "payment_partners_error"
+        )
+        base["error_message"] = str(exc)
+        base["provider_status"] = exc.status_code
+        return base
+
+    partners = [
+        {
+            "logo_url": row.get("logoUrl"),
+            "partner_name": row.get("partnerName"),
+            "provider": row.get("provider"),
+            "vendor_name": row.get("vendorName"),
+            "payment_vendor_id": row.get("paymentVendorId"),
+            "payment_partner_id": row.get("paymentPartnerId"),
+            "currency": row.get("currency"),
+        }
+        for row in rows
+    ]
+
+    provider_names = sorted(
+        {
+            str(row.get("partnerName")).strip()
+            for row in rows
+            if row.get("partnerName")
+        }
+    )
+
+    base["payment_partners_status"] = "ok"
+    base["partners"] = partners
+    base["provider_names"] = provider_names
+    base["merchant_configured"] = bool(rows)
+    return base
 
 
 @router.post("/initiate", response_model=PaymentResponse, status_code=status.HTTP_201_CREATED)

@@ -1773,6 +1773,29 @@ class PaginatedPaymentResponse(BaseModel):
     results: list[PaymentResponse]
 
 
+class AzamPayPaymentPartnerResponse(BaseModel):
+    logo_url: Optional[str] = None
+    partner_name: Optional[str] = None
+    provider: Optional[int] = None
+    vendor_name: Optional[str] = None
+    payment_vendor_id: Optional[str] = None
+    payment_partner_id: Optional[str] = None
+    currency: Optional[str] = None
+
+
+class AzamPayDiagnosticsResponse(BaseModel):
+    environment: Literal["sandbox", "live"]
+    base_url: str
+    authentication: Literal["ok", "failed"]
+    merchant_configured: bool
+    payment_partners_status: Literal["ok", "failed", "skipped"]
+    partners: list[AzamPayPaymentPartnerResponse] = Field(default_factory=list)
+    provider_names: list[str] = Field(default_factory=list)
+    error_code: Optional[str] = None
+    error_message: Optional[str] = None
+    provider_status: Optional[int] = None
+
+
 # =========================================================
 # COUPON SCHEMAS
 # =========================================================

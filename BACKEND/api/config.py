@@ -96,6 +96,7 @@ class Settings(BaseSettings):
     AZAMPAY_MNO_CHECKOUT_PATH: str = "/azampay/mno/checkout"
     AZAMPAY_POST_CHECKOUT_PATH: str = "/azampay/checkout"
     AZAMPAY_NAME_LOOKUP_PATH: str = "/azampay/mno/lookup"
+    AZAMPAY_PAYMENT_PARTNERS_PATH: str = "/api/v1/Partner/GetPaymentPartners"
     AZAMPAY_TIMEOUT_SECONDS: int = Field(default=30, ge=1, le=120)
 
     # External delivery provider
