@@ -34,6 +34,7 @@ from api.schemas import (
     AzamPayDiagnosticsResponse,
     PaymentCallbackRequest,
     PaymentInitiateRequest,
+    PaymentRetryRequest,
     PaginatedPaymentResponse,
     PaymentResponse,
     NameLookupRequest,
@@ -365,6 +366,79 @@ def azampay_diagnostics(
     return base
 
 
+def _execute_azampay_payment(
+    *,
+    client: AzamPayClient,
+    payment: Payment,
+    order: Order,
+    method: PaymentMethod,
+    mno_provider: str | None,
+    phone_number: str | None,
+    success_url: str | None,
+    failure_url: str | None,
+):
+    if method == PaymentMethod.mobile_money:
+        if not mno_provider or not phone_number:
+            raise ValueError("provider and phone_number are required for mobile money")
+        return client.mobile_checkout(
+            amount=Decimal(order.total),
+            currency=order.currency,
+            phone_number=phone_number,
+            provider=mno_provider,
+            external_id=str(payment.id),
+            additional_properties={
+                "order_id": str(order.id),
+                "payment_id": str(payment.id),
+            },
+        )
+    if method == PaymentMethod.card:
+        resolved_success_url = success_url or settings.AZAMPAY_CARD_SUCCESS_URL
+        resolved_failure_url = failure_url or settings.AZAMPAY_CARD_FAILURE_URL
+        if not resolved_success_url or not resolved_failure_url:
+            raise AzamPayConfigurationError(
+                "Card checkout requires success_url and failure_url, or configured defaults"
+            )
+        cart_items = [
+            {
+                "name": getattr(item, "product_name", None) or f"Order item {item.id}",
+                "quantity": item.quantity,
+                "price": format(Decimal(item.unit_price), "f"),
+            }
+            for item in order.items
+        ]
+        return client.card_checkout(
+            amount=Decimal(order.total),
+            currency=order.currency,
+            external_id=payment.id.hex[:30],
+            success_url=resolved_success_url,
+            failure_url=resolved_failure_url,
+            cart={"items": cart_items},
+        )
+    raise ValueError("AzamPay supports mobile_money and card methods")
+
+
+def _payment_error_detail(
+    *,
+    code: str,
+    message: str,
+    payment: Payment,
+    order: Order,
+    retryable: bool,
+    provider_status: int | None = None,
+) -> dict:
+    detail = {
+        "code": code,
+        "message": message,
+        "provider": payment.provider or "azampay",
+        "order_id": str(order.id),
+        "payment_id": str(payment.id),
+        "retryable": retryable,
+    }
+    if provider_status is not None:
+        detail["provider_status"] = provider_status
+    return detail
+
+
 @router.post("/initiate", response_model=PaymentResponse, status_code=status.HTTP_201_CREATED)
 def initiate_payment(data: PaymentInitiateRequest, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     order = db.query(Order).filter(Order.id == data.order_id).with_for_update().first()
@@ -621,6 +695,247 @@ def initiate_payment(data: PaymentInitiateRequest, db: Session = Depends(get_db)
     return payment
 
 
+@router.post("/{payment_id}/retry", response_model=PaymentResponse)
+def retry_payment(
+    payment_id: UUID,
+    data: PaymentRetryRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    payment = (
+        db.query(Payment)
+        .filter(Payment.id == payment_id)
+        .with_for_update()
+        .first()
+    )
+    if not payment:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Payment not found")
+    if payment.user_id != current_user.id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized to retry this payment")
+
+    order = (
+        db.query(Order)
+        .filter(Order.id == payment.order_id)
+        .with_for_update()
+        .first()
+    )
+    if not order:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Payment order no longer exists")
+    if order.user_id != current_user.id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized to pay for this order")
+    if order.status != OrderStatus.pending:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Only pending orders can retry payment",
+        )
+    if payment.status == PaymentStatus.completed:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Completed payment cannot be retried")
+    if payment.status in {PaymentStatus.pending, PaymentStatus.processing}:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="This payment is still active; wait for its result before retrying",
+        )
+    if payment.status not in {PaymentStatus.failed, PaymentStatus.cancelled}:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Payment in {payment.status.value} status cannot be retried",
+        )
+    if payment.method not in {PaymentMethod.mobile_money, PaymentMethod.card} or (payment.provider or "").lower() != "azampay":
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="Only failed or cancelled AzamPay online payments can be retried",
+        )
+
+    # A failed provider attempt must not have consumed the order's stock hold.
+    ensure_order_reservations_active(db, order)
+
+    active_other = (
+        db.query(Payment)
+        .filter(
+            Payment.order_id == order.id,
+            Payment.id != payment.id,
+            Payment.status.in_(
+                [PaymentStatus.pending, PaymentStatus.processing, PaymentStatus.completed]
+            ),
+        )
+        .with_for_update()
+        .first()
+    )
+    if active_other:
+        detail = (
+            "Order is already paid"
+            if active_other.status == PaymentStatus.completed
+            else "Another payment is already active for this order"
+        )
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=detail)
+
+    # Each retry is a NEW Payment row and therefore a NEW AzamPay externalId.
+    # The order itself is reused, preventing duplicate orders.
+    attempt = Payment(
+        order_id=order.id,
+        user_id=current_user.id,
+        amount=order.total,
+        currency=order.currency,
+        method=payment.method,
+        provider="azampay",
+        status=PaymentStatus.pending,
+    )
+    db.add(attempt)
+    db.flush()
+
+    mno_provider = data.provider
+    phone_number = data.phone_number
+    if attempt.method == PaymentMethod.mobile_money:
+        if not mno_provider:
+            previous = payment.provider_response or {}
+            mno_provider = previous.get("mno")
+        if not mno_provider or not phone_number:
+            attempt.status = PaymentStatus.failed
+            attempt.failure_reason = "provider and phone_number are required to retry mobile money"
+            _record_transaction(
+                db, attempt, "retry_rejected", PaymentStatus.failed.value, order.total,
+                {
+                    "previous_payment_id": str(payment.id),
+                    "retryable": False,
+                    "message": attempt.failure_reason,
+                },
+            )
+            _commit(db)
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail=_payment_error_detail(
+                    code="INVALID_PAYMENT_RETRY",
+                    message=attempt.failure_reason,
+                    payment=attempt,
+                    order=order,
+                    retryable=False,
+                ),
+            )
+
+    _record_transaction(
+        db,
+        attempt,
+        "retry_initiate",
+        PaymentStatus.pending.value,
+        order.total,
+        {
+            "previous_payment_id": str(payment.id),
+            "payment_reference": str(attempt.id),
+            "method": attempt.method.value,
+            "provider": "azampay",
+            "mno": mno_provider if attempt.method == PaymentMethod.mobile_money else None,
+        },
+    )
+
+    client = AzamPayClient()
+    try:
+        result = _execute_azampay_payment(
+            client=client,
+            payment=attempt,
+            order=order,
+            method=attempt.method,
+            mno_provider=mno_provider,
+            phone_number=phone_number,
+            success_url=data.success_url,
+            failure_url=data.failure_url,
+        )
+    except ValueError as exc:
+        attempt.status = PaymentStatus.failed
+        attempt.failure_reason = str(exc)
+        _record_transaction(
+            db, attempt, "provider_rejected", PaymentStatus.failed.value, order.total,
+            {
+                "previous_payment_id": str(payment.id),
+                "code": "invalid_payment_request",
+                "message": str(exc),
+                "retryable": False,
+            },
+        )
+        _commit(db)
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=_payment_error_detail(
+                code="INVALID_PAYMENT_REQUEST",
+                message=str(exc),
+                payment=attempt,
+                order=order,
+                retryable=False,
+            ),
+        ) from exc
+    except AzamPayConfigurationError as exc:
+        attempt.status = PaymentStatus.failed
+        attempt.failure_reason = str(exc)
+        _record_transaction(
+            db, attempt, "provider_configuration_error", PaymentStatus.failed.value, order.total,
+            {
+                "previous_payment_id": str(payment.id),
+                "message": str(exc),
+                "retryable": False,
+            },
+        )
+        _commit(db)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=_payment_error_detail(
+                code="PAYMENT_PROVIDER_CONFIGURATION_ERROR",
+                message=str(exc),
+                payment=attempt,
+                order=order,
+                retryable=False,
+            ),
+        ) from exc
+    except AzamPayAPIError as exc:
+        attempt.status = PaymentStatus.failed
+        attempt.failure_reason = str(exc)
+        _record_transaction(
+            db, attempt, "provider_error", PaymentStatus.failed.value, order.total,
+            {
+                "previous_payment_id": str(payment.id),
+                "provider_status": exc.status_code,
+                "code": str(exc.payload.get("code") or exc.payload.get("error") or "provider_error"),
+                "message": str(exc),
+                "retryable": exc.retryable,
+            },
+        )
+        _commit(db)
+        raise HTTPException(
+            status_code=(
+                exc.status_code
+                if exc.status_code in {502, 503, 504}
+                else status.HTTP_502_BAD_GATEWAY
+            ),
+            detail=_payment_error_detail(
+                code="PAYMENT_PROVIDER_UNAVAILABLE" if exc.retryable else "PAYMENT_PROVIDER_ERROR",
+                message=str(exc),
+                payment=attempt,
+                order=order,
+                retryable=exc.retryable,
+                provider_status=exc.status_code,
+            ),
+        ) from exc
+
+    attempt.status = PaymentStatus.processing
+    attempt.provider_transaction_id = result.transaction_id
+    attempt.provider_response = {
+        **result.raw,
+        "checkout_url": result.checkout_url,
+        "message": result.message,
+        "mno": mno_provider if attempt.method == PaymentMethod.mobile_money else None,
+        "previous_payment_id": str(payment.id),
+    }
+    _record_transaction(
+        db,
+        attempt,
+        "provider_request",
+        PaymentStatus.processing.value,
+        order.total,
+        attempt.provider_response,
+    )
+    _commit(db, conflict_detail="AzamPay retry transaction conflict")
+    db.refresh(attempt)
+    return attempt
+
+
 @router.post("/callback/{provider}", response_model=PaymentResponse)
 def payment_callback(
     provider: str,
@@ -689,18 +1004,24 @@ def _apply_payment_callback(provider: str, data: PaymentCallbackRequest, db: Ses
         payment.failure_reason = callback_payload.get("reason")
         order = db.query(Order).filter(Order.id == payment.order_id).with_for_update().first()
         if order and order.status == OrderStatus.pending:
-            release_order_reservations(db, order, target_status=InventoryReservationStatus.released)
-            order.status = OrderStatus.cancelled
-            db.add(OrderStatusHistory(order_id=order.id, status=OrderStatus.cancelled.value, notes="Order cancelled after failed payment"))
+            # Keep the order and its inventory reservation alive so the customer
+            # can retry payment without rebuilding the cart or creating a new order.
+            db.add(OrderStatusHistory(
+                order_id=order.id,
+                status=OrderStatus.pending.value,
+                notes="Payment attempt failed; order preserved for payment retry",
+            ))
     elif incoming_status in CANCELLED_STATUSES or incoming_status == PaymentStatus.cancelled.value:
         payment.status = PaymentStatus.cancelled
         payment.provider_transaction_id = data.transaction_id
         payment.provider_response = callback_payload
         order = db.query(Order).filter(Order.id == payment.order_id).with_for_update().first()
         if order and order.status == OrderStatus.pending:
-            release_order_reservations(db, order, target_status=InventoryReservationStatus.cancelled)
-            order.status = OrderStatus.cancelled
-            db.add(OrderStatusHistory(order_id=order.id, status=OrderStatus.cancelled.value, notes="Order cancelled by payment provider"))
+            db.add(OrderStatusHistory(
+                order_id=order.id,
+                status=OrderStatus.pending.value,
+                notes="Payment attempt cancelled by provider; order preserved for payment retry",
+            ))
     else:
         payment.status = PaymentStatus.processing
         payment.provider_response = callback_payload

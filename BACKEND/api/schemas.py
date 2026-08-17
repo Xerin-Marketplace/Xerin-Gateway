@@ -1726,6 +1726,15 @@ class PaymentInitiateRequest(BaseModel):
         return self
 
 
+class PaymentRetryRequest(BaseModel):
+    provider: Optional[str] = Field(default=None, max_length=100)
+    phone_number: Optional[str] = None
+    success_url: Optional[str] = Field(default=None, max_length=2048)
+    failure_url: Optional[str] = Field(default=None, max_length=2048)
+
+    _clean_phone = field_validator("phone_number")(_normalise_phone)
+
+
 class PaymentCallbackRequest(BaseModel):
     payment_id: UUID
     provider: str = Field(min_length=1, max_length=100)

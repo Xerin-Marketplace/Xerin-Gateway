@@ -37,3 +37,19 @@ def test_callback_rejects_provider_mismatch_before_database_access(client):
         json=payload,
     )
     assert response.status_code == 422
+
+
+def test_openapi_contains_payment_retry_endpoint(client):
+    response = client.get("/openapi.json")
+    assert response.status_code == 200
+    path = "/api/v1/payments/{payment_id}/retry"
+    assert path in response.json()["paths"]
+    assert "post" in response.json()["paths"][path]
+
+
+def test_payment_retry_requires_authentication(client):
+    response = client.post(
+        f"/api/v1/payments/{uuid4()}/retry",
+        json={"provider": "Airtel", "phone_number": "255700000000"},
+    )
+    assert response.status_code in {401, 403}
