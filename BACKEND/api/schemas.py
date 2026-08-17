@@ -1363,20 +1363,81 @@ class CartItemResponse(BaseModel):
     model_config = ORM_CONFIG
 
 
+class AppliedCartPromotion(BaseModel):
+    promotion_id: UUID
+    code: Optional[str]
+    name: str
+    promotion_type: str
+    funding_source: str
+    eligible_subtotal: Decimal
+    discount_amount: Decimal
+    seller_id: Optional[UUID] = None
+    stackable: bool = False
+
+
 class CartResponse(BaseModel):
     id: UUID
     user_id: UUID
     coupon_code: Optional[str]
+    promotion_code: Optional[str] = None
+    promotion: Optional[AppliedCartPromotion] = None
     items: list[CartItemResponse]
     subtotal: Decimal
+    coupon_discount_amount: Decimal = Decimal("0.00")
+    promotion_discount_amount: Decimal = Decimal("0.00")
     discount_amount: Decimal
     total: Decimal
+    currency: str = "TZS"
+    validation_messages: list[str] = Field(default_factory=list)
 
     model_config = ORM_CONFIG
 
 
 class ApplyCouponRequest(BaseModel):
     code: str
+
+
+class ApplyCartPromotionRequest(BaseModel):
+    code: str = Field(min_length=2, max_length=50)
+
+    @field_validator("code")
+    @classmethod
+    def normalise_cart_promotion_code(cls, value):
+        return value.strip().upper()
+
+
+class CartPromotionOffer(BaseModel):
+    promotion_id: UUID
+    code: Optional[str]
+    name: str
+    description: Optional[str] = None
+    promotion_type: str
+    funding_source: str
+    seller_id: Optional[UUID] = None
+    eligible_subtotal: Decimal
+    discount_amount: Decimal
+    total_after_discount: Decimal
+    stackable: bool
+    automatic: bool
+    minimum_order_amount: Optional[Decimal] = None
+    maximum_discount_amount: Optional[Decimal] = None
+    starts_at: Optional[datetime] = None
+    ends_at: Optional[datetime] = None
+
+
+class GuestCartMergeRequest(BaseModel):
+    items: list[CartItemCreate] = Field(default_factory=list, max_length=100)
+
+
+class GuestCartRejectedItem(BaseModel):
+    product_id: UUID
+    reason: str
+    available_quantity: Optional[int] = None
+
+
+class GuestCartMergeResponse(BaseModel):
+    cart: CartResponse
+    rejected_items: list[GuestCartRejectedItem]
 
 
 # =========================================================
