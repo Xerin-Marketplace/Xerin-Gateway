@@ -40,6 +40,7 @@ from api.schemas import (
     PaymentResponse,
     NameLookupRequest,
     NameLookupResponse,
+    OrderPaymentStateResponse,
 )
 from api.enums import InventoryReservationStatus, SellerOrderStatus
 from api.services.azampay_service import AzamPayAPIError, AzamPayClient, AzamPayConfigurationError
@@ -1330,6 +1331,98 @@ def list_payments(
     if payment_status:
         query = query.filter(Payment.status == payment_status)
     return query.order_by(Payment.created_at.desc()).all()
+
+
+@router.get(
+    "/orders/{order_id}/state",
+    response_model=OrderPaymentStateResponse,
+)
+def order_payment_state(
+    order_id: UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Small polling endpoint used by customer payment UX.
+
+    The payment provider callback remains the source of truth. The browser only
+    reads this state; it never marks a payment successful itself.
+    """
+    order = (
+        db.query(Order)
+        .filter(Order.id == order_id, Order.user_id == current_user.id)
+        .first()
+    )
+    if not order:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Order not found",
+        )
+
+    latest = (
+        db.query(Payment)
+        .options(selectinload(Payment.transactions))
+        .filter(
+            Payment.order_id == order.id,
+            Payment.user_id == current_user.id,
+        )
+        .order_by(Payment.created_at.desc())
+        .first()
+    )
+
+    if latest is None:
+        return {
+            "order_id": order.id,
+            "order_status": order.status.value,
+            "payment_status": "not_started",
+            "latest_payment": None,
+            "retryable": order.status == OrderStatus.pending,
+            "terminal": False,
+            "poll_after_seconds": None,
+            "message": "Payment has not been started for this order.",
+        }
+
+    payment_status = latest.status.value
+    active = latest.status in {PaymentStatus.pending, PaymentStatus.processing}
+    completed = latest.status == PaymentStatus.completed
+    failed = latest.status in {PaymentStatus.failed, PaymentStatus.cancelled}
+    refunded = latest.status == PaymentStatus.refunded
+
+    if completed:
+        message = "Payment confirmed. Your order is moving through fulfilment."
+    elif latest.status == PaymentStatus.processing:
+        message = (
+            "Payment request sent. Complete the authorization with your payment "
+            "provider while Xerin waits for confirmation."
+        )
+    elif latest.status == PaymentStatus.pending:
+        if latest.method == PaymentMethod.cash_on_delivery:
+            message = "Cash on Delivery selected. Payment will be collected at delivery."
+        else:
+            message = "Payment is pending confirmation."
+    elif failed:
+        message = latest.failure_reason or (
+            "Payment was not completed. You can retry against the same order."
+        )
+    elif refunded:
+        message = "This payment has been refunded."
+    else:
+        message = f"Payment status is {payment_status}."
+
+    return {
+        "order_id": order.id,
+        "order_status": order.status.value,
+        "payment_status": payment_status,
+        "latest_payment": latest,
+        "retryable": bool(
+            failed
+            and order.status == OrderStatus.pending
+            and latest.method in {PaymentMethod.mobile_money, PaymentMethod.card}
+            and (latest.provider or "").lower() == "azampay"
+        ),
+        "terminal": bool(completed or refunded),
+        "poll_after_seconds": 4 if active else None,
+        "message": message,
+    }
 
 
 @router.get("/{payment_id}", response_model=PaymentResponse)

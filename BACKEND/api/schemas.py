@@ -1811,6 +1811,26 @@ class PaginatedPaymentResponse(BaseModel):
     results: list[PaymentResponse]
 
 
+class OrderPaymentStateResponse(BaseModel):
+    order_id: UUID
+    order_status: str
+    payment_status: Literal[
+        "not_started",
+        "pending",
+        "processing",
+        "completed",
+        "failed",
+        "cancelled",
+        "refunded",
+    ]
+    latest_payment: Optional[PaymentResponse] = None
+    retryable: bool = False
+    terminal: bool = False
+    poll_after_seconds: Optional[int] = None
+    message: str
+
+
+
 class AzamPayPaymentPartnerResponse(BaseModel):
     logo_url: Optional[str] = None
     partner_name: Optional[str] = None
