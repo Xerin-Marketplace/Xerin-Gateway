@@ -11,7 +11,16 @@ def get_or_create_wallet(db:Session,seller_id,currency="TZS"):
     if not w:
         w=SellerWallet(seller_id=seller_id,currency=currency); db.add(w); db.flush()
     return w
-def credit_sale(db:Session,*,seller_id,amount,currency,order_id,order_item_id):
+def credit_sale(
+    db:Session,
+    *,
+    seller_id,
+    amount,
+    currency,
+    order_id,
+    order_item_id,
+    eligible_at=None,
+):
     ref=f"sale_credit:{order_item_id}"
     existing=db.query(WalletTransaction).filter(WalletTransaction.reference==ref).first()
     if existing:return existing
@@ -21,7 +30,19 @@ def credit_sale(db:Session,*,seller_id,amount,currency,order_id,order_item_id):
         w.debt_balance=money(w.debt_balance)-debt_offset
         amount=money(amount)-debt_offset
     w.pending_balance=money(w.pending_balance)+amount
-    tx=WalletTransaction(wallet_id=w.id,transaction_type=WalletTransactionType.sale_credit,amount=amount,currency=currency,reference=ref,order_id=order_id,order_item_id=order_item_id,eligible_at=datetime.now(timezone.utc)+timedelta(days=settings.SELLER_SETTLEMENT_DAYS),description="Seller earning pending settlement")
+    if eligible_at is None:
+        eligible_at=datetime.now(timezone.utc)+timedelta(days=settings.SELLER_SETTLEMENT_DAYS)
+    tx=WalletTransaction(
+        wallet_id=w.id,
+        transaction_type=WalletTransactionType.sale_credit,
+        amount=amount,
+        currency=currency,
+        reference=ref,
+        order_id=order_id,
+        order_item_id=order_item_id,
+        eligible_at=eligible_at,
+        description="Seller earning held pending settlement/escrow release",
+    )
     db.add(tx); db.flush(); return tx
 def release_eligible_funds(db:Session,limit=500):
     now=datetime.now(timezone.utc); rows=db.query(WalletTransaction).filter(WalletTransaction.transaction_type==WalletTransactionType.sale_credit,WalletTransaction.released_at.is_(None),WalletTransaction.eligible_at<=now).order_by(WalletTransaction.eligible_at).with_for_update(skip_locked=True).limit(limit).all(); count=0

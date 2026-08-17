@@ -1,15 +1,19 @@
 import hmac
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from decimal import Decimal
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Header, HTTPException, status
+from sqlalchemy import String, cast, or_
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload, selectinload
 
 from api.config import settings
 from api.deps import get_current_user, get_db
 from api.models import (
+    FinanceSettings,
+    LogisticsCompany,
+    MarketplaceSettings,
     Order,
     OrderStatus,
     OrderStatusHistory,
@@ -17,6 +21,7 @@ from api.models import (
     PaymentMethod,
     PaymentStatus,
     PaymentTransaction,
+    ShippingMethod,
     Shipment,
     ShipmentItem,
     ShipmentStatus,
@@ -28,6 +33,7 @@ from api.permissions import require_permission
 from api.schemas import (
     PaymentCallbackRequest,
     PaymentInitiateRequest,
+    PaginatedPaymentResponse,
     PaymentResponse,
     NameLookupRequest,
     NameLookupResponse,
@@ -36,6 +42,7 @@ from api.enums import InventoryReservationStatus, SellerOrderStatus
 from api.services.azampay_service import AzamPayAPIError, AzamPayClient, AzamPayConfigurationError
 from api.services.inventory_reservations import commit_order_reservations, ensure_order_reservations_active, release_order_reservations
 from api.services.commission_engine import calculate_order_commissions
+from api.services.escrow_service import create_order_escrow_holds
 
 router = APIRouter(prefix="/payments", tags=["Payments"])
 
@@ -164,6 +171,118 @@ def payment_name_lookup(
             detail={"provider": "azampay", "message": str(exc)},
         ) from exc
 
+def _finance_settings(db: Session) -> FinanceSettings | None:
+    return (
+        db.query(FinanceSettings)
+        .filter(FinanceSettings.singleton_key == "default")
+        .first()
+    )
+
+
+def _marketplace_settings(db: Session) -> MarketplaceSettings | None:
+    return (
+        db.query(MarketplaceSettings)
+        .filter(MarketplaceSettings.singleton_key == 1)
+        .first()
+    )
+
+
+def _escrow_release_after(db: Session) -> datetime | None:
+    marketplace = _marketplace_settings(db)
+    if not marketplace or not marketplace.escrow_release_hours:
+        return None
+    return datetime.now(timezone.utc) + timedelta(
+        hours=marketplace.escrow_release_hours
+    )
+
+
+def _validate_cod_for_order(db: Session, order: Order) -> None:
+    marketplace = _marketplace_settings(db)
+
+    if order.delivery_mode != "local":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Cash on Delivery is only available for local Tanzania delivery",
+        )
+
+    if not marketplace or not marketplace.cod_allowed:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Cash on Delivery is disabled by marketplace settings",
+        )
+
+    method = (
+        db.query(ShippingMethod)
+        .options(joinedload(ShippingMethod.logistics_company))
+        .filter(ShippingMethod.id == order.shipping_method_id)
+        .first()
+    )
+    if not method or not method.is_active or not method.supports_cod:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="The selected delivery service does not support Cash on Delivery",
+        )
+
+    company = method.logistics_company
+    if company:
+        company_status = (
+            company.status.value
+            if hasattr(company.status, "value")
+            else str(company.status)
+        )
+        if company_status != "active" or not company.supports_cod:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="The selected logistics company does not support Cash on Delivery",
+            )
+
+
+def _finalise_online_payment(
+    db: Session,
+    *,
+    order: Order,
+    payment: Payment,
+    provider_name: str,
+) -> None:
+    _deduct_reserved_inventory(db, order)
+    _create_shipments_for_order(db, order)
+
+    finance = _finance_settings(db)
+    escrow_enabled = bool(finance is None or finance.escrow_enabled)
+    release_after = _escrow_release_after(db) if escrow_enabled else None
+
+    commission_records = calculate_order_commissions(
+        db,
+        order,
+        settlement_eligible_at=release_after,
+    )
+
+    if escrow_enabled:
+        create_order_escrow_holds(
+            db,
+            order=order,
+            payment=payment,
+            commission_records=commission_records,
+            release_after=release_after,
+        )
+
+    order.status = OrderStatus.paid
+    db.add(
+        OrderStatusHistory(
+            order_id=order.id,
+            status=OrderStatus.paid.value,
+            notes=(
+                f"Payment confirmed via {provider_name}; "
+                + (
+                    "seller settlement placed in escrow"
+                    if escrow_enabled
+                    else "seller settlement recorded"
+                )
+            ),
+        )
+    )
+
+
 @router.post("/initiate", response_model=PaymentResponse, status_code=status.HTTP_201_CREATED)
 def initiate_payment(data: PaymentInitiateRequest, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     order = db.query(Order).filter(Order.id == data.order_id).with_for_update().first()
@@ -211,6 +330,42 @@ def initiate_payment(data: PaymentInitiateRequest, db: Session = Depends(get_db)
     })
 
     if method == PaymentMethod.cash_on_delivery:
+        _validate_cod_for_order(db, order)
+
+        # COD has no captured digital funds yet, so no escrow hold is created.
+        # Inventory is committed and seller fulfilment begins immediately.
+        _deduct_reserved_inventory(db, order)
+        _create_shipments_for_order(db, order)
+        order.status = OrderStatus.processing
+
+        _record_transaction(
+            db,
+            payment,
+            "cod_authorized",
+            PaymentStatus.pending.value,
+            order.total,
+            {
+                "payment_reference": str(payment.id),
+                "collection_status": "awaiting_delivery_collection",
+                "shipping_method_id": (
+                    str(order.shipping_method_id)
+                    if order.shipping_method_id
+                    else None
+                ),
+                "logistics_company_id": (
+                    str(order.logistics_company_id)
+                    if order.logistics_company_id
+                    else None
+                ),
+            },
+        )
+        db.add(
+            OrderStatusHistory(
+                order_id=order.id,
+                status=OrderStatus.processing.value,
+                notes="Cash on Delivery order accepted; payment will be collected on delivery",
+            )
+        )
         _commit(db)
         db.refresh(payment)
         return payment
@@ -335,15 +490,17 @@ def _apply_payment_callback(provider: str, data: PaymentCallbackRequest, db: Ses
         if order.status != OrderStatus.pending:
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=f"Order cannot be paid from {order.status.value} status")
 
-        _deduct_reserved_inventory(db, order)
-        _create_shipments_for_order(db, order)
-        calculate_order_commissions(db, order)
         payment.status = PaymentStatus.completed
         payment.paid_at = datetime.now(timezone.utc)
         payment.provider_transaction_id = data.transaction_id
         payment.provider_response = callback_payload
-        order.status = OrderStatus.paid
-        db.add(OrderStatusHistory(order_id=order.id, status=OrderStatus.paid.value, notes=f"Payment confirmed via {normalized_provider}"))
+
+        _finalise_online_payment(
+            db,
+            order=order,
+            payment=payment,
+            provider_name=normalized_provider,
+        )
     elif incoming_status in FAILED_STATUSES or incoming_status == PaymentStatus.failed.value:
         payment.status = PaymentStatus.failed
         payment.provider_transaction_id = data.transaction_id
@@ -408,6 +565,60 @@ def azampay_callback(
         payload=payload,
     )
     return _apply_payment_callback("azampay", callback_data, db)
+
+
+@router.get("/my-payments", response_model=PaginatedPaymentResponse)
+def my_payments(
+    page: int = 1,
+    page_size: int = 20,
+    search: str | None = None,
+    payment_status: PaymentStatus | None = None,
+    method: PaymentMethod | None = None,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    page = max(page, 1)
+    page_size = min(max(page_size, 1), 100)
+
+    query = (
+        db.query(Payment)
+        .options(selectinload(Payment.transactions))
+        .filter(Payment.user_id == current_user.id)
+    )
+
+    if payment_status is not None:
+        query = query.filter(Payment.status == payment_status)
+
+    if method is not None:
+        query = query.filter(Payment.method == method)
+
+    if search and search.strip():
+        term = f"%{search.strip()}%"
+        query = query.filter(
+            or_(
+                cast(Payment.id, String).ilike(term),
+                cast(Payment.order_id, String).ilike(term),
+                Payment.provider_transaction_id.ilike(term),
+                Payment.provider.ilike(term),
+            )
+        )
+
+    total = query.count()
+    total_pages = (total + page_size - 1) // page_size if total else 0
+    rows = (
+        query.order_by(Payment.created_at.desc())
+        .offset((page - 1) * page_size)
+        .limit(page_size)
+        .all()
+    )
+
+    return {
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+        "total_pages": total_pages,
+        "results": rows,
+    }
 
 
 @router.get("/admin/all", response_model=list[PaymentResponse])
