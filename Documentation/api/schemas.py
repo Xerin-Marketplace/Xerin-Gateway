@@ -1834,6 +1834,30 @@ class AzamPayDiagnosticsResponse(BaseModel):
     provider_status: Optional[int] = None
 
 
+class CustomerEscrowSummary(BaseModel):
+    order_id: UUID
+    currency: str
+    status: Literal[
+        "not_applicable",
+        "held",
+        "partially_released",
+        "released",
+        "disputed",
+    ]
+    hold_count: int
+    gross_amount: Decimal
+    seller_amount: Decimal
+    commission_amount: Decimal
+    released_amount: Decimal
+    remaining_amount: Decimal
+    release_after: Optional[datetime] = None
+    can_customer_approve: bool = False
+
+
+class CustomerEscrowApprovalRequest(BaseModel):
+    note: Optional[str] = Field(default=None, max_length=500)
+
+
 # =========================================================
 # COUPON SCHEMAS
 # =========================================================
