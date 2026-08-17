@@ -2146,10 +2146,21 @@ class ShippingRateResponse(ShippingRateCreate):
     model_config = ORM_CONFIG
 
 
+class ShippingCheckoutConfig(BaseModel):
+    default_country: str = "Tanzania"
+    local_delivery_allowed: bool = True
+    international_delivery_allowed: bool = False
+    cod_allowed: bool = False
+    configured: bool = False
+
+
 class ShippingQuoteRequest(BaseModel):
     address_id: UUID
-    subtotal: Decimal = Field(ge=0)
-    weight_kg: Decimal = Field(default=Decimal("0.00"), ge=0)
+    delivery_mode: Literal["local", "international"]
+    logistics_company_id: Optional[UUID] = None
+    method_id: Optional[UUID] = None
+    subtotal: Optional[Decimal] = Field(default=None, ge=0)
+    weight_kg: Optional[Decimal] = Field(default=None, ge=0)
 
 
 class ShippingQuoteOption(BaseModel):
@@ -2162,10 +2173,15 @@ class ShippingQuoteOption(BaseModel):
     scope: LogisticsScope = LogisticsScope.local
     supports_cod: bool = False
     supports_tracking: bool = True
+    original_amount: Decimal
+    shipping_discount_amount: Decimal = Decimal("0.00")
     amount: Decimal
     currency: str = "TZS"
     min_delivery_days: int
     max_delivery_days: int
+    free_shipping_applied: bool = False
+    promotion_code: Optional[str] = None
+    promotion_name: Optional[str] = None
 
 
 # =========================================================
