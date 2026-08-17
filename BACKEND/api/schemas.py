@@ -1523,6 +1523,7 @@ class PaginatedOrderResponse(BaseModel):
     total: int
     page: int
     page_size: int
+    total_pages: int
     results: list[OrderResponse]
 
 
@@ -2252,6 +2253,60 @@ class ShipmentResponse(BaseModel):
     created_at: datetime
     updated_at: Optional[datetime]
     model_config = ORM_CONFIG
+
+
+class CustomerOrderAddressSummary(BaseModel):
+    label: Optional[str] = None
+    recipient_name: Optional[str] = None
+    recipient_phone: Optional[str] = None
+    country: Optional[str] = None
+    region: Optional[str] = None
+    district: Optional[str] = None
+    ward: Optional[str] = None
+    city: Optional[str] = None
+    street: Optional[str] = None
+    landmark: Optional[str] = None
+    postal_code: Optional[str] = None
+
+    model_config = ORM_CONFIG
+
+
+class CustomerOrderPaymentSummary(BaseModel):
+    id: UUID
+    amount: Decimal
+    currency: str
+    method: str
+    provider: Optional[str] = None
+    status: str
+    provider_transaction_id: Optional[str] = None
+    paid_at: Optional[datetime] = None
+    created_at: datetime
+
+    model_config = ORM_CONFIG
+
+
+class CustomerSellerOrderSummary(BaseModel):
+    id: UUID
+    seller_id: UUID
+    status: str
+    seller_subtotal: Decimal
+    item_count: int
+    accepted_at: Optional[datetime] = None
+    processing_at: Optional[datetime] = None
+    ready_to_ship_at: Optional[datetime] = None
+    shipped_at: Optional[datetime] = None
+    delivered_at: Optional[datetime] = None
+    created_at: datetime
+
+    model_config = ORM_CONFIG
+
+
+class CustomerOrderDetailResponse(OrderResponse):
+    payment_status: Optional[str] = None
+    payments: list[CustomerOrderPaymentSummary] = Field(default_factory=list)
+    shipping_address: Optional[CustomerOrderAddressSummary] = None
+    shipments: list[ShipmentResponse] = Field(default_factory=list)
+    seller_orders: list[CustomerSellerOrderSummary] = Field(default_factory=list)
 
 
 # Phase 3 Task 2: commission engine schemas

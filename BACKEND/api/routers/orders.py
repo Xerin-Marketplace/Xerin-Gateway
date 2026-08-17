@@ -29,6 +29,8 @@ from api.models import (
     Promotion,
     PromotionRule,
     PromotionUsage,
+    SellerOrder,
+    Shipment,
     ShippingMethod,
     ShippingRate,
     ShippingZone,
@@ -37,6 +39,7 @@ from api.models import (
 from api.permissions import get_user_permissions, get_user_role_names, require_permission
 from api.schemas import (
     AdminOrderResponse,
+    CustomerOrderDetailResponse,
     OrderCreateRequest,
     OrderResponse,
     OrderStatusUpdateRequest,
@@ -58,6 +61,34 @@ ALLOWED_TRANSITIONS: dict[OrderStatus, set[OrderStatus]] = {
     OrderStatus.refunded: set(),
 }
 
+
+
+def _customer_payment_status(order: Order) -> str | None:
+    payments = list(getattr(order, "payments", []) or [])
+    if not payments:
+        return None
+
+    priority = {
+        "completed": 6,
+        "processing": 5,
+        "pending": 4,
+        "refunded": 3,
+        "cancelled": 2,
+        "failed": 1,
+    }
+
+    def value_of(payment):
+        raw = payment.status
+        return raw.value if hasattr(raw, "value") else str(raw)
+
+    return max(
+        (value_of(payment) for payment in payments),
+        key=lambda value: priority.get(value, 0),
+    )
+
+
+def _page_count(total: int, page_size: int) -> int:
+    return (total + page_size - 1) // page_size if total else 0
 
 
 def _normalise_place(value: str | None) -> str:
@@ -983,15 +1014,67 @@ def _page_count(total: int, page_size: int) -> int:
 def get_my_orders(
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
+    search: str | None = Query(None, max_length=150),
+    order_status: OrderStatus | None = Query(None, alias="status"),
+    payment_status: PaymentStatus | None = Query(None),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    query = db.query(Order).filter(Order.user_id == current_user.id).order_by(Order.created_at.desc())
+    """
+    Customer order history with PostgreSQL filtering before pagination.
+
+    Search covers order id, product name, tracking number, carrier and payment
+    provider transaction reference.
+    """
+    query = db.query(Order).filter(Order.user_id == current_user.id)
+
+    if order_status is not None:
+        query = query.filter(Order.status == order_status)
+
+    if payment_status is not None:
+        query = query.filter(
+            Order.payments.any(Payment.status == payment_status)
+        )
+
+    term = (search or "").strip()
+    if term:
+        pattern = f"%{term}%"
+        query = query.filter(
+            or_(
+                cast(Order.id, String).ilike(pattern),
+                Order.items.any(OrderItem.product_name.ilike(pattern)),
+                Order.payments.any(
+                    Payment.provider_transaction_id.ilike(pattern)
+                ),
+                Order.payments.any(Payment.provider.ilike(pattern)),
+                Order.shipments.any(Shipment.tracking_number.ilike(pattern)),
+                Order.shipments.any(Shipment.carrier_name.ilike(pattern)),
+                Order.shipping_carrier.ilike(pattern),
+                Order.shipping_method_name.ilike(pattern),
+            )
+        )
+
+    total = query.count()
+    rows = (
+        query.options(
+            selectinload(Order.items),
+            selectinload(Order.status_history),
+            selectinload(Order.payments),
+            selectinload(Order.shipments)
+            .selectinload(Shipment.tracking_events),
+        )
+        .order_by(Order.created_at.desc(), Order.id.desc())
+        .offset((page - 1) * page_size)
+        .limit(page_size)
+        .all()
+    )
+
     return {
-        "total": query.count(),
+        "total": total,
         "page": page,
         "page_size": page_size,
-        "results": query.offset((page - 1) * page_size).limit(page_size).all(),
+        "total_pages": _page_count(total, page_size),
+        "results": rows,
     }
 
 
@@ -1086,6 +1169,76 @@ def list_all_orders(
         "page_size": page_size,
         "total_pages": _page_count(total, page_size),
         "results": [_serialize_admin_order(order) for order in rows],
+    }
+
+
+@router.get(
+    "/{order_id}/customer-detail",
+    response_model=CustomerOrderDetailResponse,
+)
+def get_customer_order_detail(
+    order_id: UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    order = (
+        db.query(Order)
+        .options(
+            selectinload(Order.items),
+            selectinload(Order.status_history),
+            selectinload(Order.payments),
+            selectinload(Order.shipping_address),
+            selectinload(Order.shipments)
+            .selectinload(Shipment.items),
+            selectinload(Order.shipments)
+            .selectinload(Shipment.tracking_events),
+            selectinload(Order.seller_orders),
+        )
+        .filter(
+            Order.id == order_id,
+            Order.user_id == current_user.id,
+        )
+        .first()
+    )
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+
+    return {
+        "id": order.id,
+        "user_id": order.user_id,
+        "shipping_address_id": order.shipping_address_id,
+        "shipping_rate_id": order.shipping_rate_id,
+        "shipping_method_id": order.shipping_method_id,
+        "shipping_method_name": order.shipping_method_name,
+        "shipping_carrier": order.shipping_carrier,
+        "estimated_delivery_from": order.estimated_delivery_from,
+        "estimated_delivery_to": order.estimated_delivery_to,
+        "status": order.status,
+        "currency": order.currency,
+        "subtotal": order.subtotal,
+        "coupon_discount_amount": order.coupon_discount_amount,
+        "promotion_discount_amount": order.promotion_discount_amount,
+        "discount_amount": order.discount_amount,
+        "original_shipping_amount": order.original_shipping_amount,
+        "shipping_discount_amount": order.shipping_discount_amount,
+        "shipping_amount": order.shipping_amount,
+        "tax_amount": order.tax_amount,
+        "total": order.total,
+        "coupon_code": order.coupon_code,
+        "promotion_code": order.promotion_code,
+        "promotion_seller_id": order.promotion_seller_id,
+        "delivery_mode": order.delivery_mode,
+        "logistics_company_id": order.logistics_company_id,
+        "notes": order.notes,
+        "items": order.items,
+        "status_history": order.status_history,
+        "created_at": order.created_at,
+        "updated_at": order.updated_at,
+        "payment_status": _customer_payment_status(order),
+        "payments": order.payments,
+        "shipping_address": order.shipping_address,
+        "shipments": order.shipments,
+        "seller_orders": order.seller_orders,
     }
 
 
