@@ -17,6 +17,8 @@ from api.models import (
     CartItem,
     Coupon,
     Inventory,
+    LogisticsCompany,
+    MarketplaceSettings,
     Order,
     OrderItem,
     OrderStatus,
@@ -24,6 +26,9 @@ from api.models import (
     Payment,
     PaymentStatus,
     ProductStatus,
+    Promotion,
+    PromotionRule,
+    PromotionUsage,
     ShippingMethod,
     ShippingRate,
     ShippingZone,
@@ -59,36 +64,390 @@ def _normalise_place(value: str | None) -> str:
     return (value or "").strip().lower()
 
 
-def _calculate_shipping(db: Session, address: Address, rate_id: UUID, subtotal: Decimal, weight_kg: Decimal):
-    rate = db.query(ShippingRate).options(selectinload(ShippingRate.zone), selectinload(ShippingRate.method)).filter(
-        ShippingRate.id == rate_id,
-        ShippingRate.is_active.is_(True),
-    ).with_for_update().first()
-    if not rate or not rate.zone or not rate.method or not rate.zone.is_active or not rate.method.is_active:
-        raise HTTPException(status_code=409, detail="Selected shipping rate is unavailable")
+def _is_tanzania(value: str | None) -> bool:
+    return _normalise_place(value) in {
+        "tanzania",
+        "united republic of tanzania",
+        "tz",
+    }
+
+
+def _validate_delivery_mode(
+    db: Session,
+    address: Address,
+    delivery_mode: str,
+) -> MarketplaceSettings | None:
+    settings_row = (
+        db.query(MarketplaceSettings)
+        .filter(MarketplaceSettings.singleton_key == 1)
+        .first()
+    )
+
+    local_address = _is_tanzania(address.country)
+
+    if delivery_mode == "local" and not local_address:
+        raise HTTPException(
+            status_code=422,
+            detail="Local delivery requires a Tanzania delivery address",
+        )
+
+    if delivery_mode == "international" and local_address:
+        raise HTTPException(
+            status_code=422,
+            detail="International delivery requires a non-Tanzania delivery address",
+        )
+
+    if delivery_mode == "international" and not (
+        settings_row and settings_row.international_delivery_allowed
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail="International delivery is not enabled for the marketplace",
+        )
+
+    return settings_row
+
+
+def _promotion_matches_order_item(
+    promotion: Promotion,
+    product,
+) -> bool:
+    if promotion.seller_id is not None and product.seller_id != promotion.seller_id:
+        return False
+
+    target_rules = [
+        rule
+        for rule in promotion.rules
+        if rule.rule_type in {"product", "category"}
+    ]
+
+    if not target_rules:
+        return True
+
+    return any(
+        (
+            rule.rule_type == "product"
+            and rule.product_id == product.id
+        )
+        or (
+            rule.rule_type == "category"
+            and rule.category_id == product.category_id
+        )
+        for rule in target_rules
+    )
+
+
+def _validate_promotion_usage(
+    db: Session,
+    promotion: Promotion,
+    user_id: UUID,
+) -> None:
+    now = datetime.now(timezone.utc)
+
+    if not promotion.is_active:
+        raise HTTPException(status_code=409, detail="Promotion is inactive")
+    if promotion.starts_at and now < promotion.starts_at:
+        raise HTTPException(status_code=409, detail="Promotion is not valid yet")
+    if promotion.ends_at and now > promotion.ends_at:
+        raise HTTPException(status_code=409, detail="Promotion has expired")
+    if (
+        promotion.usage_limit is not None
+        and promotion.usage_count >= promotion.usage_limit
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail="Promotion usage limit has been reached",
+        )
+
+    if promotion.usage_per_customer is not None:
+        used = (
+            db.query(PromotionUsage)
+            .filter(
+                PromotionUsage.promotion_id == promotion.id,
+                PromotionUsage.user_id == user_id,
+            )
+            .count()
+        )
+        if used >= promotion.usage_per_customer:
+            raise HTTPException(
+                status_code=409,
+                detail="You have reached the usage limit for this promotion",
+            )
+
+
+def _prepare_product_promotion(
+    db: Session,
+    cart: Cart,
+    prepared_items: list[dict],
+    user_id: UUID,
+    requested_code: str | None,
+) -> tuple[Promotion | None, Decimal]:
+    cart_code = (cart.promotion_code or "").strip().upper() or None
+    request_code = (requested_code or "").strip().upper() or None
+
+    if request_code and cart_code and request_code != cart_code:
+        raise HTTPException(
+            status_code=409,
+            detail="Cart promotion changed. Refresh checkout and try again",
+        )
+
+    code = request_code or cart_code
+    if not code:
+        return None, Decimal("0.00")
+
+    promotion = (
+        db.query(Promotion)
+        .options(selectinload(Promotion.rules))
+        .filter(Promotion.code == code)
+        .with_for_update()
+        .first()
+    )
+    if not promotion:
+        raise HTTPException(
+            status_code=404,
+            detail="Promotion is no longer available",
+        )
+
+    _validate_promotion_usage(db, promotion, user_id)
+
+    eligible = [
+        item
+        for item in prepared_items
+        if _promotion_matches_order_item(
+            promotion,
+            item["cart_item"].product,
+        )
+    ]
+    if not eligible:
+        raise HTTPException(
+            status_code=409,
+            detail="Promotion no longer applies to this cart",
+        )
+
+    eligible_subtotal = sum(
+        (item["line_total"] for item in eligible),
+        Decimal("0.00"),
+    )
+
+    if (
+        promotion.minimum_order_amount is not None
+        and eligible_subtotal < Decimal(promotion.minimum_order_amount)
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail="Promotion minimum order amount is no longer satisfied",
+        )
+
+    if promotion.promotion_type == "free_shipping":
+        product_discount = Decimal("0.00")
+    elif promotion.promotion_type == "percentage":
+        product_discount = (
+            eligible_subtotal
+            * Decimal(promotion.discount_value)
+            / Decimal("100")
+        )
+    elif promotion.promotion_type == "fixed_amount":
+        product_discount = Decimal(promotion.discount_value)
+    else:
+        raise HTTPException(
+            status_code=409,
+            detail="Promotion type is not supported at checkout",
+        )
+
+    if promotion.maximum_discount_amount is not None:
+        product_discount = min(
+            product_discount,
+            Decimal(promotion.maximum_discount_amount),
+        )
+
+    product_discount = max(
+        Decimal("0.00"),
+        min(product_discount, eligible_subtotal),
+    ).quantize(Decimal("0.01"))
+
+    # Pro-rate the seller-funded product discount across eligible lines.
+    remaining = product_discount
+    for index, item in enumerate(eligible):
+        if product_discount <= 0:
+            allocation = Decimal("0.00")
+        elif index == len(eligible) - 1:
+            allocation = remaining
+        else:
+            allocation = (
+                product_discount
+                * item["line_total"]
+                / eligible_subtotal
+            ).quantize(Decimal("0.01"))
+            allocation = min(allocation, remaining)
+
+        item["promotion_discount_amount"] = allocation
+        item["customer_total"] = item["line_total"] - allocation
+        remaining -= allocation
+
+    return promotion, product_discount
+
+
+def _free_shipping_applies(
+    promotion: Promotion | None,
+    prepared_items: list[dict],
+) -> bool:
+    if not promotion or promotion.promotion_type != "free_shipping":
+        return False
+
+    # Full-order free shipping is seller-funded, so every item in the order
+    # must be eligible. This prevents one seller from funding another seller's
+    # delivery.
+    return all(
+        _promotion_matches_order_item(
+            promotion,
+            item["cart_item"].product,
+        )
+        for item in prepared_items
+    )
+
+
+def _calculate_shipping(
+    db: Session,
+    address: Address,
+    rate_id: UUID,
+    subtotal: Decimal,
+    weight_kg: Decimal,
+    delivery_mode: str,
+    free_shipping: bool,
+):
+    rate = (
+        db.query(ShippingRate)
+        .options(
+            selectinload(ShippingRate.zone),
+            selectinload(ShippingRate.method)
+            .selectinload(ShippingMethod.logistics_company),
+        )
+        .filter(
+            ShippingRate.id == rate_id,
+            ShippingRate.is_active.is_(True),
+        )
+        .with_for_update()
+        .first()
+    )
+
+    if (
+        not rate
+        or not rate.zone
+        or not rate.method
+        or not rate.zone.is_active
+        or not rate.method.is_active
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail="Selected shipping rate is unavailable",
+        )
+
     zone = rate.zone
+    method = rate.method
+    company = method.logistics_company
+
+    zone_scope = (
+        zone.scope.value
+        if hasattr(zone.scope, "value")
+        else str(zone.scope)
+    )
+    method_scope = (
+        method.scope.value
+        if hasattr(method.scope, "value")
+        else str(method.scope)
+    )
+
+    allowed_scopes = {delivery_mode, "both"}
+    if zone_scope not in allowed_scopes or method_scope not in allowed_scopes:
+        raise HTTPException(
+            status_code=422,
+            detail="Selected shipping service does not match the delivery type",
+        )
+
+    if company:
+        company_status = (
+            company.status.value
+            if hasattr(company.status, "value")
+            else str(company.status)
+        )
+        if company_status != "active":
+            raise HTTPException(
+                status_code=409,
+                detail="Selected logistics company is unavailable",
+            )
+
     if _normalise_place(zone.country) != _normalise_place(address.country):
-        raise HTTPException(status_code=422, detail="Shipping rate does not serve this country")
+        raise HTTPException(
+            status_code=422,
+            detail="Shipping rate does not serve this country",
+        )
+
     regions = {_normalise_place(x) for x in (zone.regions or [])}
     cities = {_normalise_place(x) for x in (zone.cities or [])}
+
     if regions and _normalise_place(address.region) not in regions:
-        raise HTTPException(status_code=422, detail="Shipping rate does not serve this region")
+        raise HTTPException(
+            status_code=422,
+            detail="Shipping rate does not serve this region",
+        )
     if cities and _normalise_place(address.city) not in cities:
-        raise HTTPException(status_code=422, detail="Shipping rate does not serve this city")
-    if rate.min_weight_kg is not None and weight_kg < Decimal(rate.min_weight_kg):
-        raise HTTPException(status_code=422, detail="Shipment weight is below the selected rate minimum")
-    if rate.max_weight_kg is not None and weight_kg > Decimal(rate.max_weight_kg):
-        raise HTTPException(status_code=422, detail="Shipment weight exceeds the selected rate maximum")
-    if rate.free_shipping_threshold is not None and subtotal >= Decimal(rate.free_shipping_threshold):
-        amount = Decimal("0")
+        raise HTTPException(
+            status_code=422,
+            detail="Shipping rate does not serve this city",
+        )
+
+    if (
+        rate.min_weight_kg is not None
+        and weight_kg < Decimal(rate.min_weight_kg)
+    ):
+        raise HTTPException(
+            status_code=422,
+            detail="Shipment weight is below the selected rate minimum",
+        )
+    if (
+        rate.max_weight_kg is not None
+        and weight_kg > Decimal(rate.max_weight_kg)
+    ):
+        raise HTTPException(
+            status_code=422,
+            detail="Shipment weight exceeds the selected rate maximum",
+        )
+
+    if (
+        rate.free_shipping_threshold is not None
+        and subtotal >= Decimal(rate.free_shipping_threshold)
+    ):
+        original_amount = Decimal("0.00")
     elif rate.rate_type.value == "free":
-        amount = Decimal("0")
+        original_amount = Decimal("0.00")
     elif rate.rate_type.value == "weight_based":
-        amount = Decimal(rate.base_amount) + Decimal(rate.amount_per_kg) * weight_kg
+        original_amount = (
+            Decimal(rate.base_amount)
+            + Decimal(rate.amount_per_kg) * weight_kg
+        )
     else:
-        amount = Decimal(rate.base_amount)
+        original_amount = Decimal(rate.base_amount)
+
+    original_amount = original_amount.quantize(Decimal("0.01"))
+    shipping_discount = (
+        original_amount if free_shipping else Decimal("0.00")
+    )
+    shipping_amount = max(
+        Decimal("0.00"),
+        original_amount - shipping_discount,
+    ).quantize(Decimal("0.01"))
+
     now = datetime.now(timezone.utc)
-    return rate, amount.quantize(Decimal("0.01")), now + timedelta(days=rate.method.min_delivery_days), now + timedelta(days=rate.method.max_delivery_days)
+
+    return (
+        rate,
+        original_amount,
+        shipping_discount,
+        shipping_amount,
+        now + timedelta(days=method.min_delivery_days),
+        now + timedelta(days=method.max_delivery_days),
+        company,
+    )
 
 def _inventory_query(db: Session, product_id: UUID, variant_id: UUID | None):
     query = db.query(Inventory).filter(Inventory.product_id == product_id)
@@ -160,64 +519,220 @@ def create_order(
     current_user: User = Depends(get_current_user),
 ):
     try:
-        cart = db.query(Cart).options(
-            selectinload(Cart.items).selectinload(CartItem.product),
-            selectinload(Cart.items).selectinload(CartItem.variant),
-        ).filter(Cart.user_id == current_user.id).with_for_update().first()
+        cart = (
+            db.query(Cart)
+            .options(
+                selectinload(Cart.items).selectinload(CartItem.product),
+                selectinload(Cart.items).selectinload(CartItem.variant),
+            )
+            .filter(Cart.user_id == current_user.id)
+            .with_for_update()
+            .first()
+        )
         if not cart or not cart.items:
             raise HTTPException(status_code=400, detail="Cart is empty")
 
-        address = db.query(Address).filter(
-            Address.id == data.shipping_address_id,
-            Address.user_id == current_user.id,
-        ).first()
+        address = (
+            db.query(Address)
+            .filter(
+                Address.id == data.shipping_address_id,
+                Address.user_id == current_user.id,
+            )
+            .first()
+        )
         if not address:
-            raise HTTPException(status_code=404, detail="Shipping address not found")
+            raise HTTPException(
+                status_code=404,
+                detail="Shipping address not found",
+            )
+
+        _validate_delivery_mode(db, address, data.delivery_mode)
 
         subtotal = Decimal("0.00")
         prepared_items: list[dict] = []
         total_weight_kg = Decimal("0.000")
+
         for cart_item in cart.items:
             product = cart_item.product
-            if not product or not product.is_active or product.status != ProductStatus.approved:
-                raise HTTPException(status_code=409, detail=f"Product {cart_item.product_id} is no longer available")
-            if cart_item.variant_id is not None and (
-                cart_item.variant is None or cart_item.variant.product_id != product.id or not cart_item.variant.is_active
+            if (
+                not product
+                or not product.is_active
+                or product.status != ProductStatus.approved
             ):
-                raise HTTPException(status_code=409, detail=f"Variant for product {product.id} is invalid")
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"Product {cart_item.product_id} is no longer available",
+                )
 
-            inventory = _inventory_query(db, product.id, cart_item.variant_id).with_for_update().first()
+            if cart_item.variant_id is not None and (
+                cart_item.variant is None
+                or cart_item.variant.product_id != product.id
+                or not cart_item.variant.is_active
+            ):
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"Variant for product {product.id} is invalid",
+                )
+
+            inventory = (
+                _inventory_query(
+                    db,
+                    product.id,
+                    cart_item.variant_id,
+                )
+                .with_for_update()
+                .first()
+            )
             if not inventory or inventory.available_quantity < cart_item.quantity:
-                raise HTTPException(status_code=409, detail=f"Insufficient stock for {product.name}")
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"Insufficient stock for {product.name}",
+                )
 
             current_price = (
-                Decimal(cart_item.variant.sale_price) if cart_item.variant is not None and cart_item.variant.sale_price is not None
-                else Decimal(cart_item.variant.price) if cart_item.variant is not None and cart_item.variant.price is not None
-                else Decimal(product.sale_price if product.sale_price is not None else product.price)
+                Decimal(cart_item.variant.sale_price)
+                if (
+                    cart_item.variant is not None
+                    and cart_item.variant.sale_price is not None
+                )
+                else Decimal(cart_item.variant.price)
+                if (
+                    cart_item.variant is not None
+                    and cart_item.variant.price is not None
+                )
+                else Decimal(
+                    product.sale_price
+                    if product.sale_price is not None
+                    else product.price
+                )
             )
-            line_total = current_price * cart_item.quantity
+
+            # If the cart price changed after Phase 3 validation, checkout must
+            # stop instead of silently creating an order with a different total.
+            if Decimal(cart_item.unit_price) != current_price:
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        f"Price changed for {product.name}. "
+                        "Refresh your cart before placing the order"
+                    ),
+                )
+
+            line_total = (
+                current_price * cart_item.quantity
+            ).quantize(Decimal("0.01"))
             subtotal += line_total
-            item_weight = cart_item.variant.weight if cart_item.variant is not None and cart_item.variant.weight is not None else product.weight
+
+            item_weight = (
+                cart_item.variant.weight
+                if (
+                    cart_item.variant is not None
+                    and cart_item.variant.weight is not None
+                )
+                else product.weight
+            )
             total_weight_kg += Decimal(item_weight or 0) * cart_item.quantity
-            prepared_items.append({
-                "cart_item": cart_item,
-                "inventory": inventory,
-                "unit_price": current_price,
-                "line_total": line_total,
-            })
+
+            prepared_items.append(
+                {
+                    "cart_item": cart_item,
+                    "inventory": inventory,
+                    "unit_price": current_price,
+                    "line_total": line_total,
+                    "promotion_discount_amount": Decimal("0.00"),
+                    "customer_total": line_total,
+                }
+            )
+
+        subtotal = subtotal.quantize(Decimal("0.01"))
 
         coupon = None
-        requested_code = data.coupon_code or cart.coupon_code
-        discount_amount = Decimal("0.00")
-        if requested_code:
-            coupon = db.query(Coupon).filter(Coupon.code == requested_code).with_for_update().first()
-            if not coupon:
-                raise HTTPException(status_code=404, detail="Coupon not found")
-            discount_amount = _validate_coupon(coupon, subtotal)
+        requested_coupon = (
+            data.coupon_code
+            or cart.coupon_code
+        )
+        coupon_discount = Decimal("0.00")
 
-        shipping_rate, shipping_amount, delivery_from, delivery_to = _calculate_shipping(db, address, data.shipping_rate_id, subtotal, total_weight_kg)
+        if requested_coupon:
+            if (
+                cart.coupon_code
+                and requested_coupon.strip().upper()
+                != cart.coupon_code.strip().upper()
+            ):
+                raise HTTPException(
+                    status_code=409,
+                    detail="Cart coupon changed. Refresh checkout and try again",
+                )
+
+            coupon = (
+                db.query(Coupon)
+                .filter(
+                    Coupon.code == requested_coupon.strip().upper()
+                )
+                .with_for_update()
+                .first()
+            )
+            if not coupon:
+                raise HTTPException(
+                    status_code=404,
+                    detail="Coupon not found",
+                )
+
+            coupon_discount = _validate_coupon(
+                coupon,
+                subtotal,
+            ).quantize(Decimal("0.01"))
+
+        promotion, promotion_discount = _prepare_product_promotion(
+            db,
+            cart,
+            prepared_items,
+            current_user.id,
+            data.promotion_code,
+        )
+
+        if coupon and promotion and not promotion.stackable:
+            raise HTTPException(
+                status_code=409,
+                detail="The selected seller promotion cannot be combined with the coupon",
+            )
+
+        free_shipping = _free_shipping_applies(
+            promotion,
+            prepared_items,
+        )
+
+        (
+            shipping_rate,
+            original_shipping_amount,
+            shipping_discount_amount,
+            shipping_amount,
+            delivery_from,
+            delivery_to,
+            logistics_company,
+        ) = _calculate_shipping(
+            db,
+            address,
+            data.shipping_rate_id,
+            subtotal,
+            total_weight_kg,
+            data.delivery_mode,
+            free_shipping,
+        )
+
         tax_amount = Decimal("0.00")
-        total = subtotal - discount_amount + shipping_amount + tax_amount
+        combined_product_discount = min(
+            subtotal,
+            coupon_discount + promotion_discount,
+        ).quantize(Decimal("0.01"))
+
+        total = max(
+            Decimal("0.00"),
+            subtotal
+            - combined_product_discount
+            + shipping_amount
+            + tax_amount,
+        ).quantize(Decimal("0.01"))
 
         order = Order(
             user_id=current_user.id,
@@ -225,23 +740,48 @@ def create_order(
             shipping_rate_id=shipping_rate.id,
             shipping_method_id=shipping_rate.method.id,
             shipping_method_name=shipping_rate.method.name,
-            shipping_carrier=shipping_rate.method.carrier_name,
+            shipping_carrier=(
+                shipping_rate.method.carrier_name
+                or (
+                    logistics_company.name
+                    if logistics_company
+                    else None
+                )
+            ),
             estimated_delivery_from=delivery_from,
             estimated_delivery_to=delivery_to,
             status=OrderStatus.pending,
-            currency="TZS",
+            currency=shipping_rate.currency or "TZS",
             subtotal=subtotal,
-            discount_amount=discount_amount,
+            coupon_discount_amount=coupon_discount,
+            promotion_discount_amount=promotion_discount,
+            discount_amount=combined_product_discount,
+            original_shipping_amount=original_shipping_amount,
+            shipping_discount_amount=shipping_discount_amount,
             shipping_amount=shipping_amount,
             tax_amount=tax_amount,
             total=total,
             coupon_code=coupon.code if coupon else None,
+            promotion_code=promotion.code if promotion else None,
+            promotion_seller_id=(
+                promotion.seller_id if promotion else None
+            ),
+            delivery_mode=data.delivery_mode,
+            logistics_company_id=(
+                logistics_company.id
+                if logistics_company
+                else None
+            ),
             notes=data.notes,
         )
         db.add(order)
         db.flush()
 
-        reservation_expires_at = datetime.now(timezone.utc) + timedelta(minutes=settings.INVENTORY_RESERVATION_MINUTES)
+        reservation_expires_at = (
+            datetime.now(timezone.utc)
+            + timedelta(minutes=settings.INVENTORY_RESERVATION_MINUTES)
+        )
+
         for prepared in prepared_items:
             cart_item = prepared["cart_item"]
             order_item = OrderItem(
@@ -250,35 +790,81 @@ def create_order(
                 variant_id=cart_item.variant_id,
                 seller_id=cart_item.product.seller_id,
                 product_name=cart_item.product.name,
-                variant_name=cart_item.variant.variant_name if cart_item.variant else None,
+                variant_name=(
+                    cart_item.variant.variant_name
+                    if cart_item.variant
+                    else None
+                ),
                 quantity=cart_item.quantity,
                 unit_price=prepared["unit_price"],
                 total_price=prepared["line_total"],
+                promotion_discount_amount=prepared[
+                    "promotion_discount_amount"
+                ],
+                customer_total=prepared["customer_total"],
             )
             db.add(order_item)
             db.flush()
+
             create_reservation(
-                db, inventory=prepared["inventory"], order=order, order_item_id=order_item.id,
-                user_id=current_user.id, quantity=cart_item.quantity, expires_at=reservation_expires_at,
+                db,
+                inventory=prepared["inventory"],
+                order=order,
+                order_item_id=order_item.id,
+                user_id=current_user.id,
+                quantity=cart_item.quantity,
+                expires_at=reservation_expires_at,
             )
 
-        _create_status_history(db, order, OrderStatus.pending, "Order created", current_user.id)
+        _create_status_history(
+            db,
+            order,
+            OrderStatus.pending,
+            (
+                "Order created; checkout amounts, promotion, "
+                "coupon and logistics quote snapshotted"
+            ),
+            current_user.id,
+        )
+
         if coupon:
             coupon.usage_count += 1
+
+        if promotion:
+            promotion.usage_count += 1
+            db.add(
+                PromotionUsage(
+                    promotion_id=promotion.id,
+                    user_id=current_user.id,
+                    order_id=order.id,
+                    # A free-shipping promotion has no product discount but its
+                    # shipping benefit is still represented on the order.
+                    discount_amount=(
+                        promotion_discount
+                        + shipping_discount_amount
+                    ),
+                )
+            )
+
         for cart_item in list(cart.items):
             db.delete(cart_item)
+
         cart.coupon_code = None
+        cart.promotion_code = None
 
         db.commit()
         db.refresh(order)
         return order
+
     except HTTPException:
         db.rollback()
         raise
     except SQLAlchemyError as exc:
         db.rollback()
-        raise HTTPException(status_code=500, detail="Could not create order") from exc
-
+        raise HTTPException(
+            status_code=500,
+            detail="Could not create order",
+        ) from exc
 
 def _admin_order_payment_status(order: Order) -> str | None:
     if not order.payments:

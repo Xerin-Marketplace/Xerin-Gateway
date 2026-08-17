@@ -1454,6 +1454,8 @@ class OrderItemResponse(BaseModel):
     quantity: int
     unit_price: Decimal
     total_price: Decimal
+    promotion_discount_amount: Decimal = Decimal("0.00")
+    customer_total: Decimal = Decimal("0.00")
 
     model_config = ORM_CONFIG
 
@@ -1471,7 +1473,9 @@ class OrderStatusHistoryResponse(BaseModel):
 class OrderCreateRequest(BaseModel):
     shipping_address_id: UUID
     shipping_rate_id: UUID
+    delivery_mode: Literal["local", "international"]
     coupon_code: Optional[str] = None
+    promotion_code: Optional[str] = None
     notes: Optional[str] = None
 
 
@@ -1493,11 +1497,19 @@ class OrderResponse(BaseModel):
     status: OrderStatus
     currency: str
     subtotal: Decimal
+    coupon_discount_amount: Decimal = Decimal("0.00")
+    promotion_discount_amount: Decimal = Decimal("0.00")
     discount_amount: Decimal
+    original_shipping_amount: Decimal = Decimal("0.00")
+    shipping_discount_amount: Decimal = Decimal("0.00")
     shipping_amount: Decimal
     tax_amount: Decimal
     total: Decimal
     coupon_code: Optional[str]
+    promotion_code: Optional[str] = None
+    promotion_seller_id: Optional[UUID] = None
+    delivery_mode: Optional[str] = None
+    logistics_company_id: Optional[UUID] = None
     notes: Optional[str]
     items: list[OrderItemResponse]
     status_history: list[OrderStatusHistoryResponse]

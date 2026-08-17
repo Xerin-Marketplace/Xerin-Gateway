@@ -753,12 +753,25 @@ class Order(Base):
     status = Column(Enum(OrderStatus), default=OrderStatus.pending, nullable=False)
     currency = Column(String(10), default="TZS", nullable=False)
     subtotal = Column(Numeric(18, 2), nullable=False, default=0)
+
+    # Checkout discount snapshots. `discount_amount` remains the combined
+    # product-level discount for backward compatibility.
+    coupon_discount_amount = Column(Numeric(18, 2), nullable=False, default=0, server_default="0")
+    promotion_discount_amount = Column(Numeric(18, 2), nullable=False, default=0, server_default="0")
     discount_amount = Column(Numeric(18, 2), nullable=False, default=0)
+
+    original_shipping_amount = Column(Numeric(18, 2), nullable=False, default=0, server_default="0")
+    shipping_discount_amount = Column(Numeric(18, 2), nullable=False, default=0, server_default="0")
     shipping_amount = Column(Numeric(18, 2), nullable=False, default=0)
+
     tax_amount = Column(Numeric(18, 2), nullable=False, default=0)
     total = Column(Numeric(18, 2), nullable=False, default=0)
 
     coupon_code = Column(String(50), nullable=True)
+    promotion_code = Column(String(50), nullable=True)
+    promotion_seller_id = Column(UUID(as_uuid=True), ForeignKey("sellers.id", ondelete="SET NULL"), nullable=True, index=True)
+    delivery_mode = Column(String(20), nullable=True)
+    logistics_company_id = Column(UUID(as_uuid=True), ForeignKey("logistics_companies.id", ondelete="SET NULL"), nullable=True, index=True)
     notes = Column(Text, nullable=True)
 
     created_at = Column(DateTime(timezone=True), server_default=func.now())
@@ -790,7 +803,15 @@ class OrderItem(Base):
     variant_name = Column(String(100), nullable=True)
     quantity = Column(Integer, nullable=False)
     unit_price = Column(Numeric(18, 2), nullable=False)
+
+    # Gross marketplace line amount before seller-funded promotion.
     total_price = Column(Numeric(18, 2), nullable=False)
+    # Seller-funded product-promotion amount allocated to this line.
+    promotion_discount_amount = Column(Numeric(18, 2), nullable=False, default=0, server_default="0")
+    # Amount the customer owes for this line after seller-funded promotion.
+    # Platform coupons are intentionally not deducted here because they are
+    # platform-funded and should not reduce seller entitlement.
+    customer_total = Column(Numeric(18, 2), nullable=False, default=0, server_default="0")
 
     order = relationship("Order", back_populates="items")
     product = relationship("Product")
