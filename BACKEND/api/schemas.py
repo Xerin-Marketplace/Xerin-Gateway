@@ -1735,6 +1735,34 @@ class PaymentRetryRequest(BaseModel):
     _clean_phone = field_validator("phone_number")(_normalise_phone)
 
 
+class AzamPayCheckoutCallbackRequest(BaseModel):
+    """AzamPay Tanzania Checkout callback payload.
+
+    Field names intentionally match AzamPay's published callback contract.
+    Sensitive authentication fields are accepted for compatibility but must
+    never be persisted to payment audit JSON.
+    """
+
+    message: str = Field(min_length=1)
+    user: str = Field(min_length=1)
+    password: str = Field(min_length=1)
+    clientId: str = Field(min_length=1)
+    transactionstatus: str = Field(min_length=1)
+    operator: str = Field(min_length=1)
+    reference: str = Field(min_length=1)
+    externalreference: str = Field(min_length=1)
+    utilityref: str = Field(min_length=1)
+    amount: str = Field(min_length=1)
+    transid: str = Field(min_length=1)
+    msisdn: str = Field(min_length=1)
+    mnoreference: str = Field(min_length=1)
+    submerchantAcc: Optional[str] = None
+    additionalProperties: Optional[Dict[str, Any]] = None
+    signature: Optional[str] = None
+
+    model_config = ConfigDict(extra="allow")
+
+
 class PaymentCallbackRequest(BaseModel):
     payment_id: UUID
     provider: str = Field(min_length=1, max_length=100)

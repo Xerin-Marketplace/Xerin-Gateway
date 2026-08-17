@@ -3,7 +3,7 @@ from datetime import datetime, timezone, timedelta
 from decimal import Decimal
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Header, HTTPException, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Response, status
 from sqlalchemy import String, cast, or_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, joinedload, selectinload
@@ -31,6 +31,7 @@ from api.models import (
 )
 from api.permissions import require_permission
 from api.schemas import (
+    AzamPayCheckoutCallbackRequest,
     AzamPayDiagnosticsResponse,
     PaymentCallbackRequest,
     PaymentInitiateRequest,
@@ -1031,42 +1032,129 @@ def _apply_payment_callback(provider: str, data: PaymentCallbackRequest, db: Ses
     return payment
 
 
-@router.post("/azampay/callback", response_model=PaymentResponse)
+@router.post("/azampay/callback", status_code=status.HTTP_200_OK)
 def azampay_callback(
-    payload: dict,
-    x_azampay_secret: str | None = Header(default=None, alias="X-AzamPay-Secret"),
+    payload: AzamPayCheckoutCallbackRequest,
     db: Session = Depends(get_db),
 ):
-    configured_secret = settings.AZAMPAY_CALLBACK_SECRET
-    if configured_secret and (not x_azampay_secret or not hmac.compare_digest(x_azampay_secret, configured_secret)):
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid AzamPay callback secret")
+    """Receive AzamPay Tanzania Checkout completion callbacks.
 
-    reference = str(payload.get("utilityref") or payload.get("externalId") or payload.get("external_id") or "").strip()
-    transaction_id = str(payload.get("reference") or payload.get("transactionId") or payload.get("transaction_id") or "").strip()
-    incoming_status = str(payload.get("transactionstatus") or payload.get("status") or "processing").lower().strip()
-    if not reference:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail="AzamPay callback is missing payment reference")
+    This route intentionally has no end-user authentication because AzamPay
+    calls it server-to-server. Task 6 adds RSA signature verification using the
+    signed-data contract published by AzamPay.
+    """
+
+    utility_ref = payload.utilityref.strip()
+    external_reference = payload.externalreference.strip()
+    incoming_status = payload.transactionstatus.strip().lower()
+    operator = payload.operator.strip()
+
+    # Xerin sends payment.id as the MNO checkout externalId. AzamPay returns
+    # the partner/calling-application reference as utilityref in the callback.
     try:
-        payment_id = UUID(reference)
+        payment_id = UUID(utility_ref)
     except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail="Invalid AzamPay payment reference") from exc
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="Invalid AzamPay utilityref payment reference",
+        ) from exc
 
-    mapped = PaymentStatus.processing
+    payment = (
+        db.query(Payment)
+        .filter(Payment.id == payment_id)
+        .with_for_update()
+        .first()
+    )
+    if not payment:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Payment referenced by AzamPay callback was not found",
+        )
+
+    if (payment.provider or "").lower() != "azampay":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="AzamPay callback references a non-AzamPay payment",
+        )
+
+    # Validate callback amount against our immutable order/payment snapshot.
+    try:
+        callback_amount = Decimal(payload.amount)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="AzamPay callback contains an invalid amount",
+        ) from exc
+
+    if callback_amount != Decimal(payment.amount):
+        _record_transaction(
+            db,
+            payment,
+            "callback_rejected",
+            "amount_mismatch",
+            payment.amount,
+            {
+                "provider": "azampay",
+                "utilityref": utility_ref,
+                "externalreference": external_reference,
+                "transactionstatus": incoming_status,
+                "operator": operator,
+                "callback_amount": str(callback_amount),
+                "expected_amount": str(payment.amount),
+            },
+        )
+        _commit(db)
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="AzamPay callback amount does not match the payment amount",
+        )
+
+    mapped_status = PaymentStatus.processing
     if incoming_status in SUCCESS_STATUSES:
-        mapped = PaymentStatus.completed
+        mapped_status = PaymentStatus.completed
     elif incoming_status in FAILED_STATUSES:
-        mapped = PaymentStatus.failed
+        mapped_status = PaymentStatus.failed
     elif incoming_status in CANCELLED_STATUSES:
-        mapped = PaymentStatus.cancelled
+        mapped_status = PaymentStatus.cancelled
+
+    # Prefer AzamPay's transaction ID; use reference only as a fallback.
+    provider_transaction_id = (
+        payload.transid.strip()
+        or payload.reference.strip()
+        or external_reference
+    )
+
+    # Never persist callback.password. Keep only operational fields needed for
+    # reconciliation, audit and later RSA signature-verification diagnostics.
+    safe_payload = {
+        "message": payload.message,
+        "clientId": payload.clientId,
+        "transactionstatus": incoming_status,
+        "operator": operator,
+        "reference": payload.reference,
+        "externalreference": external_reference,
+        "utilityref": utility_ref,
+        "amount": payload.amount,
+        "transid": payload.transid,
+        "msisdn": payload.msisdn,
+        "mnoreference": payload.mnoreference,
+        "submerchantAcc": payload.submerchantAcc,
+        "additionalProperties": payload.additionalProperties,
+        "signature_present": bool(payload.signature),
+    }
 
     callback_data = PaymentCallbackRequest(
-        payment_id=payment_id,
+        payment_id=payment.id,
         provider="azampay",
-        transaction_id=transaction_id or f"azampay-{reference}",
-        status=mapped,
-        payload=payload,
+        transaction_id=provider_transaction_id,
+        status=mapped_status,
+        payload=safe_payload,
     )
-    return _apply_payment_callback("azampay", callback_data, db)
+
+    _apply_payment_callback("azampay", callback_data, db)
+
+    # AzamPay documents an empty 200 response for a successful callback.
+    return Response(status_code=status.HTTP_200_OK)
 
 
 @router.get("/my-payments", response_model=PaginatedPaymentResponse)
