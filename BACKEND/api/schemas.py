@@ -4044,3 +4044,28 @@ class AdvertisementActionResponse(BaseModel):
     status: AdvertisementStatus
     effective_status: Literal["draft", "scheduled", "active", "paused", "expired"]
     message: str
+
+
+
+# =========================================================
+# PHASE 12 TASK 3: PUBLIC ADVERTISEMENT DELIVERY
+# =========================================================
+class PublicAdvertisementResponse(BaseModel):
+    id: UUID
+    advertiser_name: str
+    title: str
+    description: Optional[str] = None
+    image_url: str
+    mobile_image_url: Optional[str] = None
+    alt_text: Optional[str] = None
+    target_url: Optional[str] = None
+    cta_label: Optional[str] = None
+    placement: AdvertisementPlacement
+    starts_at: datetime
+    ends_at: datetime
+    sponsored: Literal[True] = True
+
+
+class PublicAdvertisementSlotResponse(BaseModel):
+    placement: AdvertisementPlacement
+    advertisement: Optional[PublicAdvertisementResponse] = None
