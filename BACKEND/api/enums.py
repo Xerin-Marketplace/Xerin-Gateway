@@ -107,10 +107,6 @@ class PermissionCode(str, enum.Enum):
     promotions_delete = "promotions:delete"
     campaigns_manage = "campaigns:manage"
 
-    # Advertising / sponsored marketplace placements
-    advertisements_read = "advertisements:read"
-    advertisements_manage = "advertisements:manage"
-
     notifications_read = "notifications:read"
     notifications_manage = "notifications:manage"
     admin_notifications_read = "admin_notifications:read"
@@ -476,9 +472,6 @@ class QuestionReportReason(str, enum.Enum):
 
 
 
-       
-# PHASE 12: ADVERTISEMENT / SPONSORED PLACEMENTS
-       
 class AdvertisementStatus(str, enum.Enum):
     """Stored lifecycle state.
 

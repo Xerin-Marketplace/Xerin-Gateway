@@ -3862,9 +3862,9 @@ class PaymentReconciliationUpdate(BaseModel):
     reconciliation_note: str | None = None
 
 
-        
+         
 # PHASE 12: ADVERTISEMENT / SPONSORED PLACEMENTS
-        
+         
 class AdvertisementCreate(BaseModel):
     advertiser_name: str = Field(min_length=2, max_length=180)
     title: str = Field(min_length=2, max_length=180)
@@ -4047,9 +4047,9 @@ class AdvertisementActionResponse(BaseModel):
 
 
 
-        
+         
 # PHASE 12 TASK 3: PUBLIC ADVERTISEMENT DELIVERY
-        
+         
 class PublicAdvertisementResponse(BaseModel):
     id: UUID
     advertiser_name: str
@@ -4069,3 +4069,14 @@ class PublicAdvertisementResponse(BaseModel):
 class PublicAdvertisementSlotResponse(BaseModel):
     placement: AdvertisementPlacement
     advertisement: Optional[PublicAdvertisementResponse] = None
+
+
+
+class AdvertisementImageUploadResponse(BaseModel):
+    image_url: str
+    original_filename: str
+    mime_type: str
+    file_size: int
+    width: int
+    height: int
+    variant: Literal["desktop", "mobile"]

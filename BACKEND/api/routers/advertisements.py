@@ -1,7 +1,7 @@
 from datetime import datetime, timezone
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
+from fastapi import APIRouter, Depends, File, HTTPException, Query, Response, UploadFile, status
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
@@ -13,9 +13,11 @@ from api.enums import (
 )
 from api.models import Advertisement, AdminActivityLog, User
 from api.permissions import require_permission
+from api.services.advertisement_image_service import store_advertisement_image
 from api.schemas import (
     AdvertisementActionResponse,
     AdvertisementCreate,
+    AdvertisementImageUploadResponse,
     AdvertisementResponse,
     AdvertisementUpdate,
     PaginatedAdvertisementResponse,
@@ -105,6 +107,30 @@ def _validate_merged_schedule(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail="ends_at must be later than starts_at",
         )
+
+
+@router.post(
+    "/upload-image",
+    response_model=AdvertisementImageUploadResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def upload_advertisement_image(
+    variant: str = Query(default="desktop", pattern="^(desktop|mobile)$"),
+    file: UploadFile = File(...),
+    _: User = Depends(
+        require_permission(PermissionCode.advertisements_manage.value)
+    ),
+):
+    stored = await store_advertisement_image(file, variant=variant)
+    return {
+        "image_url": stored.image_url,
+        "original_filename": stored.original_filename,
+        "mime_type": stored.mime_type,
+        "file_size": stored.file_size,
+        "width": stored.width,
+        "height": stored.height,
+        "variant": variant,
+    }
 
 
 @router.get("", response_model=PaginatedAdvertisementResponse)

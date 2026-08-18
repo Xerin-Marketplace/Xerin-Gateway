@@ -4260,7 +4260,6 @@ class SystemAlert(Base):
         ),
     )
 
-
 class AdminActivityLog(Base):
     __tablename__ = "admin_activity_logs"
 
@@ -4281,9 +4280,9 @@ class AdminActivityLog(Base):
     )
 
 
- 
+     
 # PHASE 12: ADVERTISEMENT / SPONSORED PLACEMENTS
- 
+     
 class Advertisement(Base):
     """Admin-managed sponsored placement.
 
