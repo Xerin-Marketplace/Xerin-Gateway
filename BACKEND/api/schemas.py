@@ -4106,3 +4106,67 @@ class AdvertisementTrackingResponse(BaseModel):
     event_type: Literal["impression", "click"]
     impression_count: int
     click_count: int
+
+
+
+# =========================================================
+# PHASE 12 TASK 8: ADVERTISEMENT REVENUE & ANALYTICS
+# =========================================================
+class AdvertisementRevenueByCurrency(BaseModel):
+    currency: str
+    estimated_revenue: Decimal
+
+
+class AdvertisementAnalyticsStatusCounts(BaseModel):
+    total: int
+    draft: int
+    scheduled: int
+    active: int
+    paused: int
+    expired: int
+
+
+class AdvertisementAnalyticsCampaignRow(BaseModel):
+    id: UUID
+    advertiser_name: str
+    title: str
+    placement: AdvertisementPlacement
+    effective_status: Literal["draft", "scheduled", "active", "paused", "expired"]
+    billing_type: AdvertisementBillingType
+    price: Optional[Decimal]
+    currency: str
+    impressions: int
+    clicks: int
+    ctr_percent: float
+    estimated_revenue: Decimal
+    starts_at: datetime
+    ends_at: datetime
+
+
+class AdvertisementAnalyticsDailyPoint(BaseModel):
+    date: str
+    impressions: int
+    clicks: int
+
+
+class AdvertisementAnalyticsAdvertiserRow(BaseModel):
+    advertiser_name: str
+    campaigns: int
+    impressions: int
+    clicks: int
+    ctr_percent: float
+    revenue_by_currency: list[AdvertisementRevenueByCurrency]
+
+
+class AdvertisementAnalyticsOverview(BaseModel):
+    generated_at: datetime
+    days: int
+    status_counts: AdvertisementAnalyticsStatusCounts
+    total_impressions: int
+    total_clicks: int
+    ctr_percent: float
+    revenue_by_currency: list[AdvertisementRevenueByCurrency]
+    daily_engagement: list[AdvertisementAnalyticsDailyPoint]
+    top_campaigns: list[AdvertisementAnalyticsCampaignRow]
+    advertisers: list[AdvertisementAnalyticsAdvertiserRow]
+    revenue_note: str

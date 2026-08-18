@@ -150,7 +150,7 @@ azampay_path
 azampay_path/*
 errors
 errors/*
-Frontend
+Frontend  
 
 
 # Python virtual environment
@@ -165,5 +165,5 @@ __pycache__/
 
 # Environment variables
 .env
-.env.*
+.env.* 
 Frontend/xerin-marketplace/

@@ -1,8 +1,8 @@
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Response, UploadFile, status
-from sqlalchemy import or_
+from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
 from api.deps import get_db
@@ -11,11 +11,12 @@ from api.enums import (
     AdvertisementStatus,
     PermissionCode,
 )
-from api.models import Advertisement, AdminActivityLog, User
+from api.models import Advertisement, AdvertisementEngagementEvent, AdminActivityLog, User
 from api.permissions import require_permission
 from api.services.advertisement_image_service import store_advertisement_image
 from api.schemas import (
     AdvertisementActionResponse,
+    AdvertisementAnalyticsOverview,
     AdvertisementCreate,
     AdvertisementImageUploadResponse,
     AdvertisementResponse,
@@ -108,6 +109,53 @@ def _validate_merged_schedule(
             detail="ends_at must be later than starts_at",
         )
 
+
+
+
+def _estimated_ad_revenue(ad: Advertisement, *, now: datetime):
+    """Estimated earned advertisement revenue for analytics.
+
+    fixed:
+        Count the agreed campaign price once the campaign start time has been
+        reached and the row is not a draft.
+    cpc:
+        click_count * unit price.
+    cpm:
+        impression_count / 1000 * unit price.
+
+    This is analytics, not a payment-settlement ledger.
+    """
+    from decimal import Decimal
+
+    price = Decimal(ad.price or 0)
+    billing_type = getattr(ad.billing_type, "value", ad.billing_type)
+
+    if billing_type == "fixed":
+        if (
+            ad.status != AdvertisementStatus.draft
+            and ad.starts_at is not None
+            and ad.starts_at <= now
+        ):
+            return price
+        return Decimal("0")
+
+    if billing_type == "cpc":
+        return price * Decimal(ad.click_count or 0)
+
+    if billing_type == "cpm":
+        return (
+            price
+            * Decimal(ad.impression_count or 0)
+            / Decimal("1000")
+        )
+
+    return Decimal("0")
+
+
+def _ctr(impressions: int, clicks: int) -> float:
+    if impressions <= 0:
+        return 0.0
+    return round((clicks / impressions) * 100, 2)
 
 @router.post(
     "/upload-image",
@@ -209,6 +257,189 @@ def list_advertisements(
         "results": [_serialize(row) for row in rows],
     }
 
+
+
+
+@router.get(
+    "/analytics/overview",
+    response_model=AdvertisementAnalyticsOverview,
+)
+def advertisement_analytics_overview(
+    days: int = Query(default=30, ge=7, le=365),
+    top_limit: int = Query(default=10, ge=1, le=50),
+    db: Session = Depends(get_db),
+    _: User = Depends(
+        require_permission(PermissionCode.advertisements_read.value)
+    ),
+):
+    now = datetime.now(timezone.utc)
+    ads = db.query(Advertisement).all()
+
+    status_counts = {
+        "total": len(ads),
+        "draft": 0,
+        "scheduled": 0,
+        "active": 0,
+        "paused": 0,
+        "expired": 0,
+    }
+
+    total_impressions = 0
+    total_clicks = 0
+    revenue_by_currency: dict[str, object] = {}
+    campaign_rows = []
+    advertiser_rollup: dict[str, dict] = {}
+
+    from decimal import Decimal
+
+    for ad in ads:
+        effective = _effective_status(ad, now)
+        status_counts[effective] = status_counts.get(effective, 0) + 1
+
+        impressions = int(ad.impression_count or 0)
+        clicks = int(ad.click_count or 0)
+        total_impressions += impressions
+        total_clicks += clicks
+
+        revenue = _estimated_ad_revenue(ad, now=now)
+        currency = (ad.currency or "TZS").upper()
+        revenue_by_currency[currency] = (
+            revenue_by_currency.get(currency, Decimal("0")) + revenue
+        )
+
+        campaign_rows.append(
+            {
+                "id": ad.id,
+                "advertiser_name": ad.advertiser_name,
+                "title": ad.title,
+                "placement": ad.placement,
+                "effective_status": effective,
+                "billing_type": ad.billing_type,
+                "price": ad.price,
+                "currency": currency,
+                "impressions": impressions,
+                "clicks": clicks,
+                "ctr_percent": _ctr(impressions, clicks),
+                "estimated_revenue": revenue,
+                "starts_at": ad.starts_at,
+                "ends_at": ad.ends_at,
+            }
+        )
+
+        advertiser = advertiser_rollup.setdefault(
+            ad.advertiser_name,
+            {
+                "campaigns": 0,
+                "impressions": 0,
+                "clicks": 0,
+                "revenue_by_currency": {},
+            },
+        )
+        advertiser["campaigns"] += 1
+        advertiser["impressions"] += impressions
+        advertiser["clicks"] += clicks
+        advertiser_currency = advertiser["revenue_by_currency"]
+        advertiser_currency[currency] = (
+            advertiser_currency.get(currency, Decimal("0")) + revenue
+        )
+
+    campaign_rows.sort(
+        key=lambda row: (
+            row["clicks"],
+            row["impressions"],
+            row["estimated_revenue"],
+        ),
+        reverse=True,
+    )
+
+    since = now - timedelta(days=days - 1)
+    daily_rows = (
+        db.query(
+            func.date(AdvertisementEngagementEvent.created_at).label("event_date"),
+            AdvertisementEngagementEvent.event_type,
+            func.count(AdvertisementEngagementEvent.id).label("event_count"),
+        )
+        .filter(AdvertisementEngagementEvent.created_at >= since)
+        .group_by(
+            func.date(AdvertisementEngagementEvent.created_at),
+            AdvertisementEngagementEvent.event_type,
+        )
+        .order_by(func.date(AdvertisementEngagementEvent.created_at).asc())
+        .all()
+    )
+
+    daily_map: dict[str, dict[str, int]] = {}
+    for offset in range(days):
+        day = (since + timedelta(days=offset)).date().isoformat()
+        daily_map[day] = {"impressions": 0, "clicks": 0}
+
+    for row in daily_rows:
+        day = row.event_date.isoformat()
+        if day not in daily_map:
+            continue
+        if row.event_type == "impression":
+            daily_map[day]["impressions"] = int(row.event_count)
+        elif row.event_type == "click":
+            daily_map[day]["clicks"] = int(row.event_count)
+
+    advertisers = []
+    for advertiser_name, values in advertiser_rollup.items():
+        impressions = int(values["impressions"])
+        clicks = int(values["clicks"])
+        advertisers.append(
+            {
+                "advertiser_name": advertiser_name,
+                "campaigns": int(values["campaigns"]),
+                "impressions": impressions,
+                "clicks": clicks,
+                "ctr_percent": _ctr(impressions, clicks),
+                "revenue_by_currency": [
+                    {
+                        "currency": currency,
+                        "estimated_revenue": amount,
+                    }
+                    for currency, amount in sorted(
+                        values["revenue_by_currency"].items()
+                    )
+                ],
+            }
+        )
+
+    advertisers.sort(
+        key=lambda row: (row["clicks"], row["impressions"]),
+        reverse=True,
+    )
+
+    return {
+        "generated_at": now,
+        "days": days,
+        "status_counts": status_counts,
+        "total_impressions": total_impressions,
+        "total_clicks": total_clicks,
+        "ctr_percent": _ctr(total_impressions, total_clicks),
+        "revenue_by_currency": [
+            {
+                "currency": currency,
+                "estimated_revenue": amount,
+            }
+            for currency, amount in sorted(revenue_by_currency.items())
+        ],
+        "daily_engagement": [
+            {
+                "date": day,
+                "impressions": counts["impressions"],
+                "clicks": counts["clicks"],
+            }
+            for day, counts in daily_map.items()
+        ],
+        "top_campaigns": campaign_rows[:top_limit],
+        "advertisers": advertisers[:top_limit],
+        "revenue_note": (
+            "Estimated advertising revenue only. Fixed campaigns count their "
+            "configured price after the campaign starts; CPC uses clicks × price; "
+            "CPM uses impressions / 1,000 × price. This is not proof of advertiser payment."
+        ),
+    }
 
 @router.get("/{advertisement_id}", response_model=AdvertisementResponse)
 def get_advertisement(
