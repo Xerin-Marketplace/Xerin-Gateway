@@ -1338,9 +1338,9 @@ class PaginatedAdminAccessUserResponse(BaseModel):
     page_size: int
     results: list[AdminAccessUserResponse]
 
-# =========================================================
+  
 # CART SCHEMAS
-# =========================================================
+  
 
 class CartItemCreate(BaseModel):
     product_id: UUID
@@ -1440,9 +1440,9 @@ class GuestCartMergeResponse(BaseModel):
     rejected_items: list[GuestCartRejectedItem]
 
 
-# =========================================================
+  
 # ORDER SCHEMAS
-# =========================================================
+  
 
 class OrderItemResponse(BaseModel):
     id: UUID
@@ -1575,10 +1575,7 @@ class PaginatedAdminOrderResponse(BaseModel):
     total_pages: int
     results: list[AdminOrderResponse]
 
-
-# =========================================================
 # INVENTORY SCHEMAS
-# =========================================================
 
 class InventoryCreate(BaseModel):
     product_id: UUID
@@ -1701,9 +1698,9 @@ class SellerInventoryMovementResponse(BaseModel):
     created_at: datetime
 
 
-# =========================================================
+  
 # PAYMENT SCHEMAS
-# =========================================================
+  
 
 class PaymentInitiateRequest(BaseModel):
     order_id: UUID
@@ -1878,9 +1875,9 @@ class CustomerEscrowApprovalRequest(BaseModel):
     note: Optional[str] = Field(default=None, max_length=500)
 
 
-# =========================================================
+  
 # COUPON SCHEMAS
-# =========================================================
+  
 
 class CouponCreate(BaseModel):
     code: str
@@ -2030,9 +2027,9 @@ class CouponResponse(BaseModel):
     class Config:
         from_attributes = True
 
-# =========================================================
+  
 # SHIPPING SCHEMAS
-# =========================================================
+  
 
 class LogisticsCompanyCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -2320,9 +2317,9 @@ class ShippingQuoteOption(BaseModel):
     promotion_name: Optional[str] = None
 
 
-# =========================================================
+  
 # SHIPMENT SCHEMAS
-# =========================================================
+  
 
 class ShipmentItemResponse(BaseModel):
     id: UUID
@@ -3262,9 +3259,9 @@ class WishlistMutationResponse(BaseModel):
     message: str
 
 
-# =========================================================
+  
 # PHASE 3 TASK 14: PROMOTION SCHEMAS
-# =========================================================
+  
 
 PromotionTypeLiteral = Literal[
     "percentage", "fixed_amount", "free_shipping", "buy_x_get_y",
@@ -3651,9 +3648,9 @@ class NameLookupResponse(BaseModel):
     account_number: str
     message: str | None = None    
 
-# =========================================================
+  
 # PAYMENT ADMINISTRATION
-# =========================================================
+  
 
 class PaymentAdminPage(BaseModel):
     total: int

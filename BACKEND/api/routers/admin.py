@@ -1151,9 +1151,9 @@ def remove_permission_from_user(
     return {"message": "Permission removed successfully"}
 
 
-# =========================
+   
 # BUSINESS CATEGORIES
-# =========================
+   
 
 
 @router.post("/business-categories", response_model=BusinessCategoryResponse)
@@ -1270,9 +1270,9 @@ def delete_business_category(
     return {"message": "Business category deleted successfully"}
 
 
-# =========================
+   
 # PRODUCT CATEGORIES
-# =========================
+   
 
 
 @router.post("/product-categories", response_model=CategoryResponse)
@@ -1397,9 +1397,9 @@ def delete_product_category(
     return {"message": "Product category deleted successfully"}
 
 
-# =========================
+   
 # BRANDS
-# =========================
+   
 
 
 @router.post("/brands", response_model=BrandResponse)
@@ -1473,9 +1473,9 @@ def delete_brand(
     return {"message": "Brand deleted successfully"}
 
 
-# =========================
+   
 # SELLER VERIFICATION
-# =========================
+   
 
 
 @router.get("/sellers", response_model=list[SellerResponse])
@@ -1682,9 +1682,9 @@ def reject_seller(
     return seller
 
 
-# =========================
+   
 # PRODUCT APPROVAL
-# =========================
+   
 
 
 @router.get("/catalog/products", response_model=PaginatedAdminProductResponse)

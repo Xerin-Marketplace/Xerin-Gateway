@@ -83,9 +83,9 @@ def _membership_for_user(db: Session, user_id: UUID) -> LogisticsCompanyUser | N
     )
 
 
-# ------------------------------------------------------------------
+    
 # Companies
-# ------------------------------------------------------------------
+    
 @router.get(
     "/companies",
     response_model=PaginatedLogisticsCompanyResponse,
@@ -209,9 +209,9 @@ def deactivate_company(
     return {"message": "Logistics company deactivated"}
 
 
-# ------------------------------------------------------------------
+    
 # Company users. These are normal RBAC users linked to an organization.
-# ------------------------------------------------------------------
+    
 @router.get(
     "/companies/{company_id}/users",
     response_model=list[LogisticsCompanyUserResponse],
@@ -287,9 +287,9 @@ def detach_company_user(
     return {"message": "User removed from logistics company"}
 
 
-# ------------------------------------------------------------------
+    
 # Services
-# ------------------------------------------------------------------
+    
 @router.get("/services", response_model=PaginatedShippingMethodResponse)
 def list_services(
     page: int = Query(1, ge=1),
@@ -405,9 +405,9 @@ def deactivate_service(
     return {"message": "Logistics service deactivated"}
 
 
-# ------------------------------------------------------------------
+    
 # Zones
-# ------------------------------------------------------------------
+    
 @router.get("/zones", response_model=PaginatedShippingZoneResponse)
 def list_zones(
     page: int = Query(1, ge=1),
@@ -502,9 +502,9 @@ def deactivate_zone(
     return {"message": "Shipping zone deactivated"}
 
 
-# ------------------------------------------------------------------
+    
 # Rates
-# ------------------------------------------------------------------
+    
 @router.get("/rates", response_model=PaginatedShippingRateResponse)
 def list_rates(
     page: int = Query(1, ge=1),
@@ -630,11 +630,11 @@ def deactivate_rate(
     return {"message": "Shipping rate deactivated"}
 
 
-# ------------------------------------------------------------------
+    
 # API / webhook integration metadata.
 # Secrets are referenced from environment/secret manager; they are not stored
 # as clear text in this table.
-# ------------------------------------------------------------------
+    
 @router.get(
     "/companies/{company_id}/integration",
     response_model=LogisticsIntegrationResponse,
@@ -721,11 +721,11 @@ def update_integration(
     return integration
 
 
-# ------------------------------------------------------------------
+    
 # Logistics-company operational workspace.
 # A normal RBAC user is linked to a logistics company and can only see that
 # company's shipments, regardless of the role name assigned to the account.
-# ------------------------------------------------------------------
+    
 @router.get("/me/company", response_model=LogisticsCompanyResponse)
 def my_logistics_company(
     db: Session = Depends(get_db),
