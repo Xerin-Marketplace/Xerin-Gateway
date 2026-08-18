@@ -476,9 +476,9 @@ class QuestionReportReason(str, enum.Enum):
 
 
 
-# =========================================================
+       
 # PHASE 12: ADVERTISEMENT / SPONSORED PLACEMENTS
-# =========================================================
+       
 class AdvertisementStatus(str, enum.Enum):
     """Stored lifecycle state.
 

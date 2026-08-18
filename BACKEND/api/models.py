@@ -4281,9 +4281,9 @@ class AdminActivityLog(Base):
     )
 
 
-# =========================================================
+ 
 # PHASE 12: ADVERTISEMENT / SPONSORED PLACEMENTS
-# =========================================================
+ 
 class Advertisement(Base):
     """Admin-managed sponsored placement.
 
