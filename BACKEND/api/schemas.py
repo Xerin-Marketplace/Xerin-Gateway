@@ -4080,3 +4080,29 @@ class AdvertisementImageUploadResponse(BaseModel):
     width: int
     height: int
     variant: Literal["desktop", "mobile"]
+
+
+
+  
+# PHASE 12 TASK 7: ADVERTISEMENT TRACKING
+  
+class AdvertisementTrackingRequest(BaseModel):
+    session_id: str = Field(min_length=16, max_length=128)
+    client_event_id: Optional[str] = Field(default=None, min_length=8, max_length=128)
+    page_path: Optional[str] = Field(default=None, max_length=500)
+
+    @field_validator("session_id", "client_event_id", "page_path")
+    @classmethod
+    def clean_ad_tracking_text(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        value = value.strip()
+        return value or None
+
+
+class AdvertisementTrackingResponse(BaseModel):
+    accepted: bool
+    duplicate: bool = False
+    event_type: Literal["impression", "click"]
+    impression_count: int
+    click_count: int

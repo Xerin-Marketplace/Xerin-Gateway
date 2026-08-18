@@ -4425,3 +4425,54 @@ class Advertisement(Base):
         if self.status == AdvertisementStatus.active:
             return "active"
         return str(getattr(self.status, "value", self.status))
+
+
+
+ 
+# PHASE 12 TASK 7: ADVERTISEMENT IMPRESSION / CLICK EVENTS
+ 
+class AdvertisementEngagementEvent(Base):
+    """Privacy-light advertisement engagement event.
+
+    session_hash is a SHA-256 hash of the browser's opaque session UUID.
+    The raw browser session identifier is never persisted.
+    event_key is unique and makes impression/click tracking idempotent.
+    """
+
+    __tablename__ = "advertisement_engagement_events"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    advertisement_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("advertisements.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    event_type = Column(String(20), nullable=False, index=True)
+    placement = Column(Enum(AdvertisementPlacement), nullable=False, index=True)
+
+    session_hash = Column(String(64), nullable=False, index=True)
+    event_key = Column(String(160), nullable=False, unique=True, index=True)
+
+    page_path = Column(String(500), nullable=True)
+    created_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        index=True,
+    )
+
+    advertisement = relationship("Advertisement")
+
+    __table_args__ = (
+        CheckConstraint(
+            "event_type IN ('impression', 'click')",
+            name="ck_ad_engagement_event_type",
+        ),
+        Index(
+            "ix_ad_engagement_ad_type_created",
+            "advertisement_id",
+            "event_type",
+            "created_at",
+        ),
+    )

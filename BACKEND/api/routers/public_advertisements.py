@@ -1,14 +1,18 @@
 from datetime import datetime, timezone
+import hashlib
 
 from fastapi import APIRouter, Depends, Query, Response
 from sqlalchemy.orm import Session
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from api.deps import get_db
 from api.enums import AdvertisementPlacement, AdvertisementStatus
-from api.models import Advertisement
+from api.models import Advertisement, AdvertisementEngagementEvent
 from api.schemas import (
     PublicAdvertisementResponse,
     PublicAdvertisementSlotResponse,
+    AdvertisementTrackingRequest,
+    AdvertisementTrackingResponse,
 )
 
 
@@ -57,6 +61,78 @@ def _no_stale_ad_cache(response: Response) -> None:
     response.headers["Pragma"] = "no-cache"
 
 
+
+
+def _session_hash(session_id: str) -> str:
+    return hashlib.sha256(session_id.encode("utf-8")).hexdigest()
+
+
+def _record_engagement(
+    db: Session,
+    *,
+    advertisement: Advertisement,
+    event_type: str,
+    payload: AdvertisementTrackingRequest,
+) -> AdvertisementTrackingResponse:
+    """Insert one idempotent event and atomically update aggregate counters."""
+
+    session_hash = _session_hash(payload.session_id)
+
+    if event_type == "impression":
+        # Exactly one impression per advertisement per browser session.
+        event_key = f"imp:{advertisement.id}:{session_hash}"
+    else:
+        # Each deliberate click gets a unique browser-generated event id.
+        client_event_id = payload.client_event_id or session_hash[:32]
+        event_key = f"clk:{advertisement.id}:{client_event_id}"
+
+    insert_stmt = (
+        pg_insert(AdvertisementEngagementEvent)
+        .values(
+            advertisement_id=advertisement.id,
+            event_type=event_type,
+            placement=advertisement.placement,
+            session_hash=session_hash,
+            event_key=event_key,
+            page_path=payload.page_path,
+        )
+        .on_conflict_do_nothing(
+            index_elements=[AdvertisementEngagementEvent.event_key]
+        )
+        .returning(AdvertisementEngagementEvent.id)
+    )
+
+    inserted_id = db.execute(insert_stmt).scalar_one_or_none()
+    duplicate = inserted_id is None
+
+    if not duplicate:
+        if event_type == "impression":
+            advertisement.impression_count = Advertisement.impression_count + 1
+        else:
+            advertisement.click_count = Advertisement.click_count + 1
+
+        db.flush()
+
+    db.commit()
+    db.refresh(advertisement)
+
+    return AdvertisementTrackingResponse(
+        accepted=True,
+        duplicate=duplicate,
+        event_type=event_type,
+        impression_count=advertisement.impression_count,
+        click_count=advertisement.click_count,
+    )
+
+
+def _live_ad_for_tracking(db: Session, advertisement_id):
+    now = datetime.now(timezone.utc)
+    return (
+        _live_query(db, now=now)
+        .filter(Advertisement.id == advertisement_id)
+        .first()
+    )
+
 @router.get(
     "/active",
     response_model=list[PublicAdvertisementResponse],
@@ -89,6 +165,80 @@ def active_advertisements(
     _no_stale_ad_cache(response)
     return [_public_ad(row) for row in rows]
 
+
+
+
+@router.post(
+    "/{advertisement_id}/impression",
+    response_model=AdvertisementTrackingResponse,
+)
+def track_advertisement_impression(
+    advertisement_id: str,
+    payload: AdvertisementTrackingRequest,
+    db: Session = Depends(get_db),
+):
+    """Count a real storefront impression once per browser session.
+
+    The frontend only calls this after at least 50% of the advertisement has
+    remained visible for a short period. Server-side event_key uniqueness is
+    the second line of defence against inflated React re-render counts.
+    """
+    from uuid import UUID
+
+    try:
+        ad_id = UUID(advertisement_id)
+    except ValueError:
+        from fastapi import HTTPException, status
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Advertisement not found")
+
+    advertisement = _live_ad_for_tracking(db, ad_id)
+    if advertisement is None:
+        from fastapi import HTTPException, status
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Advertisement is not currently live",
+        )
+
+    return _record_engagement(
+        db,
+        advertisement=advertisement,
+        event_type="impression",
+        payload=payload,
+    )
+
+
+@router.post(
+    "/{advertisement_id}/click",
+    response_model=AdvertisementTrackingResponse,
+)
+def track_advertisement_click(
+    advertisement_id: str,
+    payload: AdvertisementTrackingRequest,
+    db: Session = Depends(get_db),
+):
+    """Record an advertisement click before/while navigation continues."""
+    from uuid import UUID
+
+    try:
+        ad_id = UUID(advertisement_id)
+    except ValueError:
+        from fastapi import HTTPException, status
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Advertisement not found")
+
+    advertisement = _live_ad_for_tracking(db, ad_id)
+    if advertisement is None:
+        from fastapi import HTTPException, status
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Advertisement is not currently live",
+        )
+
+    return _record_engagement(
+        db,
+        advertisement=advertisement,
+        event_type="click",
+        payload=payload,
+    )
 
 @router.get(
     "/slot/{placement}",
