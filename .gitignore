@@ -150,7 +150,7 @@ azampay_path
 azampay_path/*
 errors
 errors/*
-# Frontend
+Frontend
 
 
 # Python virtual environment
