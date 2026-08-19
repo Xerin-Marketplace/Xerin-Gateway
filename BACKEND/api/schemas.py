@@ -407,11 +407,31 @@ class AddressResponse(BaseModel):
     is_default: bool
     is_active: bool
     is_verified: bool
+    location_provider: Optional[str] = None
+    location_confirmed_at: Optional[datetime] = None
     delivery_ready: bool
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
 
     model_config = ORM_CONFIG
+
+
+class CustomerMapPinConfirmationRequest(BaseModel):
+    latitude: Decimal = Field(
+        ge=Decimal("-90"),
+        le=Decimal("90"),
+    )
+    longitude: Decimal = Field(
+        ge=Decimal("-180"),
+        le=Decimal("180"),
+    )
+    language: Optional[str] = Field(default=None, min_length=2, max_length=12)
+
+
+class CustomerMapPinConfirmationResponse(BaseModel):
+    address: AddressResponse
+    resolved_location: "MapResolvedLocation"
+    message: str
 
 
 class PaginatedAddressResponse(BaseModel):
@@ -4771,3 +4791,4 @@ class SellerFulfillmentDetailResponse(BaseModel):
 
     created_at: datetime
     updated_at: Optional[datetime]
+    CustomerMapPinConfirmationResponse.model_rebuild()

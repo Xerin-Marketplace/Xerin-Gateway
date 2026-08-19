@@ -8,10 +8,16 @@ from api.deps import get_db
 from api.enums import PermissionCode
 from api.models import Address, Seller, User, UserRole
 from api.permissions import require_permission
+from api.services.customer_delivery_location import (
+    CustomerDeliveryLocationError,
+    confirm_customer_map_pin,
+)
 from api.schemas import (
     AddressCreate,
     AddressUpdate,
     AddressResponse,
+    CustomerMapPinConfirmationRequest,
+    CustomerMapPinConfirmationResponse,
     PaginatedAddressResponse,
     UpdateUserRequest,
     UserMeResponse,
@@ -214,6 +220,8 @@ def get_my_addresses(
     if delivery_ready is True:
         query = query.filter(
             Address.is_active.is_(True),
+            Address.is_verified.is_(True),
+            Address.location_confirmed_at.isnot(None),
             Address.recipient_name.isnot(None),
             Address.recipient_phone.isnot(None),
             Address.latitude.isnot(None),
@@ -223,6 +231,8 @@ def get_my_addresses(
         query = query.filter(
             or_(
                 Address.is_active.is_(False),
+                Address.is_verified.is_(False),
+                Address.location_confirmed_at.is_(None),
                 Address.recipient_name.is_(None),
                 Address.recipient_phone.is_(None),
                 Address.latitude.is_(None),
@@ -341,6 +351,8 @@ def update_address(
     }
     if critical_location_fields.intersection(update_data):
         address.is_verified = False
+        address.location_provider = None
+        address.location_confirmed_at = None
 
     for field, value in update_data.items():
         setattr(address, field, value)
@@ -381,6 +393,65 @@ def update_address(
     db.commit()
     db.refresh(address)
     return address
+
+
+@router.post(
+    "/addresses/{address_id}/confirm-map-pin",
+    response_model=CustomerMapPinConfirmationResponse,
+)
+def confirm_delivery_address_map_pin(
+    address_id: UUID,
+    data: CustomerMapPinConfirmationRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(
+        require_permission(PermissionCode.manage_addresses.value)
+    ),
+):
+    address = (
+        db.query(Address)
+        .filter(
+            Address.id == address_id,
+            Address.user_id == current_user.id,
+        )
+        .first()
+    )
+    if not address:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Address not found",
+        )
+
+    if not address.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "code": "inactive_delivery_address",
+                "message": "Activate the delivery address before confirming its map pin.",
+            },
+        )
+
+    try:
+        resolved = confirm_customer_map_pin(
+            db,
+            address=address,
+            latitude=data.latitude,
+            longitude=data.longitude,
+            language=data.language,
+        )
+    except CustomerDeliveryLocationError as exc:
+        raise HTTPException(
+            status_code=exc.status_code,
+            detail={
+                "code": exc.code,
+                "message": exc.message,
+            },
+        ) from exc
+
+    return {
+        "address": address,
+        "resolved_location": resolved,
+        "message": "Delivery map pin confirmed successfully.",
+    }
 
 
 @router.post("/addresses/{address_id}/default", response_model=AddressResponse)

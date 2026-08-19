@@ -235,6 +235,8 @@ class Address(Base):
     is_default = Column(Boolean, nullable=False, default=False, server_default="false", index=True)
     is_active = Column(Boolean, nullable=False, default=True, server_default="true", index=True)
     is_verified = Column(Boolean, nullable=False, default=False, server_default="false", index=True)
+    location_provider = Column(String(30), nullable=True)
+    location_confirmed_at = Column(DateTime(timezone=True), nullable=True, index=True)
     created_at = Column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
@@ -249,6 +251,8 @@ class Address(Base):
         """
         return bool(
             self.is_active
+            and self.is_verified
+            and self.location_confirmed_at is not None
             and self.recipient_name
             and self.recipient_phone
             and self.latitude is not None
