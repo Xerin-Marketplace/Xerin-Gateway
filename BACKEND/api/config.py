@@ -106,6 +106,9 @@ class Settings(BaseSettings):
     GOOGLE_MAPS_API_KEY: str | None = None
     GOOGLE_PLACES_BASE_URL: str = "https://places.googleapis.com"
     GOOGLE_GEOCODING_BASE_URL: str = "https://maps.googleapis.com/maps/api/geocode/json"
+    GOOGLE_ROUTES_BASE_URL: str = "https://routes.googleapis.com"
+    MAP_ROUTE_TRAVEL_MODE: str = "DRIVE"
+    MAP_ROUTE_ROUTING_PREFERENCE: str = "TRAFFIC_UNAWARE"
     MAP_DEFAULT_COUNTRY_CODE: str = "TZ"
     MAP_DEFAULT_LANGUAGE: str = "en"
     MAP_API_TIMEOUT_SECONDS: int = Field(default=10, ge=1, le=60)

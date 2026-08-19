@@ -301,6 +301,23 @@ class ShippingRateType(str, enum.Enum):
     weight_based = "weight_based"
     free = "free"
 
+    # Phase 2 Task 5: distance-aware logistics pricing.
+    per_km = "per_km"
+    base_plus_per_km = "base_plus_per_km"
+    provider_quote = "provider_quote"
+
+
+class MultiSellerPricingStrategy(str, enum.Enum):
+    # Launch strategy: charge using the farthest seller-to-customer road route.
+    farthest_seller = "farthest_seller"
+
+    # Supported alternative: sum each seller-to-customer route.
+    sum_individual = "sum_individual"
+
+    # Reserved strategies for future route optimization/provider-native pricing.
+    optimized_multi_pickup = "optimized_multi_pickup"
+    logistics_provider_quote = "logistics_provider_quote"
+
 
 
 class DeliveryStatus(str, enum.Enum):

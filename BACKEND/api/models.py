@@ -50,6 +50,7 @@ from api.enums import (
     LogisticsCompanyStatus,
     LogisticsScope,
     LogisticsIntegrationAuthType,
+    MultiSellerPricingStrategy,
     AdvertisementStatus,
     AdvertisementPlacement,
     AdvertisementBillingType,
@@ -897,6 +898,13 @@ class LogisticsCompany(Base):
     supports_webhooks = Column(
         Boolean, nullable=False, default=False, server_default="false"
     )
+    multi_seller_pricing_strategy = Column(
+        Enum(MultiSellerPricingStrategy),
+        nullable=False,
+        default=MultiSellerPricingStrategy.farthest_seller,
+        server_default="farthest_seller",
+        index=True,
+    )
     metadata_json = Column(JSONB, nullable=False, default=dict, server_default="{}")
     created_at = Column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
@@ -1126,6 +1134,13 @@ class ShippingRate(Base):
     currency = Column(String(10), nullable=False, default="TZS", server_default="TZS")
     base_amount = Column(Numeric(18, 2), nullable=False, default=0)
     amount_per_kg = Column(Numeric(18, 2), nullable=False, default=0)
+
+    # Phase 2 Task 5: provider-owned distance pricing configuration.
+    amount_per_km = Column(Numeric(18, 2), nullable=False, default=0, server_default="0")
+    minimum_fee = Column(Numeric(18, 2), nullable=True)
+    maximum_fee = Column(Numeric(18, 2), nullable=True)
+    max_distance_km = Column(Numeric(10, 3), nullable=True)
+
     free_shipping_threshold = Column(Numeric(18, 2), nullable=True)
     min_weight_kg = Column(Numeric(10, 3), nullable=True)
     max_weight_kg = Column(Numeric(10, 3), nullable=True)
@@ -1143,6 +1158,21 @@ class ShippingRate(Base):
         CheckConstraint("base_amount >= 0", name="ck_shipping_rate_base_nonnegative"),
         CheckConstraint(
             "amount_per_kg >= 0", name="ck_shipping_rate_perkg_nonnegative"
+        ),
+        CheckConstraint(
+            "amount_per_km >= 0", name="ck_shipping_rate_perkm_nonnegative"
+        ),
+        CheckConstraint(
+            "minimum_fee IS NULL OR minimum_fee >= 0",
+            name="ck_shipping_rate_minimum_fee_nonnegative",
+        ),
+        CheckConstraint(
+            "maximum_fee IS NULL OR maximum_fee >= minimum_fee",
+            name="ck_shipping_rate_maximum_fee_valid",
+        ),
+        CheckConstraint(
+            "max_distance_km IS NULL OR max_distance_km > 0",
+            name="ck_shipping_rate_max_distance_positive",
         ),
         CheckConstraint(
             "free_shipping_threshold IS NULL OR free_shipping_threshold >= 0",

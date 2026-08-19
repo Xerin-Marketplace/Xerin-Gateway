@@ -7,19 +7,31 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, joinedload, selectinload
 
 from api.deps import get_current_user, get_db
-from api.enums import PermissionCode, ShippingRateType
+from api.enums import PermissionCode, ShippingRateType, MultiSellerPricingStrategy
 from api.models import (
     Address, Cart, CartItem, LogisticsCompany, MarketplaceSettings, Order,
     ProductStatus, Promotion, Shipment, ShipmentStatus, ShipmentTrackingEvent,
     ShippingMethod, ShippingRate, ShippingZone, User,
 )
 from api.permissions import require_permission
+from api.services.multi_seller_pricing import (
+    MultiSellerPricingError,
+    calculate_multi_seller_delivery_pricing,
+)
+from api.services.delivery_quote import (
+    DeliveryQuoteError,
+    calculate_delivery_distance_quote,
+)
 from api.services.eligible_logistics import (
     EligibleLogisticsError,
     find_eligible_logistics_companies,
 )
 from api.schemas import (
     EligibleLogisticsSelectionRequest,
+    DeliveryDistanceQuoteRequest,
+    DeliveryDistanceQuoteResponse,
+    MultiSellerDeliveryPricingRequest,
+    MultiSellerDeliveryPricingResponse,
     PaginatedEligibleLogisticsCompanyResponse,
     ShippingMethodCreate, ShippingMethodResponse, ShippingMethodUpdate,
     ShippingCheckoutConfig, ShippingQuoteOption, ShippingQuoteRequest,
@@ -210,6 +222,65 @@ def checkout_delivery_config(
             and settings_row.international_delivery_allowed is not None
         ),
     }
+
+
+@router.post(
+    "/multi-seller-pricing",
+    response_model=MultiSellerDeliveryPricingResponse,
+)
+def multi_seller_delivery_pricing(
+    data: MultiSellerDeliveryPricingRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    try:
+        return calculate_multi_seller_delivery_pricing(
+            db,
+            user_id=current_user.id,
+            address_id=data.address_id,
+            logistics_company_id=data.logistics_company_id,
+            delivery_mode=data.delivery_mode,
+            method_id=data.method_id,
+        )
+    except MultiSellerPricingError as exc:
+        detail = {
+            "code": exc.code,
+            "message": exc.message,
+        }
+        detail.update(exc.extra)
+        raise HTTPException(
+            status_code=exc.status_code,
+            detail=detail,
+        ) from exc
+
+
+@router.post(
+    "/distance-quote",
+    response_model=DeliveryDistanceQuoteResponse,
+)
+def delivery_distance_quote(
+    data: DeliveryDistanceQuoteRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    try:
+        return calculate_delivery_distance_quote(
+            db,
+            user_id=current_user.id,
+            address_id=data.address_id,
+            logistics_company_id=data.logistics_company_id,
+            delivery_mode=data.delivery_mode,
+        )
+    except DeliveryQuoteError as exc:
+        detail = {
+            "code": exc.code,
+            "message": exc.message,
+        }
+        detail.update(exc.extra)
+        raise HTTPException(
+            status_code=exc.status_code,
+            detail=detail,
+        ) from exc
 
 
 @router.post(

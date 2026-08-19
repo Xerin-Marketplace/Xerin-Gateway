@@ -163,3 +163,96 @@ class GoogleMapLocationClient:
         except ValueError:
             pass
         raise MapProviderError(detail, status_code=response.status_code)
+
+    def compute_route_distance(
+        self,
+        *,
+        origin_latitude: Decimal | float,
+        origin_longitude: Decimal | float,
+        destination_latitude: Decimal | float,
+        destination_longitude: Decimal | float,
+        travel_mode: str | None = None,
+        routing_preference: str | None = None,
+    ) -> dict:
+        """Return road-route distance/duration using Google Routes API.
+
+        Phase 2 Task 4 deliberately centralizes route distance here so pricing
+        logic never uses straight-line/Haversine distance for customer billing.
+        """
+        if not settings.GOOGLE_MAPS_API_KEY:
+            raise MapConfigurationError("GOOGLE_MAPS_API_KEY is not configured")
+
+        url = f"{settings.GOOGLE_ROUTES_BASE_URL.rstrip('/')}/directions/v2:computeRoutes"
+        payload = {
+            "origin": {
+                "location": {
+                    "latLng": {
+                        "latitude": float(origin_latitude),
+                        "longitude": float(origin_longitude),
+                    }
+                }
+            },
+            "destination": {
+                "location": {
+                    "latLng": {
+                        "latitude": float(destination_latitude),
+                        "longitude": float(destination_longitude),
+                    }
+                }
+            },
+            "travelMode": travel_mode or settings.MAP_ROUTE_TRAVEL_MODE,
+            "routingPreference": (
+                routing_preference or settings.MAP_ROUTE_ROUTING_PREFERENCE
+            ),
+            "computeAlternativeRoutes": False,
+        }
+        headers = {
+            "Content-Type": "application/json",
+            "X-Goog-Api-Key": settings.GOOGLE_MAPS_API_KEY,
+            "X-Goog-FieldMask": "routes.distanceMeters,routes.duration",
+        }
+
+        try:
+            response = self.session.post(
+                url,
+                json=payload,
+                headers=headers,
+                timeout=self.timeout,
+            )
+        except Exception as exc:
+            raise MapProviderError(
+                "Could not reach map route provider."
+            ) from exc
+
+        data = self._json_response(response)
+        if not response.ok:
+            message = (
+                data.get("error", {}).get("message")
+                if isinstance(data, dict)
+                else None
+            )
+            raise MapProviderError(
+                message or "Map route provider request failed."
+            )
+
+        routes = data.get("routes") or []
+        if not routes:
+            raise MapProviderError("No drivable route was found.")
+
+        route = routes[0]
+        distance_meters = int(route.get("distanceMeters") or 0)
+        duration_raw = str(route.get("duration") or "0s")
+        try:
+            duration_seconds = int(float(duration_raw.rstrip("s") or 0))
+        except ValueError:
+            duration_seconds = 0
+
+        return {
+            "provider": "google",
+            "distance_meters": distance_meters,
+            "distance_km": round(distance_meters / 1000.0, 3),
+            "duration_seconds": duration_seconds,
+            "duration_minutes": round(duration_seconds / 60.0, 1),
+            "travel_mode": travel_mode or settings.MAP_ROUTE_TRAVEL_MODE,
+        }
+

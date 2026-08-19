@@ -22,7 +22,7 @@ from api.enums import DayOfWeek, StoreStatus, ShippingRateType
 from api.enums import (
     ShipmentStatus, WalletTransactionType, PayoutStatus, RefundStatus, RefundReason,
     SellerOrderStatus, InventoryMovementType, LogisticsCompanyStatus, LogisticsScope,
-    LogisticsIntegrationAuthType,
+    LogisticsIntegrationAuthType, MultiSellerPricingStrategy,
 )
 
 
@@ -2380,6 +2380,10 @@ class ShippingRateCreate(BaseModel):
     currency: str = Field(default="TZS", min_length=3, max_length=10)
     base_amount: Decimal = Field(default=Decimal("0.00"), ge=0)
     amount_per_kg: Decimal = Field(default=Decimal("0.00"), ge=0)
+    amount_per_km: Decimal = Field(default=Decimal("0.00"), ge=0)
+    minimum_fee: Optional[Decimal] = Field(default=None, ge=0)
+    maximum_fee: Optional[Decimal] = Field(default=None, ge=0)
+    max_distance_km: Optional[Decimal] = Field(default=None, gt=0)
     free_shipping_threshold: Optional[Decimal] = Field(default=None, ge=0)
     min_weight_kg: Optional[Decimal] = Field(default=None, ge=0)
     max_weight_kg: Optional[Decimal] = Field(default=None, ge=0)
@@ -2389,6 +2393,10 @@ class ShippingRateCreate(BaseModel):
     def validate_weight_range(self):
         if self.min_weight_kg is not None and self.max_weight_kg is not None and self.max_weight_kg < self.min_weight_kg:
             raise ValueError("max_weight_kg must be greater than or equal to min_weight_kg")
+        if self.minimum_fee is not None and self.maximum_fee is not None and self.maximum_fee < self.minimum_fee:
+            raise ValueError("maximum_fee must be greater than or equal to minimum_fee")
+        if self.rate_type in {ShippingRateType.per_km, ShippingRateType.base_plus_per_km} and self.amount_per_km <= 0:
+            raise ValueError("amount_per_km must be greater than zero for distance-based rates")
         return self
 
 
@@ -2460,6 +2468,98 @@ class PaginatedEligibleLogisticsCompanyResponse(BaseModel):
     total_pages: int
     sellers: list[EligibleSellerPickupCoverage] = Field(default_factory=list)
     results: list[EligibleLogisticsCompanyOption] = Field(default_factory=list)
+
+
+class DeliveryDistanceQuoteRequest(BaseModel):
+    address_id: UUID
+    logistics_company_id: UUID
+    delivery_mode: Literal["local", "international"]
+
+
+class SellerRouteDistanceResponse(BaseModel):
+    seller_id: UUID
+    seller_name: str
+    pickup_location_id: UUID
+    pickup_label: str
+    distance_meters: int
+    distance_km: Decimal
+    duration_seconds: int
+    duration_minutes: Decimal
+    provider: str
+
+
+class DeliveryDistanceQuoteResponse(BaseModel):
+    address_id: UUID
+    logistics_company_id: UUID
+    logistics_company_name: str
+    delivery_mode: Literal["local", "international"]
+    seller_count: int
+    distance_provider: str
+    sellers: list[SellerRouteDistanceResponse] = Field(default_factory=list)
+    max_distance_km: Decimal
+    min_distance_km: Decimal
+    average_distance_km: Decimal
+    note: str
+
+
+class MultiSellerDeliveryPricingRequest(BaseModel):
+    address_id: UUID
+    logistics_company_id: UUID
+    delivery_mode: Literal["local", "international"]
+    method_id: Optional[UUID] = None
+
+
+class MultiSellerPricingSellerRoute(BaseModel):
+    seller_id: UUID
+    seller_name: str
+    pickup_location_id: UUID
+    pickup_label: str
+    distance_km: Decimal
+    duration_minutes: Decimal
+    is_billable_reference: bool = False
+
+
+class MultiSellerPricingBreakdown(BaseModel):
+    base_amount: Decimal
+    amount_per_km: Decimal
+    raw_distance_amount: Decimal
+    minimum_fee: Optional[Decimal] = None
+    maximum_fee: Optional[Decimal] = None
+    minimum_fee_applied: bool = False
+    maximum_fee_applied: bool = False
+
+
+class MultiSellerDeliveryOption(BaseModel):
+    rate_id: UUID
+    method_id: UUID
+    method_name: str
+    service_code: Optional[str] = None
+    logistics_company_id: UUID
+    logistics_company_name: str
+    strategy: MultiSellerPricingStrategy
+    rate_type: ShippingRateType
+    currency: str
+    seller_count: int
+    billable_distance_km: Decimal
+    billable_seller_id: Optional[UUID] = None
+    delivery_amount: Decimal
+    min_delivery_days: int
+    max_delivery_days: int
+    supports_cod: bool
+    supports_tracking: bool
+    pricing_breakdown: MultiSellerPricingBreakdown
+    sellers: list[MultiSellerPricingSellerRoute] = Field(default_factory=list)
+
+
+class MultiSellerDeliveryPricingResponse(BaseModel):
+    address_id: UUID
+    logistics_company_id: UUID
+    logistics_company_name: str
+    delivery_mode: Literal["local", "international"]
+    strategy: MultiSellerPricingStrategy
+    seller_count: int
+    options: list[MultiSellerDeliveryOption] = Field(default_factory=list)
+    note: str
 
 
 class ShippingQuoteRequest(BaseModel):
