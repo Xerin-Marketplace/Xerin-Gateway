@@ -422,6 +422,423 @@ class PaginatedAddressResponse(BaseModel):
     results: list[AddressResponse]
 
 
+class SellerCreate(BaseModel):
+    business_name: str
+    business_category: str | None = None
+    contact_email: EmailStr | None = None
+    contact_phone: str | None = None
+    agreement_accepted: Literal[True]
+
+
+class SellerUpdate(BaseModel):
+    business_name: str | None = None
+    business_category_ids: list[UUID] | None = None
+    business_description: str | None = None
+    business_location: str | None = None
+    business_country: str | None = None
+    business_region: str | None = None
+    business_city: str | None = None
+    business_address: str | None = None
+    product_description: str | None = None
+    years_in_business: str | None = None
+    website_url: str | None = None
+    contact_email: EmailStr | None = None
+    contact_phone: str | None = None
+
+
+class SellerResponse(BaseModel):
+    id: UUID
+    user_id: UUID
+    business_name: str
+    business_description: str | None = None
+    business_location: str | None = None
+    business_country: str | None = None
+    business_region: str | None = None
+    business_city: str | None = None
+    business_address: str | None = None
+    product_description: str | None = None
+    years_in_business: str | None = None
+    website_url: str | None = None
+    contact_email: str | None
+    contact_phone: str | None
+    status: str
+    agreement_accepted: bool
+    created_at: datetime
+
+    model_config = ORM_CONFIG
+
+    @model_validator(mode="before")
+    @classmethod
+    def flatten_profile(cls, value):
+        if isinstance(value, dict):
+            return value
+        profile = getattr(value, "profile", None)
+        data = {
+            "id": getattr(value, "id", None),
+            "user_id": getattr(value, "user_id", None),
+            "business_name": getattr(value, "business_name", None),
+            "contact_email": getattr(value, "contact_email", None),
+            "contact_phone": getattr(value, "contact_phone", None),
+            "status": getattr(value, "status", None),
+            "agreement_accepted": getattr(value, "agreement_accepted", False),
+            "created_at": getattr(value, "created_at", None),
+        }
+        for name in (
+            "business_description", "business_country", "business_region",
+            "business_city", "business_address", "product_description",
+            "years_in_business", "website_url"
+        ):
+            data[name] = getattr(profile, name, None) if profile is not None else None
+        data["business_location"] = data.get("business_address")
+        return data
+
+
+class SellerRegisterRequest(BaseModel):
+    first_name: str
+    last_name: str
+    email: EmailStr
+    phone: str
+    password: str
+
+    business_name: str
+    business_category_ids: list[UUID]
+    business_description: str | None = None
+    business_location: str | None = None
+    business_country: str | None = None
+    business_region: str | None = None
+    business_city: str | None = None
+    business_address: str | None = None
+    product_description: str | None = None
+    years_in_business: str | None = None
+    website_url: str | None = None
+    contact_email: EmailStr | None = None
+    contact_phone: str | None = None
+    agreement_accepted: Literal[True]
+
+    _clean_names = field_validator("first_name", "last_name", "business_name")(_clean_required_text)
+    _clean_phones = field_validator("phone", "contact_phone")(_normalise_phone)
+    _strong_password = field_validator("password")(_validate_password)
+
+    @field_validator("business_category_ids")
+    @classmethod
+    def require_categories(cls, value: list[UUID]) -> list[UUID]:
+        if not value:
+            raise ValueError("At least one business category is required")
+        return list(dict.fromkeys(value))
+
+class SellerApplicationRequest(BaseModel):
+    """Business details submitted by an authenticated customer becoming a seller."""
+
+    business_name: str
+    business_category_ids: list[UUID]
+    business_description: str | None = None
+    business_country: str | None = None
+    business_region: str | None = None
+    business_city: str | None = None
+    business_address: str | None = None
+    product_description: str | None = None
+    years_in_business: str | None = None
+    website_url: str | None = None
+    contact_email: EmailStr | None = None
+    contact_phone: str | None = None
+    agreement_accepted: Literal[True]
+
+    _clean_business_name = field_validator("business_name")(_clean_required_text)
+    _clean_contact_phone = field_validator("contact_phone")(_normalise_phone)
+
+    @field_validator("business_category_ids")
+    @classmethod
+    def require_business_categories(cls, value: list[UUID]) -> list[UUID]:
+        if not value:
+            raise ValueError("At least one business category is required")
+        return list(dict.fromkeys(value))
+
+
+class SellerApplicationStatusResponse(BaseModel):
+    has_application: bool
+    seller_id: UUID | None = None
+    status: str | None = None
+    business_name: str | None = None
+    can_access_seller_dashboard: bool = False
+    can_upload_kyc: bool = False
+    submitted_at: datetime | None = None
+    approved_at: datetime | None = None
+
+
+class SellerKYCCreate(BaseModel):
+    document_type: str
+    document_url: str
+
+
+class SellerKYCResponse(BaseModel):
+    id: UUID
+    seller_id: UUID
+    document_type: str
+    document_url: str
+    status: str
+    rejection_reason: str | None
+    uploaded_at: datetime
+    
+    model_config = ORM_CONFIG
+
+class SellerKYCStatusResponse(BaseModel):
+    seller_status: str
+    required_documents: list[str]
+    uploaded_documents: list[str]
+    missing_documents: list[str]
+    can_submit_for_review: bool
+
+    model_config = ORM_CONFIG
+
+
+class SellerPayoutCreate(BaseModel):
+    account_type: str = Field(min_length=1, max_length=50)
+    provider: str = Field(min_length=1, max_length=100)
+    account_name: str = Field(min_length=1, max_length=255)
+    account_number: str = Field(min_length=1, max_length=255)
+    currency: str = "TZS"
+    is_default: bool = False
+
+    _currency = field_validator("currency")(_normalise_currency)
+
+
+class SellerPayoutResponse(BaseModel):
+    id: UUID
+    seller_id: UUID
+    account_type: str
+    provider: str
+    account_name: str
+    account_number: str
+    currency: str
+    is_default: bool
+    is_active: bool = True
+    verification_status: str = "pending"
+    provider_reference: Optional[str] = None
+    verified_at: Optional[datetime] = None
+    created_at: datetime
+    updated_at: Optional[datetime] = None
+
+    model_config = ORM_CONFIG
+        
+class SellerProfileUpdate(BaseModel):
+    business_description: str | None = None
+    business_country: str | None = None
+    business_region: str | None = None
+    business_city: str | None = None
+    business_address: str | None = None
+    product_description: str | None = None
+    years_in_business: str | None = None
+    website_url: str | None = None
+
+
+class SellerProfileResponse(BaseModel):
+    id: UUID
+    seller_id: UUID
+    business_description: str | None
+    business_country: str | None
+    business_region: str | None
+    business_city: str | None
+    business_address: str | None
+    product_description: str | None
+    years_in_business: str | None
+    website_url: str | None
+    created_at: datetime
+
+    model_config = ORM_CONFIG
+        
+        
+        
+class StoreUpdate(BaseModel):
+    store_name: str | None = Field(default=None, min_length=2, max_length=255)
+    description: str | None = Field(default=None, max_length=5000)
+    about: str | None = Field(default=None, max_length=10000)
+    theme_color: str | None = Field(default=None, pattern=r"^#[0-9A-Fa-f]{6}$")
+    secondary_color: str | None = Field(default=None, pattern=r"^#[0-9A-Fa-f]{6}$")
+
+    contact_email: EmailStr | None = None
+    contact_phone: str | None = Field(default=None, max_length=30)
+    whatsapp_phone: str | None = Field(default=None, max_length=30)
+    website_url: str | None = None
+
+    country: str | None = Field(default=None, max_length=100)
+    region: str | None = Field(default=None, max_length=100)
+    district: str | None = Field(default=None, max_length=100)
+    ward: str | None = Field(default=None, max_length=100)
+    street: str | None = None
+
+    latitude: float | None = Field(default=None, ge=-90, le=90)
+    longitude: float | None = Field(default=None, ge=-180, le=180)
+
+    opening_time: Time | None = None
+    closing_time: Time | None = None
+
+    shipping_policy: str | None = None
+    return_policy: str | None = None
+    privacy_policy: str | None = None
+
+    facebook_url: str | None = None
+    instagram_url: str | None = None
+    twitter_url: str | None = None
+    tiktok_url: str | None = None
+    youtube_url: str | None = None
+
+    vacation_mode: bool | None = None
+    accept_orders: bool | None = None
+    processing_days: int | None = Field(default=None, ge=0, le=60)
+    seo_title: str | None = Field(default=None, max_length=255)
+    seo_description: str | None = Field(default=None, max_length=500)
+
+
+class StoreResponse(BaseModel):
+    id: UUID
+    seller_id: UUID
+
+    store_name: str
+    slug: str
+    description: str | None
+    about: str | None
+
+    logo_url: str | None
+    banner_url: str | None
+    theme_color: str
+    secondary_color: str
+
+    contact_email: str | None
+    contact_phone: str | None
+    whatsapp_phone: str | None
+    website_url: str | None
+
+    country: str | None
+    region: str | None
+    district: str | None
+    ward: str | None
+    street: str | None
+
+    latitude: float | None
+    longitude: float | None
+
+    opening_time: Time | None
+    closing_time: Time | None
+
+    shipping_policy: str | None
+    return_policy: str | None
+    privacy_policy: str | None
+
+    facebook_url: str | None
+    instagram_url: str | None
+    twitter_url: str | None
+    tiktok_url: str | None
+    youtube_url: str | None
+
+    status: str
+    is_verified: bool
+    is_featured: bool
+
+    rating: Decimal
+    review_count: int
+    followers_count: int
+    vacation_mode: bool
+    accept_orders: bool
+    processing_days: int
+    seo_title: str | None
+    seo_description: str | None
+    
+    gallery_images: list["StoreGalleryImageResponse"] = Field(default_factory=list)
+    opening_hours: list["StoreOpeningHourResponse"] = Field(default_factory=list)
+
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class StorePublicResponse(BaseModel):
+    id: UUID
+    seller_id: UUID
+
+    store_name: str
+    slug: str
+    description: str | None
+    about: str | None
+
+    logo_url: str | None
+    banner_url: str | None
+    theme_color: str
+    secondary_color: str
+
+    contact_email: str | None
+    contact_phone: str | None
+    whatsapp_phone: str | None
+    website_url: str | None
+
+    country: str | None
+    region: str | None
+    district: str | None
+    ward: str | None
+    street: str | None
+
+    opening_time: Time | None
+    closing_time: Time | None
+
+    shipping_policy: str | None
+    return_policy: str | None
+
+    facebook_url: str | None
+    instagram_url: str | None
+    twitter_url: str | None
+    tiktok_url: str | None
+    youtube_url: str | None
+
+    is_verified: bool
+    is_featured: bool
+
+    rating: Decimal
+    review_count: int
+    followers_count: int
+    vacation_mode: bool
+    accept_orders: bool
+    processing_days: int
+    seo_title: str | None
+    seo_description: str | None
+    
+    gallery_images: list["StoreGalleryImageResponse"] = Field(default_factory=list)
+    opening_hours: list["StoreOpeningHourResponse"] = Field(default_factory=list)
+
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class PaginatedAdminStoreResponse(BaseModel):
+    total: int
+    page: int
+    page_size: int
+    total_pages: int
+    results: list[StoreResponse]
+
+class PaginatedStoreResponse(BaseModel):
+    total: int
+    page: int
+    page_size: int
+    total_pages: int
+    results: list[StorePublicResponse]        
+
+
+class UserMeResponse(BaseModel):
+    id: UUID
+    first_name: str
+    last_name: str
+    email: EmailStr
+    phone: str | None
+    is_verified: bool
+    status: str | None
+    is_seller: bool
+    seller_status: str | None
+    account_type: str
+    roles: list[str] = Field(default_factory=list)
+
+    model_config = ORM_CONFIG
+
 class PaginatedSellerResponse(BaseModel):
     total: int
     page: int
