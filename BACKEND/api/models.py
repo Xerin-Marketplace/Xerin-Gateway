@@ -3512,6 +3512,104 @@ class PayoutEvent(Base):
 
 
 #
+# LOGISTICS WALLETS AND PAYOUTS
+#
+
+
+class LogisticsWallet(Base):
+    __tablename__ = "logistics_wallets"
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    logistics_company_id = Column(UUID(as_uuid=True), ForeignKey("logistics_companies.id", ondelete="CASCADE"), nullable=False, unique=True, index=True)
+    currency = Column(String(10), nullable=False, default="TZS", server_default="TZS")
+    pending_balance = Column(Numeric(18, 2), nullable=False, default=0, server_default="0")
+    available_balance = Column(Numeric(18, 2), nullable=False, default=0, server_default="0")
+    reserved_balance = Column(Numeric(18, 2), nullable=False, default=0, server_default="0")
+    paid_out_balance = Column(Numeric(18, 2), nullable=False, default=0, server_default="0")
+    refunded_balance = Column(Numeric(18, 2), nullable=False, default=0, server_default="0")
+    debt_balance = Column(Numeric(18, 2), nullable=False, default=0, server_default="0")
+    is_frozen = Column(Boolean, nullable=False, default=False, server_default="false", index=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+    transactions = relationship("LogisticsWalletTransaction", back_populates="wallet", cascade="all, delete-orphan")
+    payouts = relationship("LogisticsPayoutRequest", back_populates="wallet")
+    __table_args__ = (CheckConstraint("pending_balance >= 0 AND available_balance >= 0 AND reserved_balance >= 0 AND paid_out_balance >= 0 AND refunded_balance >= 0 AND debt_balance >= 0", name="ck_logistics_wallet_balances_nonnegative"),)
+
+
+class LogisticsPayoutAccount(Base):
+    __tablename__ = "logistics_payout_accounts"
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    logistics_company_id = Column(UUID(as_uuid=True), ForeignKey("logistics_companies.id", ondelete="CASCADE"), nullable=False, index=True)
+    account_type = Column(String(50), nullable=False)
+    provider = Column(String(100), nullable=False)
+    account_name = Column(String(255), nullable=False)
+    account_number = Column(String(255), nullable=False)
+    currency = Column(String(10), nullable=False, default="TZS", server_default="TZS")
+    is_default = Column(Boolean, nullable=False, default=False, server_default="false")
+    is_active = Column(Boolean, nullable=False, default=True, server_default="true")
+    verification_status = Column(String(30), nullable=False, default="pending", server_default="pending", index=True)
+    verification_note = Column(Text, nullable=True)
+    verified_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+    __table_args__ = (UniqueConstraint("logistics_company_id", "provider", "account_number", name="uq_logistics_payout_account"), CheckConstraint("verification_status IN ('pending','verified','rejected')", name="ck_logistics_payout_account_verification"),)
+
+    @property
+    def masked_account_number(self):
+        value = self.account_number or ""
+        return "*" * max(0, len(value) - 4) + value[-4:]
+
+
+class LogisticsPayoutRequest(Base):
+    __tablename__ = "logistics_payout_requests"
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    wallet_id = Column(UUID(as_uuid=True), ForeignKey("logistics_wallets.id", ondelete="RESTRICT"), nullable=False, index=True)
+    logistics_company_id = Column(UUID(as_uuid=True), ForeignKey("logistics_companies.id", ondelete="RESTRICT"), nullable=False, index=True)
+    payout_account_id = Column(UUID(as_uuid=True), ForeignKey("logistics_payout_accounts.id", ondelete="RESTRICT"), nullable=False)
+    amount = Column(Numeric(18, 2), nullable=False)
+    currency = Column(String(10), nullable=False)
+    status = Column(String(30), nullable=False, default="pending", server_default="pending", index=True)
+    provider_reference = Column(String(180), nullable=True, unique=True)
+    company_note = Column(Text, nullable=True)
+    admin_note = Column(Text, nullable=True)
+    requested_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    processed_at = Column(DateTime(timezone=True), nullable=True)
+    completed_at = Column(DateTime(timezone=True), nullable=True)
+    wallet = relationship("LogisticsWallet", back_populates="payouts")
+    account = relationship("LogisticsPayoutAccount")
+    events = relationship("LogisticsPayoutEvent", back_populates="payout", cascade="all, delete-orphan")
+    __table_args__ = (CheckConstraint("amount > 0", name="ck_logistics_payout_amount_positive"), CheckConstraint("status IN ('pending','approved','processing','completed','rejected','failed','cancelled')", name="ck_logistics_payout_status"),)
+
+
+class LogisticsPayoutEvent(Base):
+    __tablename__ = "logistics_payout_events"
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    payout_request_id = Column(UUID(as_uuid=True), ForeignKey("logistics_payout_requests.id", ondelete="CASCADE"), nullable=False, index=True)
+    status = Column(String(30), nullable=False)
+    note = Column(Text, nullable=True)
+    created_by_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    payout = relationship("LogisticsPayoutRequest", back_populates="events")
+
+
+class LogisticsWalletTransaction(Base):
+    __tablename__ = "logistics_wallet_transactions"
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    wallet_id = Column(UUID(as_uuid=True), ForeignKey("logistics_wallets.id", ondelete="CASCADE"), nullable=False, index=True)
+    transaction_type = Column(String(40), nullable=False, index=True)
+    amount = Column(Numeric(18, 2), nullable=False)
+    currency = Column(String(10), nullable=False)
+    reference = Column(String(180), nullable=False, unique=True, index=True)
+    order_id = Column(UUID(as_uuid=True), ForeignKey("orders.id", ondelete="SET NULL"), nullable=True, index=True)
+    payout_request_id = Column(UUID(as_uuid=True), ForeignKey("logistics_payout_requests.id", ondelete="SET NULL"), nullable=True, index=True)
+    eligible_at = Column(DateTime(timezone=True), nullable=True, index=True)
+    released_at = Column(DateTime(timezone=True), nullable=True)
+    description = Column(Text, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    wallet = relationship("LogisticsWallet", back_populates="transactions")
+    __table_args__ = (CheckConstraint("amount >= 0", name="ck_logistics_wallet_transaction_amount_nonnegative"),)
+
+
+#
 # REFUNDS AND REVERSALS
 #
 

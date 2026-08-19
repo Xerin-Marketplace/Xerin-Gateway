@@ -15,7 +15,6 @@ from api.config import settings
 
 ALGORITHM = settings.JWT_ALGORITHM
 
-
 def _password_bytes(password: str) -> bytes:
     if not isinstance(password, str):
         raise TypeError("Password must be a string")

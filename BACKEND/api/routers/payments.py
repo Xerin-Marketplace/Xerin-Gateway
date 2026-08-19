@@ -47,6 +47,7 @@ from api.services.azampay_service import AzamPayAPIError, AzamPayClient, AzamPay
 from api.services.inventory_reservations import commit_order_reservations, ensure_order_reservations_active, release_order_reservations
 from api.services.commission_engine import calculate_order_commissions
 from api.services.escrow_service import create_order_escrow_holds
+from api.services.logistics_wallet_service import credit_order_delivery_entitlement
 
 router = APIRouter(prefix="/payments", tags=["Payments"])
 
@@ -294,6 +295,8 @@ def _finalise_online_payment(
             commission_records=commission_records,
             release_after=release_after,
         )
+
+    credit_order_delivery_entitlement(db, order=order)
 
     order.status = OrderStatus.paid
     db.add(

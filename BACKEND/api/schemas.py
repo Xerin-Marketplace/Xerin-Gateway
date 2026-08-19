@@ -3214,6 +3214,133 @@ class WalletAdjustmentCreate(BaseModel):
     reason: str = Field(min_length=3, max_length=500)
 
 
+class LogisticsWalletResponse(BaseModel):
+    model_config = ORM_CONFIG
+    id: UUID
+    logistics_company_id: UUID
+    currency: str
+    pending_balance: Decimal
+    available_balance: Decimal
+    reserved_balance: Decimal
+    paid_out_balance: Decimal
+    refunded_balance: Decimal
+    debt_balance: Decimal
+    is_frozen: bool
+    created_at: datetime
+    updated_at: datetime | None = None
+
+
+class LogisticsWalletTransactionResponse(BaseModel):
+    model_config = ORM_CONFIG
+    id: UUID
+    transaction_type: str
+    amount: Decimal
+    currency: str
+    reference: str
+    order_id: UUID | None = None
+    payout_request_id: UUID | None = None
+    eligible_at: datetime | None = None
+    released_at: datetime | None = None
+    description: str | None = None
+    created_at: datetime
+
+
+class PaginatedLogisticsWalletTransactionResponse(BaseModel):
+    total: int
+    page: int
+    page_size: int
+    total_pages: int
+    results: list[LogisticsWalletTransactionResponse]
+
+
+class LogisticsPayoutAccountCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    account_type: Literal["bank", "mobile_money"]
+    provider: str = Field(min_length=2, max_length=100)
+    account_name: str = Field(min_length=2, max_length=255)
+    account_number: str = Field(min_length=4, max_length=255)
+    currency: str = Field(default="TZS", min_length=3, max_length=10)
+    is_default: bool = False
+
+
+class LogisticsPayoutAccountUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    provider: str | None = Field(default=None, min_length=2, max_length=100)
+    account_name: str | None = Field(default=None, min_length=2, max_length=255)
+    account_number: str | None = Field(default=None, min_length=4, max_length=255)
+    currency: str | None = Field(default=None, min_length=3, max_length=10)
+    is_default: bool | None = None
+    is_active: bool | None = None
+
+
+class LogisticsPayoutAccountResponse(BaseModel):
+    model_config = ORM_CONFIG
+    id: UUID
+    logistics_company_id: UUID
+    account_type: str
+    provider: str
+    account_name: str
+    masked_account_number: str
+    currency: str
+    is_default: bool
+    is_active: bool
+    verification_status: str
+    verification_note: str | None = None
+    verified_at: datetime | None = None
+    created_at: datetime
+    updated_at: datetime | None = None
+
+
+class LogisticsPayoutAccountVerification(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    status: Literal["pending", "verified", "rejected"]
+    note: str | None = Field(default=None, max_length=1000)
+
+
+class LogisticsPayoutRequestCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    payout_account_id: UUID
+    amount: Decimal = Field(gt=0, max_digits=18, decimal_places=2)
+    note: str | None = Field(default=None, max_length=1000)
+
+
+class LogisticsPayoutRequestResponse(BaseModel):
+    model_config = ORM_CONFIG
+    id: UUID
+    logistics_company_id: UUID
+    payout_account_id: UUID
+    amount: Decimal
+    currency: str
+    status: str
+    provider_reference: str | None = None
+    company_note: str | None = None
+    admin_note: str | None = None
+    requested_at: datetime
+    processed_at: datetime | None = None
+    completed_at: datetime | None = None
+
+
+class PaginatedLogisticsPayoutResponse(BaseModel):
+    total: int
+    page: int
+    page_size: int
+    total_pages: int
+    results: list[LogisticsPayoutRequestResponse]
+
+
+class LogisticsPayoutAdminUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    status: Literal["approved", "processing", "completed", "rejected", "failed"]
+    provider_reference: str | None = Field(default=None, max_length=180)
+    note: str | None = Field(default=None, max_length=1000)
+
+
+class LogisticsWalletAdjustmentCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    amount: Decimal = Field(max_digits=18, decimal_places=2)
+    reason: str = Field(min_length=3, max_length=500)
+
+
 # Phase 3 Task 4: refund and reversal schemas
 class RefundItemCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
