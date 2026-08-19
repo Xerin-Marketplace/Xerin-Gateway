@@ -4496,3 +4496,177 @@ class ShipmentHandoverResponse(BaseModel):
     updated_at: Optional[datetime]
 
     model_config = ORM_CONFIG
+
+
+
+# =========================================================
+# PHASE 1 TASK 7: SELLER FULFILLMENT VIEW
+# =========================================================
+class SellerFulfillmentPickupView(BaseModel):
+    id: Optional[UUID] = None
+    label: Optional[str] = None
+    formatted_address: Optional[str] = None
+    country: Optional[str] = None
+    region: Optional[str] = None
+    city: Optional[str] = None
+    district: Optional[str] = None
+    ward: Optional[str] = None
+    landmark: Optional[str] = None
+    latitude: Optional[Decimal] = None
+    longitude: Optional[Decimal] = None
+    pickup_contact_name: Optional[str] = None
+    pickup_phone: Optional[str] = None
+    pickup_instructions: Optional[str] = None
+    is_default: Optional[bool] = None
+    is_verified: Optional[bool] = None
+
+
+class SellerFulfillmentLogisticsCompanyView(BaseModel):
+    id: UUID
+    name: str
+    code: str
+    contact_name: Optional[str] = None
+    contact_email: Optional[str] = None
+    contact_phone: Optional[str] = None
+    supports_tracking: bool
+    supports_webhooks: bool
+
+
+class SellerFulfillmentPackageView(BaseModel):
+    id: UUID
+    package_label: Optional[str]
+    package_type: str
+    contents_summary: Optional[str]
+    weight_kg: Optional[Decimal]
+    length_cm: Optional[Decimal]
+    width_cm: Optional[Decimal]
+    height_cm: Optional[Decimal]
+    package_count: int
+    fragile: bool
+    keep_upright: bool
+    temperature_sensitive: bool
+    handling_instructions: Optional[str]
+    declared_value: Optional[Decimal]
+    declared_currency: str
+    is_ready: bool
+    prepared_at: Optional[datetime]
+    sealed_at: Optional[datetime]
+
+
+class SellerFulfillmentHandoverView(BaseModel):
+    id: UUID
+    status: str
+    courier_arrived_at: Optional[datetime]
+    courier_arrival_latitude: Optional[Decimal]
+    courier_arrival_longitude: Optional[Decimal]
+    courier_arrival_notes: Optional[str]
+    seller_confirmed_at: Optional[datetime]
+    seller_confirmation_notes: Optional[str]
+
+
+class SellerFulfillmentSettlementView(BaseModel):
+    state: str
+    gross_held: Decimal = Decimal("0")
+    seller_amount: Decimal = Decimal("0")
+    commission_amount: Decimal = Decimal("0")
+    released_amount: Decimal = Decimal("0")
+    refunded_amount: Decimal = Decimal("0")
+    currency: Optional[str] = None
+    hold_count: int = 0
+    note: str
+
+
+class SellerFulfillmentTrackingItem(BaseModel):
+    id: UUID
+    status: ShipmentStatus
+    location: Optional[str]
+    notes: Optional[str]
+    created_at: datetime
+
+
+class SellerFulfillmentTrackingListResponse(BaseModel):
+    total: int
+    page: int
+    page_size: int
+    total_pages: int
+    results: list[SellerFulfillmentTrackingItem]
+
+
+class SellerFulfillmentListItem(BaseModel):
+    seller_order_id: UUID
+    order_id: UUID
+    seller_status: SellerOrderStatus
+    order_status: OrderStatus
+    customer_name: str
+    customer_phone: Optional[str]
+    currency: str
+    seller_subtotal: Decimal
+    item_count: int
+    package_groups: int
+    physical_package_count: int
+    total_weight_kg: Decimal
+    packages_ready: int
+    shipment_id: Optional[UUID]
+    shipment_status: Optional[ShipmentStatus]
+    logistics_company_id: Optional[UUID]
+    logistics_company_name: Optional[str]
+    handover_status: Optional[str]
+    readiness_ready: bool
+    readiness_blocker_count: int
+    tracking_number: Optional[str]
+    created_at: datetime
+    updated_at: Optional[datetime]
+
+
+class SellerFulfillmentListResponse(BaseModel):
+    total: int
+    page: int
+    page_size: int
+    total_pages: int
+    results: list[SellerFulfillmentListItem]
+
+
+class SellerFulfillmentDashboardSummary(BaseModel):
+    total: int
+    new: int
+    processing: int
+    ready_to_ship: int
+    awaiting_courier: int
+    courier_arrived: int
+    seller_confirmed: int
+    shipped: int
+    delivered: int
+    blocked_readiness: int
+
+
+class SellerFulfillmentDetailResponse(BaseModel):
+    seller_order_id: UUID
+    order_id: UUID
+    seller_id: UUID
+    seller_status: SellerOrderStatus
+    order_status: OrderStatus
+    currency: str
+    seller_subtotal: Decimal
+    item_count: int
+
+    customer_name: str
+    customer_phone: Optional[str]
+    delivery_address: Optional[Dict[str, Any]]
+
+    pickup_location: Optional[SellerFulfillmentPickupView]
+    packages: list[SellerFulfillmentPackageView]
+    package_groups: int
+    physical_package_count: int
+    total_weight_kg: Decimal
+
+    readiness: SellerFulfillmentReadinessResponse
+
+    shipment: Optional[ShipmentResponse]
+    logistics_company: Optional[SellerFulfillmentLogisticsCompanyView]
+    handover: Optional[SellerFulfillmentHandoverView]
+
+    settlement: SellerFulfillmentSettlementView
+    recent_tracking: list[SellerFulfillmentTrackingItem] = Field(default_factory=list)
+
+    created_at: datetime
+    updated_at: Optional[datetime]
