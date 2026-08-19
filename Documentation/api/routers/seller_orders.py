@@ -13,6 +13,7 @@ from api.deps import get_db
 from api.enums import PermissionCode, SellerOrderStatus, ShipmentStatus
 from api.models import Order, OrderStatus, OrderStatusHistory, SellerOrder, Shipment, ShipmentTrackingEvent, User
 from api.services.seller_fulfillment_readiness import evaluate_seller_fulfillment_readiness
+from api.services.logistics_orchestration import enqueue_ready_for_pickup
 from api.permissions import require_permission
 from api.schemas import SellerFulfillmentReadinessResponse, SellerOrderActionRequest, SellerOrderCancellationRequest, SellerOrderDispatchRequest, SellerOrderListResponse, SellerOrderSummaryResponse, SellerOrderView
 
@@ -232,12 +233,26 @@ def ready_to_ship(seller_order_id: UUID, data: SellerOrderActionRequest, db: Ses
         )
 
     shipment = readiness.shipment
+    if shipment.logistics_company_id is None and row.order.logistics_company_id is not None:
+        shipment.logistics_company_id = row.order.logistics_company_id
+
     if shipment.status == ShipmentStatus.pending:
         shipment.status = ShipmentStatus.ready_for_dispatch
         db.add(ShipmentTrackingEvent(
             shipment_id=shipment.id,
             status=ShipmentStatus.ready_for_dispatch,
             notes=data.notes or "Seller fulfillment validated and order marked ready for dispatch",
+            created_by_id=user.id,
+        ))
+
+    orchestration_event = enqueue_ready_for_pickup(
+        db, seller_order=row, shipment=shipment
+    )
+    if orchestration_event is None:
+        db.add(ShipmentTrackingEvent(
+            shipment_id=shipment.id,
+            status=ShipmentStatus.ready_for_dispatch,
+            notes="Shipment is ready but no logistics company is assigned yet",
             created_by_id=user.id,
         ))
 
