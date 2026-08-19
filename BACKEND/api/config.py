@@ -101,6 +101,15 @@ class Settings(BaseSettings):
     AZAMPAY_PUBLIC_KEY_CACHE_SECONDS: int = Field(default=86400, ge=60, le=604800)
     AZAMPAY_TIMEOUT_SECONDS: int = Field(default=30, ge=1, le=120)
 
+    # Map/location provider (seller pickup + customer delivery)
+    MAP_PROVIDER: Literal["google"] = "google"
+    GOOGLE_MAPS_API_KEY: str | None = None
+    GOOGLE_PLACES_BASE_URL: str = "https://places.googleapis.com"
+    GOOGLE_GEOCODING_BASE_URL: str = "https://maps.googleapis.com/maps/api/geocode/json"
+    MAP_DEFAULT_COUNTRY_CODE: str = "TZ"
+    MAP_DEFAULT_LANGUAGE: str = "en"
+    MAP_API_TIMEOUT_SECONDS: int = Field(default=10, ge=1, le=60)
+
     # External delivery provider
     DELIVERY_PROVIDER_NAME: str = "dependent-delivery"
     DELIVERY_API_BASE_URL: str | None = None

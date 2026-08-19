@@ -19,6 +19,7 @@ from api.models import (
     DeliveryJob,
     Order,
     Seller,
+    SellerPickupLocation,
     SellerOrder,
     Shipment,
     ShipmentTrackingEvent,
@@ -58,6 +59,30 @@ def _provider_post(path: str, payload: dict) -> dict:
 
 
 def _pickup_payload(seller: Seller) -> dict:
+    # Phase 1 logistics foundation: prefer the seller's active default pickup
+    # point, including GPS. Fall back to the legacy business profile so existing
+    # sellers continue to work until Task 3 makes pickup setup mandatory.
+    pickup = next(
+        (location for location in seller.pickup_locations if location.is_default and location.is_active),
+        None,
+    )
+    if pickup is not None:
+        return {
+            "name": pickup.pickup_contact_name or seller.business_name,
+            "phone": pickup.pickup_phone,
+            "email": seller.contact_email or seller.user.email,
+            "country": pickup.country,
+            "region": pickup.region,
+            "city": pickup.city,
+            "district": pickup.district,
+            "ward": pickup.ward,
+            "address": pickup.formatted_address,
+            "landmark": pickup.landmark,
+            "latitude": float(pickup.latitude),
+            "longitude": float(pickup.longitude),
+            "pickup_location_id": str(pickup.id),
+        }
+
     profile = seller.profile
     if not profile or not profile.business_address or not profile.business_city or not profile.business_region:
         raise HTTPException(409, "Complete the seller pickup address before requesting delivery")

@@ -15,3 +15,17 @@ ORDER BY created_at DESC
 LIMIT 100;
 
 \q
+
+
+| Phase  | Role/System               | Tasks |
+| ------ | ------------------------- | ----: |
+| **1**  | Seller                    |     7 |
+| **2**  | Customer                  |     8 |
+| **3**  | Logistics Company         |     9 |
+| **4**  | Logistics Pricing Engine  |     7 |
+| **5**  | Multi-Seller Fulfillment  |     6 |
+| **6**  | Pickup Verification       |     7 |
+| **7**  | Settlement & Wallet       |     8 |
+| **8**  | Delivery Verification     |     5 |
+| **9**  | Partner API & Security    |     7 |
+| **10** | QA / Production Hardening |     8 |
