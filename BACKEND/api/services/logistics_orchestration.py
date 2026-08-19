@@ -4,6 +4,7 @@ from decimal import Decimal
 
 from sqlalchemy.orm import Session
 
+from api.config import settings
 from api.models import (
     LogisticsWebhookEvent,
     SellerOrder,
@@ -128,6 +129,8 @@ def enqueue_ready_for_pickup(db: Session, *, seller_order: SellerOrder, shipment
         shipment_id=shipment.id,
         request_payload=build_ready_for_pickup_payload(db, seller_order=seller_order, shipment=shipment),
         processed=False,
+        delivery_status="queued",
+        max_attempts=settings.PARTNER_WEBHOOK_MAX_ATTEMPTS,
     )
     db.add(event)
     db.flush()

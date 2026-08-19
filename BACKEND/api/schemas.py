@@ -2485,8 +2485,31 @@ class LogisticsWebhookEventResponse(BaseModel):
     shipment_id: Optional[UUID]
     http_status: Optional[int]
     processed: bool
+    delivery_status: str
+    attempt_count: int
+    max_attempts: int
+    next_attempt_at: Optional[datetime] = None
+    last_attempt_at: Optional[datetime] = None
+    delivered_at: Optional[datetime] = None
+    dead_lettered_at: Optional[datetime] = None
     error_message: Optional[str]
     created_at: datetime
+    model_config = ORM_CONFIG
+
+
+class PartnerWebhookAttemptResponse(BaseModel):
+    id: UUID
+    event_id: UUID
+    attempt_number: int
+    request_url: str
+    credential_key_id: Optional[str] = None
+    requested_at: datetime
+    completed_at: Optional[datetime] = None
+    duration_ms: Optional[int] = None
+    http_status: Optional[int] = None
+    retryable: bool
+    response_excerpt: Optional[str] = None
+    error_message: Optional[str] = None
     model_config = ORM_CONFIG
 
 

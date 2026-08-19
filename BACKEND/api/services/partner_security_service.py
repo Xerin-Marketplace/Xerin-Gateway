@@ -22,6 +22,10 @@ def _vault() -> Fernet:
     return Fernet(urlsafe_b64encode(key))
 
 
+def decrypt_signing_secret(credential: PartnerCredential) -> bytes:
+    return _vault().decrypt(credential.signing_key_ciphertext.encode())
+
+
 def create_credential(db:Session,*,company_id,name,scopes,allowed_cidrs,rate_limit,expires_at,actor_id,rotated_from_id=None):
     normalized=[]
     for value in allowed_cidrs:
@@ -85,7 +89,7 @@ def require_partner_scope(required_scope):
         if count>=credential.rate_limit_per_minute:
             _log(db,request,credential=credential,result="denied",error="rate_limited");raise HTTPException(429,"Partner rate limit exceeded")
         body=await request.body();canonical,body_hash=canonical_request(timestamp,nonce,request.method,request_target(request),body)
-        try: signing_key=_vault().decrypt(credential.signing_key_ciphertext.encode())
+        try: signing_key=decrypt_signing_secret(credential)
         except InvalidToken:
             _log(db,request,credential=credential,result="denied",error="credential_decryption_failed",body_hash=body_hash);raise HTTPException(401,"Invalid partner credentials")
         expected=hmac.new(signing_key,canonical,hashlib.sha256).hexdigest()

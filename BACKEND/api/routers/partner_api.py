@@ -8,9 +8,10 @@ from sqlalchemy.orm import Session, selectinload
 
 from api.deps import get_current_user, get_db
 from api.enums import LogisticsCompanyPermission, LogisticsMemberRole, ShipmentStatus
-from api.models import LogisticsCompanyUser, PartnerCredential, PartnerRequestLog, Shipment, ShipmentTrackingEvent, User
-from api.schemas import PartnerCredentialCreate, PartnerCredentialIssuedResponse, PartnerCredentialResponse, PartnerRequestLogResponse, ShipmentTrackingEventCreate
+from api.models import LogisticsCompanyUser, LogisticsWebhookEvent, PartnerCredential, PartnerRequestLog, PartnerWebhookAttempt, Shipment, ShipmentTrackingEvent, User
+from api.schemas import LogisticsWebhookEventResponse, PartnerCredentialCreate, PartnerCredentialIssuedResponse, PartnerCredentialResponse, PartnerRequestLogResponse, PartnerWebhookAttemptResponse, ShipmentTrackingEventCreate
 from api.services.partner_security_service import begin_idempotency, complete_idempotency, create_credential, require_partner_scope
+from api.services.partner_webhook_service import replay_dead_letter
 
 management_router=APIRouter(prefix="/partner-security",tags=["Partner Security"])
 partner_router=APIRouter(prefix="/partner",tags=["Partner API"])
@@ -70,6 +71,24 @@ def revoke(credential_id:UUID,db:Session=Depends(get_db),user:User=Depends(get_c
 @management_router.get("/request-logs",response_model=list[PartnerRequestLogResponse])
 def logs(page:int=Query(1,ge=1),page_size:int=Query(50,ge=1,le=100),db:Session=Depends(get_db),user:User=Depends(get_current_user)):
     membership=member(db,user);return db.query(PartnerRequestLog).filter(PartnerRequestLog.logistics_company_id==membership.logistics_company_id).order_by(PartnerRequestLog.created_at.desc()).offset((page-1)*page_size).limit(page_size).all()
+
+
+@management_router.get("/webhook-events/{event_id}/attempts",response_model=list[PartnerWebhookAttemptResponse])
+def webhook_attempts(event_id:UUID,db:Session=Depends(get_db),user:User=Depends(get_current_user)):
+    membership=member(db,user)
+    event=db.query(LogisticsWebhookEvent).filter(LogisticsWebhookEvent.id==event_id,LogisticsWebhookEvent.logistics_company_id==membership.logistics_company_id).first()
+    if event is None:raise HTTPException(404,"Partner webhook event not found")
+    return db.query(PartnerWebhookAttempt).filter(PartnerWebhookAttempt.event_id==event.id).order_by(PartnerWebhookAttempt.attempt_number.asc()).all()
+
+
+@management_router.post("/webhook-events/{event_id}/retry",response_model=LogisticsWebhookEventResponse)
+def retry_webhook(event_id:UUID,db:Session=Depends(get_db),user:User=Depends(get_current_user)):
+    membership=member(db,user)
+    event=db.query(LogisticsWebhookEvent).filter(LogisticsWebhookEvent.id==event_id,LogisticsWebhookEvent.logistics_company_id==membership.logistics_company_id).with_for_update().first()
+    if event is None:raise HTTPException(404,"Partner webhook event not found")
+    try:replay_dead_letter(db,event)
+    except ValueError as exc:raise HTTPException(409,str(exc)) from exc
+    commit(db);db.refresh(event);return event
 
 
 @partner_router.get("/shipments/{tracking_number}")

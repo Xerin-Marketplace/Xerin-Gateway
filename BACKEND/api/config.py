@@ -52,6 +52,14 @@ class Settings(BaseSettings):
     PARTNER_SIGNATURE_MAX_SKEW_SECONDS: int = Field(default=300, ge=30, le=1800)
     PARTNER_NONCE_TTL_SECONDS: int = Field(default=600, ge=60, le=3600)
     PARTNER_DEFAULT_RATE_LIMIT_PER_MINUTE: int = Field(default=120, ge=1, le=10000)
+    PARTNER_WEBHOOK_TIMEOUT_SECONDS: int = Field(default=15, ge=1, le=120)
+    PARTNER_WEBHOOK_MAX_ATTEMPTS: int = Field(default=6, ge=1, le=20)
+    PARTNER_WEBHOOK_RETRY_BASE_SECONDS: int = Field(default=30, ge=1, le=3600)
+    PARTNER_WEBHOOK_MAX_RETRY_SECONDS: int = Field(default=3600, ge=60, le=86400)
+    PARTNER_WEBHOOK_WORKER_INTERVAL_SECONDS: int = Field(default=5, ge=1, le=300)
+    PARTNER_WEBHOOK_BATCH_SIZE: int = Field(default=20, ge=1, le=200)
+    PARTNER_WEBHOOK_LOCK_TIMEOUT_SECONDS: int = Field(default=300, ge=30, le=3600)
+    PARTNER_WEBHOOK_ALLOW_PRIVATE_URLS: bool = False
 
     # Inventory reservations
     INVENTORY_RESERVATION_MINUTES: int = Field(default=30, ge=5, le=1440)

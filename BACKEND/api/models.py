@@ -1049,12 +1049,22 @@ class LogisticsWebhookEvent(Base):
     response_payload = Column(JSONB, nullable=True)
     http_status = Column(Integer, nullable=True)
     processed = Column(Boolean, nullable=False, default=False, server_default="false")
+    delivery_status = Column(String(20), nullable=False, default="queued", server_default="queued", index=True)
+    attempt_count = Column(Integer, nullable=False, default=0, server_default="0")
+    max_attempts = Column(Integer, nullable=False, default=6, server_default="6")
+    next_attempt_at = Column(DateTime(timezone=True), nullable=True, server_default=func.now(), index=True)
+    last_attempt_at = Column(DateTime(timezone=True), nullable=True)
+    delivered_at = Column(DateTime(timezone=True), nullable=True)
+    dead_lettered_at = Column(DateTime(timezone=True), nullable=True)
+    locked_at = Column(DateTime(timezone=True), nullable=True)
+    lock_token = Column(UUID(as_uuid=True), nullable=True, index=True)
     error_message = Column(Text, nullable=True)
     created_at = Column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
 
     company = relationship("LogisticsCompany", back_populates="webhook_events")
+    attempts = relationship("PartnerWebhookAttempt", back_populates="event", cascade="all, delete-orphan")
 
     __table_args__ = (
         UniqueConstraint(
@@ -1062,6 +1072,32 @@ class LogisticsWebhookEvent(Base):
             "external_event_id",
             name="uq_logistics_webhook_external_event",
         ),
+        CheckConstraint("delivery_status IN ('queued','delivering','retrying','delivered','dead_letter')", name="ck_logistics_webhook_delivery_status"),
+        CheckConstraint("attempt_count >= 0 AND max_attempts > 0", name="ck_logistics_webhook_attempt_counts"),
+    )
+
+
+class PartnerWebhookAttempt(Base):
+    __tablename__ = "partner_webhook_attempts"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    event_id = Column(UUID(as_uuid=True), ForeignKey("logistics_webhook_events.id", ondelete="CASCADE"), nullable=False, index=True)
+    attempt_number = Column(Integer, nullable=False)
+    request_url = Column(Text, nullable=False)
+    credential_key_id = Column(String(80), nullable=True)
+    requested_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    completed_at = Column(DateTime(timezone=True), nullable=True)
+    duration_ms = Column(Integer, nullable=True)
+    http_status = Column(Integer, nullable=True)
+    retryable = Column(Boolean, nullable=False, default=False, server_default="false")
+    response_excerpt = Column(Text, nullable=True)
+    error_message = Column(Text, nullable=True)
+
+    event = relationship("LogisticsWebhookEvent", back_populates="attempts")
+
+    __table_args__ = (
+        UniqueConstraint("event_id", "attempt_number", name="uq_partner_webhook_attempt_number"),
+        CheckConstraint("attempt_number > 0", name="ck_partner_webhook_attempt_number"),
     )
 
 
