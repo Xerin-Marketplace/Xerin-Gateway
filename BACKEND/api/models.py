@@ -1189,6 +1189,106 @@ class ShippingRate(Base):
     )
 
 
+
+class CheckoutDeliveryQuote(Base):
+    """Immutable customer-selected logistics quote used by order checkout.
+
+    The route/pricing JSON snapshots are intentionally stored so later changes
+    to seller locations, logistics rates or pricing strategy do not alter a
+    quote already shown to the customer.
+    """
+
+    __tablename__ = "checkout_delivery_quotes"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    shipping_address_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("addresses.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
+    logistics_company_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("logistics_companies.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
+    shipping_method_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("shipping_methods.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
+    shipping_rate_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("shipping_rates.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
+
+    delivery_mode = Column(String(20), nullable=False, index=True)
+    pricing_strategy = Column(String(50), nullable=False)
+    rate_type = Column(String(50), nullable=False)
+    currency = Column(String(10), nullable=False, default="TZS")
+
+    seller_count = Column(Integer, nullable=False)
+    billable_distance_km = Column(Numeric(10, 3), nullable=False)
+    billable_seller_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("sellers.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+
+    product_subtotal = Column(Numeric(18, 2), nullable=False)
+    delivery_amount = Column(Numeric(18, 2), nullable=False)
+    checkout_total_before_discounts = Column(Numeric(18, 2), nullable=False)
+
+    cart_fingerprint = Column(String(64), nullable=False, index=True)
+
+    pricing_breakdown = Column(JSONB, nullable=False, default=dict, server_default="{}")
+    seller_routes_snapshot = Column(JSONB, nullable=False, default=list, server_default="[]")
+    address_snapshot = Column(JSONB, nullable=False, default=dict, server_default="{}")
+
+    expires_at = Column(DateTime(timezone=True), nullable=False, index=True)
+    used_at = Column(DateTime(timezone=True), nullable=True, index=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    user = relationship("User")
+    shipping_address = relationship("Address")
+    delivery_quote = relationship("CheckoutDeliveryQuote")
+    logistics_company = relationship("LogisticsCompany")
+    shipping_method = relationship("ShippingMethod")
+    shipping_rate = relationship("ShippingRate")
+
+    __table_args__ = (
+        CheckConstraint("seller_count > 0", name="ck_checkout_delivery_quote_seller_count"),
+        CheckConstraint(
+            "billable_distance_km >= 0",
+            name="ck_checkout_delivery_quote_distance_nonnegative",
+        ),
+        CheckConstraint(
+            "product_subtotal >= 0",
+            name="ck_checkout_delivery_quote_subtotal_nonnegative",
+        ),
+        CheckConstraint(
+            "delivery_amount >= 0",
+            name="ck_checkout_delivery_quote_delivery_nonnegative",
+        ),
+        Index(
+            "ix_checkout_delivery_quotes_user_expiry",
+            "user_id",
+            "expires_at",
+        ),
+    )
+
+
 #
 # ORDERS
 #
@@ -1211,6 +1311,13 @@ class Order(Base):
     user_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
     shipping_address_id = Column(
         UUID(as_uuid=True), ForeignKey("addresses.id"), nullable=True
+    )
+    delivery_quote_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("checkout_delivery_quotes.id", ondelete="RESTRICT"),
+        nullable=True,
+        unique=True,
+        index=True,
     )
     shipping_rate_id = Column(
         UUID(as_uuid=True),

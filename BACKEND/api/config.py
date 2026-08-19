@@ -49,6 +49,7 @@ class Settings(BaseSettings):
 
     # Inventory reservations
     INVENTORY_RESERVATION_MINUTES: int = Field(default=30, ge=5, le=1440)
+    CHECKOUT_DELIVERY_QUOTE_TTL_MINUTES: int = 15
     SELLER_SETTLEMENT_DAYS: int = Field(default=7, ge=0, le=90)
     MINIMUM_PAYOUT_AMOUNT: Decimal = Field(default=Decimal("1000.00"), ge=0)
 

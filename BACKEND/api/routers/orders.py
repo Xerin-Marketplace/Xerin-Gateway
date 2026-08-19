@@ -16,6 +16,7 @@ from api.models import (
     Cart,
     CartItem,
     Coupon,
+    CheckoutDeliveryQuote,
     EscrowHold,
     Inventory,
     LogisticsCompany,
@@ -52,6 +53,10 @@ from api.schemas import (
 from api.enums import InventoryReservationStatus
 from api.services.inventory_reservations import create_reservation, release_order_reservations
 from api.services.escrow_service import order_escrow_summary, release_order_escrow
+from api.services.checkout_delivery_quote import (
+    CheckoutDeliveryQuoteError,
+    get_usable_checkout_delivery_quote,
+)
 
 router = APIRouter(prefix="/orders", tags=["Orders"])
 
@@ -737,23 +742,80 @@ def create_order(
             prepared_items,
         )
 
-        (
-            shipping_rate,
-            original_shipping_amount,
-            shipping_discount_amount,
-            shipping_amount,
-            delivery_from,
-            delivery_to,
-            logistics_company,
-        ) = _calculate_shipping(
-            db,
-            address,
-            data.shipping_rate_id,
-            subtotal,
-            total_weight_kg,
-            data.delivery_mode,
-            free_shipping,
-        )
+        delivery_quote = None
+
+        if data.delivery_quote_id is not None:
+            try:
+                delivery_quote = get_usable_checkout_delivery_quote(
+                    db,
+                    quote_id=data.delivery_quote_id,
+                    user_id=current_user.id,
+                    shipping_address_id=data.shipping_address_id,
+            delivery_quote_id=(delivery_quote.id if delivery_quote else None),
+                    delivery_mode=data.delivery_mode,
+                    lock=True,
+                )
+            except CheckoutDeliveryQuoteError as exc:
+                detail = {"code": exc.code, "message": exc.message}
+                detail.update(exc.extra)
+                raise HTTPException(
+                    status_code=exc.status_code,
+                    detail=detail,
+                ) from exc
+
+            shipping_rate = (
+                db.query(ShippingRate)
+                .options(
+                    selectinload(ShippingRate.zone),
+                    selectinload(ShippingRate.method)
+                    .selectinload(ShippingMethod.logistics_company),
+                )
+                .filter(ShippingRate.id == delivery_quote.shipping_rate_id)
+                .first()
+            )
+            if shipping_rate is None or shipping_rate.method is None:
+                raise HTTPException(
+                    status_code=409,
+                    detail="Frozen delivery rate is no longer available",
+                )
+
+            logistics_company = shipping_rate.method.logistics_company
+            original_shipping_amount = Decimal(delivery_quote.delivery_amount)
+            shipping_discount_amount = (
+                original_shipping_amount
+                if free_shipping
+                else Decimal("0.00")
+            )
+            shipping_amount = max(
+                Decimal("0.00"),
+                original_shipping_amount - shipping_discount_amount,
+            ).quantize(Decimal("0.01"))
+
+            now = datetime.now(timezone.utc)
+            delivery_from = now + timedelta(
+                days=shipping_rate.method.min_delivery_days
+            )
+            delivery_to = now + timedelta(
+                days=shipping_rate.method.max_delivery_days
+            )
+        else:
+            (
+                shipping_rate,
+                original_shipping_amount,
+                shipping_discount_amount,
+                shipping_amount,
+                delivery_from,
+                delivery_to,
+                logistics_company,
+            ) = _calculate_shipping(
+                db,
+                address,
+                data.shipping_rate_id,
+                subtotal,
+                total_weight_kg,
+                data.delivery_mode,
+                free_shipping,
+            )
 
         tax_amount = Decimal("0.00")
         combined_product_discount = min(
@@ -811,6 +873,9 @@ def create_order(
         )
         db.add(order)
         db.flush()
+
+        if delivery_quote is not None:
+            delivery_quote.used_at = datetime.now(timezone.utc)
 
         reservation_expires_at = (
             datetime.now(timezone.utc)

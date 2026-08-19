@@ -1563,6 +1563,40 @@ class GuestCartMergeResponse(BaseModel):
 
 
   
+class CheckoutDeliveryQuoteCreateRequest(BaseModel):
+    address_id: UUID
+    logistics_company_id: UUID
+    rate_id: UUID
+    delivery_mode: Literal["local", "international"]
+
+
+class CheckoutDeliveryQuoteResponse(BaseModel):
+    id: UUID
+    user_id: UUID
+    shipping_address_id: UUID
+    logistics_company_id: UUID
+    shipping_method_id: UUID
+    shipping_rate_id: UUID
+    delivery_mode: str
+    pricing_strategy: str
+    rate_type: str
+    currency: str
+    seller_count: int
+    billable_distance_km: Decimal
+    billable_seller_id: Optional[UUID] = None
+    product_subtotal: Decimal
+    delivery_amount: Decimal
+    checkout_total_before_discounts: Decimal
+    pricing_breakdown: dict = Field(default_factory=dict)
+    seller_routes_snapshot: list[dict] = Field(default_factory=list)
+    address_snapshot: dict = Field(default_factory=dict)
+    expires_at: datetime
+    used_at: Optional[datetime] = None
+    created_at: datetime
+
+    model_config = ORM_CONFIG
+
+
 # ORDER SCHEMAS
   
 
@@ -1594,11 +1628,18 @@ class OrderStatusHistoryResponse(BaseModel):
 
 class OrderCreateRequest(BaseModel):
     shipping_address_id: UUID
-    shipping_rate_id: UUID
+    shipping_rate_id: Optional[UUID] = None
+    delivery_quote_id: Optional[UUID] = None
     delivery_mode: Literal["local", "international"]
     coupon_code: Optional[str] = None
     promotion_code: Optional[str] = None
     notes: Optional[str] = None
+
+    @model_validator(mode="after")
+    def validate_shipping_selection(self):
+        if self.shipping_rate_id is None and self.delivery_quote_id is None:
+            raise ValueError("shipping_rate_id or delivery_quote_id is required")
+        return self
 
 
 class OrderStatusUpdateRequest(BaseModel):
@@ -1610,6 +1651,7 @@ class OrderResponse(BaseModel):
     id: UUID
     user_id: UUID
     shipping_address_id: Optional[UUID]
+    delivery_quote_id: Optional[UUID] = None
     shipping_rate_id: Optional[UUID]
     shipping_method_id: Optional[UUID]
     shipping_method_name: Optional[str]

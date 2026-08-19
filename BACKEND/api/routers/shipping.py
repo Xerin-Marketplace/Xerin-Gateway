@@ -9,11 +9,15 @@ from sqlalchemy.orm import Session, joinedload, selectinload
 from api.deps import get_current_user, get_db
 from api.enums import PermissionCode, ShippingRateType, MultiSellerPricingStrategy
 from api.models import (
-    Address, Cart, CartItem, LogisticsCompany, MarketplaceSettings, Order,
+    Address, Cart, CartItem, CheckoutDeliveryQuote, LogisticsCompany, MarketplaceSettings, Order,
     ProductStatus, Promotion, Shipment, ShipmentStatus, ShipmentTrackingEvent,
     ShippingMethod, ShippingRate, ShippingZone, User,
 )
 from api.permissions import require_permission
+from api.services.checkout_delivery_quote import (
+    CheckoutDeliveryQuoteError,
+    create_checkout_delivery_quote,
+)
 from api.services.multi_seller_pricing import (
     MultiSellerPricingError,
     calculate_multi_seller_delivery_pricing,
@@ -28,6 +32,8 @@ from api.services.eligible_logistics import (
 )
 from api.schemas import (
     EligibleLogisticsSelectionRequest,
+    CheckoutDeliveryQuoteCreateRequest,
+    CheckoutDeliveryQuoteResponse,
     DeliveryDistanceQuoteRequest,
     DeliveryDistanceQuoteResponse,
     MultiSellerDeliveryPricingRequest,
@@ -222,6 +228,52 @@ def checkout_delivery_config(
             and settings_row.international_delivery_allowed is not None
         ),
     }
+
+
+@router.post(
+    "/checkout-delivery-quote",
+    response_model=CheckoutDeliveryQuoteResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+def freeze_checkout_delivery_quote(
+    data: CheckoutDeliveryQuoteCreateRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    try:
+        return create_checkout_delivery_quote(
+            db,
+            user_id=current_user.id,
+            address_id=data.address_id,
+            logistics_company_id=data.logistics_company_id,
+            rate_id=data.rate_id,
+            delivery_mode=data.delivery_mode,
+        )
+    except CheckoutDeliveryQuoteError as exc:
+        detail = {"code": exc.code, "message": exc.message}
+        detail.update(exc.extra)
+        raise HTTPException(status_code=exc.status_code, detail=detail) from exc
+
+
+@router.get(
+    "/checkout-delivery-quote/{quote_id}",
+    response_model=CheckoutDeliveryQuoteResponse,
+)
+def get_checkout_delivery_quote(
+    quote_id: UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    quote = db.query(CheckoutDeliveryQuote).filter(
+        CheckoutDeliveryQuote.id == quote_id,
+        CheckoutDeliveryQuote.user_id == current_user.id,
+    ).first()
+    if quote is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Checkout delivery quote not found",
+        )
+    return quote
 
 
 @router.post(
