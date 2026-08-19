@@ -22,6 +22,7 @@ from api.models import (
 )
 
 
+
 class EligibleLogisticsError(Exception):
     def __init__(
         self,
