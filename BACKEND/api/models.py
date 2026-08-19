@@ -222,13 +222,38 @@ class Address(Base):
     street = Column(Text, nullable=False)
     landmark = Column(String(255), nullable=True)
     postal_code = Column(String(50), nullable=True)
+
+    # Phase 2 Task 1: exact customer delivery destination.
+    # Keep the human-readable address and map provider reference together with
+    # coordinates so logistics can later calculate road distance reliably.
+    formatted_address = Column(Text, nullable=True)
+    place_id = Column(String(255), nullable=True, index=True)
     latitude = Column(Numeric(10, 7), nullable=True)
     longitude = Column(Numeric(10, 7), nullable=True)
-    is_default = Column(Boolean, nullable=False, default=False, server_default="false")
+    delivery_instructions = Column(Text, nullable=True)
+
+    is_default = Column(Boolean, nullable=False, default=False, server_default="false", index=True)
+    is_active = Column(Boolean, nullable=False, default=True, server_default="true", index=True)
+    is_verified = Column(Boolean, nullable=False, default=False, server_default="false", index=True)
     created_at = Column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+    @property
+    def delivery_ready(self) -> bool:
+        """True when the address has everything needed for logistics quoting.
+
+        Phase 2 Task 2 will make map-pin confirmation explicit in the UI. For
+        now, readiness is derived from active status + recipient contact + GPS.
+        """
+        return bool(
+            self.is_active
+            and self.recipient_name
+            and self.recipient_phone
+            and self.latitude is not None
+            and self.longitude is not None
+        )
 
     user = relationship("User", back_populates="addresses")
 
