@@ -2514,6 +2514,26 @@ class EscrowHold(Base):
         nullable=True,
         index=True,
     )
+    seller_release_shipment_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("shipments.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    seller_release_handover_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("shipment_handovers.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    seller_release_proof_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("shipment_pickup_proofs.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    seller_release_trigger = Column(String(40), nullable=True)
+    seller_release_verified_at = Column(DateTime(timezone=True), nullable=True, index=True)
 
     currency = Column(String(10), nullable=False)
     gross_amount = Column(Numeric(18, 2), nullable=False)
@@ -2548,6 +2568,9 @@ class EscrowHold(Base):
     payment = relationship("Payment")
     order = relationship("Order")
     seller = relationship("Seller")
+    seller_release_shipment = relationship("Shipment", foreign_keys=[seller_release_shipment_id])
+    seller_release_handover = relationship("ShipmentHandover", foreign_keys=[seller_release_handover_id])
+    seller_release_proof = relationship("ShipmentPickupProof", foreign_keys=[seller_release_proof_id])
     events = relationship(
         "EscrowEvent", back_populates="hold", cascade="all, delete-orphan"
     )
@@ -2567,6 +2590,10 @@ class EscrowHold(Base):
         CheckConstraint(
             "refunded_amount + released_amount <= gross_amount",
             name="ck_escrow_settled_within_gross",
+        ),
+        CheckConstraint(
+            "(seller_release_shipment_id IS NULL AND seller_release_handover_id IS NULL AND seller_release_proof_id IS NULL) OR (seller_release_shipment_id IS NOT NULL AND seller_release_handover_id IS NOT NULL AND seller_release_proof_id IS NOT NULL)",
+            name="ck_escrow_seller_release_evidence_complete",
         ),
     )
 

@@ -22,6 +22,10 @@ from api.models import (
     ShipmentTrackingEvent,
 )
 from api.services.notification_service import notification_service
+from api.services.escrow_service import (
+    dispute_shipment_seller_entitlement,
+    release_shipment_seller_entitlement,
+)
 
 
 ALLOWED_FORMATS = {
@@ -44,6 +48,33 @@ class PickupProofError(Exception):
         self.message = message
         self.code = code
         self.status_code = status_code
+
+
+def _release_verified_seller_funds(db: Session, *, proof: ShipmentPickupProof, actor_id, trigger: str) -> None:
+    try:
+        release_shipment_seller_entitlement(
+            db,
+            proof=proof,
+            actor_id=actor_id,
+            trigger=trigger,
+        )
+    except ValueError as exc:
+        raise PickupProofError(
+            str(exc),
+            code="seller_settlement_conflict",
+            status_code=409,
+        ) from exc
+
+
+def _block_disputed_seller_funds(db: Session, *, proof: ShipmentPickupProof, actor_id) -> None:
+    try:
+        dispute_shipment_seller_entitlement(db, proof=proof, actor_id=actor_id)
+    except ValueError as exc:
+        raise PickupProofError(
+            str(exc),
+            code="seller_settlement_already_released",
+            status_code=409,
+        ) from exc
 
 
 @dataclass(frozen=True)
@@ -139,6 +170,12 @@ def auto_approve_if_expired(
     *,
     commit: bool = True,
 ) -> ShipmentPickupProof:
+    if proof.status in {"approved", "auto_approved"}:
+        _release_verified_seller_funds(db, proof=proof, actor_id=proof.customer_reviewed_by_id, trigger="pickup_auto_approved" if proof.status == "auto_approved" else "pickup_customer_approved")
+        if commit:
+            db.commit()
+            db.refresh(proof)
+        return proof
     if proof.status != "pending":
         return proof
 
@@ -159,6 +196,7 @@ def auto_approve_if_expired(
             created_by_id=None,
         )
     )
+    _release_verified_seller_funds(db, proof=proof, actor_id=None, trigger="pickup_auto_approved")
 
     if commit:
         db.commit()
@@ -274,6 +312,7 @@ def approve_pickup_proof(
             status_code=404,
         )
     if proof.status in {"approved", "auto_approved"}:
+        _release_verified_seller_funds(db, proof=proof, actor_id=customer_id, trigger="pickup_auto_approved" if proof.status == "auto_approved" else "pickup_customer_approved")
         db.commit()
         db.refresh(proof)
         return proof
@@ -298,6 +337,7 @@ def approve_pickup_proof(
             created_by_id=customer_id,
         )
     )
+    _release_verified_seller_funds(db, proof=proof, actor_id=customer_id, trigger="pickup_customer_approved")
     db.commit()
     db.refresh(proof)
     return proof
@@ -343,6 +383,7 @@ def dispute_pickup_proof(
             created_by_id=customer_id,
         )
     )
+    _block_disputed_seller_funds(db, proof=proof, actor_id=customer_id)
 
     # Notify the seller that settlement must remain held pending later review.
     seller_user_id = proof.seller.user_id if proof.seller else None

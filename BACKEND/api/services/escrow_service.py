@@ -12,6 +12,9 @@ from api.models import (
     Order,
     OrderItemCommission,
     Payment,
+    ShipmentHandover,
+    ShipmentItem,
+    ShipmentPickupProof,
 )
 from api.services.wallet_service import release_sale_credit_fraction
 
@@ -20,6 +23,45 @@ MONEY = Decimal("0.01")
 
 def _money(value) -> Decimal:
     return Decimal(value or 0).quantize(MONEY)
+
+
+def _assert_trusted_pickup_evidence(db: Session, hold: EscrowHold) -> ShipmentPickupProof:
+    """Validate the physical handover and customer-approved pickup chain."""
+    if not hold.seller_release_shipment_id or not hold.seller_release_proof_id or not hold.seller_release_handover_id:
+        raise ValueError("Seller settlement requires trusted pickup verification")
+    proof = (
+        db.query(ShipmentPickupProof)
+        .filter(
+            ShipmentPickupProof.id == hold.seller_release_proof_id,
+            ShipmentPickupProof.shipment_id == hold.seller_release_shipment_id,
+            ShipmentPickupProof.handover_id == hold.seller_release_handover_id,
+            ShipmentPickupProof.seller_id == hold.seller_id,
+            ShipmentPickupProof.status.in_(["approved", "auto_approved"]),
+        )
+        .first()
+    )
+    handover = (
+        db.query(ShipmentHandover)
+        .filter(
+            ShipmentHandover.id == hold.seller_release_handover_id,
+            ShipmentHandover.shipment_id == hold.seller_release_shipment_id,
+            ShipmentHandover.seller_id == hold.seller_id,
+            ShipmentHandover.status == "seller_confirmed",
+            ShipmentHandover.seller_confirmed_at.is_not(None),
+        )
+        .first()
+    )
+    item_link = (
+        db.query(ShipmentItem.id)
+        .filter(
+            ShipmentItem.shipment_id == hold.seller_release_shipment_id,
+            ShipmentItem.order_item_id == hold.order_item_id,
+        )
+        .first()
+    )
+    if proof is None or handover is None or item_link is None:
+        raise ValueError("Seller settlement pickup evidence is incomplete or inconsistent")
+    return proof
 
 
 def create_order_escrow_holds(
@@ -109,6 +151,7 @@ def release_escrow_hold_funds(
     """Release escrow and the matching seller wallet entitlement atomically."""
     if hold.status == "released":
         return hold
+    _assert_trusted_pickup_evidence(db, hold)
     if hold.status == "disputed":
         raise ValueError("Disputed escrow cannot be released")
     if hold.status not in {"held", "release_pending", "partially_refunded"}:
@@ -177,6 +220,126 @@ def release_escrow_hold_funds(
 
     db.flush()
     return hold
+
+
+def release_shipment_seller_entitlement(
+    db: Session,
+    *,
+    proof: ShipmentPickupProof,
+    actor_id=None,
+    trigger: str,
+) -> list[EscrowHold]:
+    """Release only the seller entitlement belonging to one verified shipment."""
+    proof = (
+        db.query(ShipmentPickupProof)
+        .filter(ShipmentPickupProof.id == proof.id)
+        .with_for_update()
+        .one()
+    )
+    if proof.status not in {"approved", "auto_approved"}:
+        raise ValueError("Pickup proof must be approved before seller settlement")
+    handover = (
+        db.query(ShipmentHandover)
+        .filter(
+            ShipmentHandover.id == proof.handover_id,
+            ShipmentHandover.shipment_id == proof.shipment_id,
+        )
+        .with_for_update()
+        .first()
+    )
+    if handover is None or handover.status != "seller_confirmed" or handover.seller_confirmed_at is None:
+        raise ValueError("Seller-confirmed physical handover is required for settlement")
+
+    order_item_ids = [
+        row[0]
+        for row in db.query(ShipmentItem.order_item_id)
+        .filter(ShipmentItem.shipment_id == proof.shipment_id)
+        .all()
+    ]
+    if not order_item_ids:
+        raise ValueError("Shipment has no order items eligible for settlement")
+    holds = (
+        db.query(EscrowHold)
+        .filter(
+            EscrowHold.order_id == proof.order_id,
+            EscrowHold.seller_id == proof.seller_id,
+            EscrowHold.order_item_id.in_(order_item_ids),
+        )
+        .order_by(EscrowHold.created_at)
+        .with_for_update()
+        .all()
+    )
+    now = datetime.now().astimezone()
+    for hold in holds:
+        if hold.status == "disputed":
+            raise ValueError("Disputed seller settlement cannot be released")
+        hold.seller_release_shipment_id = proof.shipment_id
+        hold.seller_release_handover_id = handover.id
+        hold.seller_release_proof_id = proof.id
+        hold.seller_release_trigger = trigger
+        hold.seller_release_verified_at = proof.customer_reviewed_at or now
+        if hold.status == "refunded":
+            continue
+        if hold.status != "released":
+            release_escrow_hold_funds(
+                db,
+                hold=hold,
+                note="Seller entitlement released after trusted pickup verification",
+                created_by_id=actor_id,
+                event_type=trigger,
+            )
+    db.flush()
+    return holds
+
+
+def dispute_shipment_seller_entitlement(
+    db: Session,
+    *,
+    proof: ShipmentPickupProof,
+    actor_id=None,
+) -> list[EscrowHold]:
+    """Block the shipment's seller holds when pickup evidence is disputed."""
+    order_item_ids = [
+        row[0]
+        for row in db.query(ShipmentItem.order_item_id)
+        .filter(ShipmentItem.shipment_id == proof.shipment_id)
+        .all()
+    ]
+    if not order_item_ids:
+        return []
+    holds = (
+        db.query(EscrowHold)
+        .filter(
+            EscrowHold.order_id == proof.order_id,
+            EscrowHold.seller_id == proof.seller_id,
+            EscrowHold.order_item_id.in_(order_item_ids),
+        )
+        .with_for_update()
+        .all()
+    )
+    for hold in holds:
+        if hold.status == "released":
+            raise ValueError("Seller settlement was already released and requires financial dispute handling")
+        if hold.status == "refunded":
+            continue
+        hold.seller_release_shipment_id = proof.shipment_id
+        hold.seller_release_handover_id = proof.handover_id
+        hold.seller_release_proof_id = proof.id
+        hold.seller_release_trigger = "pickup_disputed"
+        hold.status = "disputed"
+        existing = db.query(EscrowEvent.id).filter(
+            EscrowEvent.escrow_hold_id == hold.id,
+            EscrowEvent.event_type == "pickup_disputed",
+        ).first()
+        if not existing:
+            db.add(EscrowEvent(
+                escrow_hold_id=hold.id,
+                event_type="pickup_disputed",
+                note="Customer disputed pickup evidence; seller settlement remains held",
+                created_by_id=actor_id,
+            ))
+    db.flush()
+    return holds
 
 
 def record_escrow_refund(
@@ -370,6 +533,7 @@ def release_due_escrow_holds(db: Session, limit: int = 500) -> int:
         db.query(EscrowHold)
         .filter(
             EscrowHold.status.in_(["held", "release_pending", "partially_refunded"]),
+            EscrowHold.seller_release_proof_id.is_not(None),
             EscrowHold.release_after.is_not(None),
             EscrowHold.release_after <= now,
         )

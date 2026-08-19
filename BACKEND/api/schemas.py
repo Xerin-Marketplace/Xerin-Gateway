@@ -4492,6 +4492,11 @@ class EscrowHoldResponse(BaseModel):
     order_id: UUID
     order_item_id: Optional[UUID]
     seller_id: Optional[UUID]
+    seller_release_shipment_id: Optional[UUID] = None
+    seller_release_handover_id: Optional[UUID] = None
+    seller_release_proof_id: Optional[UUID] = None
+    seller_release_trigger: Optional[str] = None
+    seller_release_verified_at: Optional[datetime] = None
     currency: str
     gross_amount: Decimal
     seller_amount: Decimal
