@@ -49,6 +49,7 @@ from api.enums import (
     QuestionReportReason,
     LogisticsCompanyStatus,
     LogisticsScope,
+    LogisticsMemberRole,
     LogisticsIntegrationAuthType,
     MultiSellerPricingStrategy,
     AdvertisementStatus,
@@ -954,6 +955,14 @@ class LogisticsCompanyUser(Base):
         index=True,
     )
     title = Column(String(120), nullable=True)
+    member_role = Column(
+        Enum(LogisticsMemberRole),
+        nullable=False,
+        default=LogisticsMemberRole.viewer,
+        server_default="viewer",
+        index=True,
+    )
+    permissions_json = Column(JSONB, nullable=False, default=list, server_default="[]")
     is_primary_contact = Column(
         Boolean, nullable=False, default=False, server_default="false"
     )
@@ -968,6 +977,9 @@ class LogisticsCompanyUser(Base):
     __table_args__ = (
         UniqueConstraint(
             "logistics_company_id", "user_id", name="uq_logistics_company_user"
+        ),
+        UniqueConstraint(
+            "user_id", name="uq_logistics_company_user_single_company"
         ),
     )
 

@@ -22,6 +22,7 @@ from api.enums import DayOfWeek, StoreStatus, ShippingRateType
 from api.enums import (
     ShipmentStatus, WalletTransactionType, PayoutStatus, RefundStatus, RefundReason,
     SellerOrderStatus, InventoryMovementType, LogisticsCompanyStatus, LogisticsScope,
+    LogisticsMemberRole, LogisticsCompanyPermission,
     LogisticsIntegrationAuthType, MultiSellerPricingStrategy,
 )
 
@@ -2304,15 +2305,29 @@ class LogisticsCompanyAccountResponse(BaseModel):
     company: LogisticsCompanyResponse
     membership_id: UUID
     title: Optional[str]
+    member_role: LogisticsMemberRole
+    effective_permissions: list[LogisticsCompanyPermission]
     is_primary_contact: bool
     can_manage_profile: bool
 
 
 class LogisticsCompanyUserCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     user_id: UUID
     title: Optional[str] = Field(default=None, max_length=120)
+    member_role: LogisticsMemberRole = LogisticsMemberRole.viewer
+    permissions_json: list[LogisticsCompanyPermission] = Field(default_factory=list)
     is_primary_contact: bool = False
     is_active: bool = True
+
+
+class LogisticsCompanyUserUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    title: Optional[str] = Field(default=None, max_length=120)
+    member_role: Optional[LogisticsMemberRole] = None
+    permissions_json: Optional[list[LogisticsCompanyPermission]] = None
+    is_primary_contact: Optional[bool] = None
+    is_active: Optional[bool] = None
 
 
 class LogisticsCompanyUserResponse(BaseModel):
@@ -2320,10 +2335,19 @@ class LogisticsCompanyUserResponse(BaseModel):
     logistics_company_id: UUID
     user_id: UUID
     title: Optional[str]
+    member_role: LogisticsMemberRole
+    permissions_json: list[LogisticsCompanyPermission]
     is_primary_contact: bool
     is_active: bool
     created_at: datetime
     model_config = ORM_CONFIG
+
+
+class LogisticsCompanyMemberResponse(LogisticsCompanyUserResponse):
+    first_name: Optional[str] = None
+    last_name: Optional[str] = None
+    email: EmailStr
+    effective_permissions: list[LogisticsCompanyPermission]
 
 
 class LogisticsIntegrationCreate(BaseModel):

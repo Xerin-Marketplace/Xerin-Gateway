@@ -12,6 +12,8 @@ from sqlalchemy.orm import Session, joinedload, selectinload
 from api.deps import get_current_user, get_db
 from api.enums import (
     LogisticsCompanyStatus,
+    LogisticsCompanyPermission,
+    LogisticsMemberRole,
     LogisticsScope,
     PermissionCode,
     ShipmentStatus,
@@ -44,7 +46,9 @@ from api.schemas import (
     LogisticsCompanyResponse,
     LogisticsCompanyUpdate,
     LogisticsCompanyUserCreate,
+    LogisticsCompanyUserUpdate,
     LogisticsCompanyUserResponse,
+    LogisticsCompanyMemberResponse,
     LogisticsIntegrationCreate,
     LogisticsIntegrationResponse,
     LogisticsIntegrationUpdate,
@@ -96,6 +100,72 @@ def _membership_for_user(db: Session, user_id: UUID) -> LogisticsCompanyUser | N
         )
         .first()
     )
+
+
+_ROLE_PERMISSIONS: dict[LogisticsMemberRole, set[LogisticsCompanyPermission]] = {
+    LogisticsMemberRole.company_admin: set(LogisticsCompanyPermission),
+    LogisticsMemberRole.operations_manager: {
+        LogisticsCompanyPermission.profile_manage,
+        LogisticsCompanyPermission.zones_manage,
+        LogisticsCompanyPermission.rates_manage,
+        LogisticsCompanyPermission.pickups_manage,
+        LogisticsCompanyPermission.shipments_manage,
+        LogisticsCompanyPermission.dashboard_read,
+    },
+    LogisticsMemberRole.dispatcher: {
+        LogisticsCompanyPermission.pickups_manage,
+        LogisticsCompanyPermission.shipments_manage,
+        LogisticsCompanyPermission.dashboard_read,
+    },
+    LogisticsMemberRole.driver: {LogisticsCompanyPermission.shipments_manage},
+    LogisticsMemberRole.viewer: {LogisticsCompanyPermission.dashboard_read},
+}
+
+
+def _effective_company_permissions(
+    membership: LogisticsCompanyUser,
+) -> set[LogisticsCompanyPermission]:
+    if membership.is_primary_contact:
+        return set(LogisticsCompanyPermission)
+
+    permissions = set(_ROLE_PERMISSIONS.get(membership.member_role, set()))
+    for value in membership.permissions_json or []:
+        try:
+            permissions.add(LogisticsCompanyPermission(value))
+        except ValueError:
+            continue
+    return permissions
+
+
+def _require_company_permission(
+    membership: LogisticsCompanyUser,
+    permission: LogisticsCompanyPermission,
+) -> None:
+    if permission not in _effective_company_permissions(membership):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"Company permission denied. Required: {permission.value}",
+        )
+
+
+def _member_response(membership: LogisticsCompanyUser) -> dict:
+    return {
+        "id": membership.id,
+        "logistics_company_id": membership.logistics_company_id,
+        "user_id": membership.user_id,
+        "title": membership.title,
+        "member_role": membership.member_role,
+        "permissions_json": membership.permissions_json or [],
+        "is_primary_contact": membership.is_primary_contact,
+        "is_active": membership.is_active,
+        "created_at": membership.created_at,
+        "first_name": membership.user.first_name,
+        "last_name": membership.user.last_name,
+        "email": membership.user.email,
+        "effective_permissions": sorted(
+            _effective_company_permissions(membership), key=lambda item: item.value
+        ),
+    }
 
 
     
@@ -266,12 +336,65 @@ def attach_company_user(
         raise HTTPException(404, "Logistics company not found")
     if not db.get(User, data.user_id):
         raise HTTPException(404, "User not found")
+    existing_membership = (
+        db.query(LogisticsCompanyUser)
+        .filter(LogisticsCompanyUser.user_id == data.user_id)
+        .first()
+    )
+    if existing_membership:
+        raise HTTPException(409, "User is already linked to a logistics company")
 
     membership = LogisticsCompanyUser(
         logistics_company_id=company_id,
         **data.model_dump(),
     )
     db.add(membership)
+    _commit(db)
+    db.refresh(membership)
+    return membership
+
+
+@router.patch(
+    "/companies/{company_id}/users/{user_id}",
+    response_model=LogisticsCompanyUserResponse,
+)
+def update_company_user(
+    company_id: UUID,
+    user_id: UUID,
+    data: LogisticsCompanyUserUpdate,
+    db: Session = Depends(get_db),
+    _: User = Depends(
+        require_permission(PermissionCode.logistics_companies_manage.value)
+    ),
+):
+    membership = (
+        db.query(LogisticsCompanyUser)
+        .filter(
+            LogisticsCompanyUser.logistics_company_id == company_id,
+            LogisticsCompanyUser.user_id == user_id,
+        )
+        .first()
+    )
+    if not membership:
+        raise HTTPException(404, "Logistics company user membership not found")
+
+    changes = data.model_dump(exclude_unset=True)
+    if membership.is_primary_contact and changes.get("is_primary_contact") is False:
+        other_primary = (
+            db.query(LogisticsCompanyUser)
+            .filter(
+                LogisticsCompanyUser.logistics_company_id == company_id,
+                LogisticsCompanyUser.id != membership.id,
+                LogisticsCompanyUser.is_primary_contact.is_(True),
+                LogisticsCompanyUser.is_active.is_(True),
+            )
+            .first()
+        )
+        if not other_primary:
+            raise HTTPException(409, "Assign another active primary contact first")
+
+    for key, value in changes.items():
+        setattr(membership, key, value)
     _commit(db)
     db.refresh(membership)
     return membership
@@ -297,7 +420,187 @@ def detach_company_user(
     if not membership:
         raise HTTPException(404, "Logistics company user membership not found")
 
+    if membership.is_primary_contact and membership.is_active:
+        other_primary = (
+            db.query(LogisticsCompanyUser)
+            .filter(
+                LogisticsCompanyUser.logistics_company_id == company_id,
+                LogisticsCompanyUser.id != membership.id,
+                LogisticsCompanyUser.is_primary_contact.is_(True),
+                LogisticsCompanyUser.is_active.is_(True),
+            )
+            .first()
+        )
+        if not other_primary:
+            raise HTTPException(409, "Assign another active primary contact first")
+
     db.delete(membership)
+    _commit(db)
+    return {"message": "User removed from logistics company"}
+
+
+@router.get("/me/users", response_model=list[LogisticsCompanyMemberResponse])
+def my_company_users(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    membership = _membership_for_user(db, current_user.id)
+    if not membership:
+        raise HTTPException(403, "User is not linked to a logistics company")
+
+    rows = (
+        db.query(LogisticsCompanyUser)
+        .options(joinedload(LogisticsCompanyUser.user))
+        .filter(
+            LogisticsCompanyUser.logistics_company_id
+            == membership.logistics_company_id
+        )
+        .order_by(
+            LogisticsCompanyUser.is_primary_contact.desc(),
+            LogisticsCompanyUser.created_at.asc(),
+        )
+        .all()
+    )
+    return [_member_response(row) for row in rows]
+
+
+@router.post(
+    "/me/users",
+    response_model=LogisticsCompanyMemberResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+def add_my_company_user(
+    data: LogisticsCompanyUserCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    current_membership = _membership_for_user(db, current_user.id)
+    if not current_membership:
+        raise HTTPException(403, "User is not linked to a logistics company")
+    _require_company_permission(
+        current_membership, LogisticsCompanyPermission.users_manage
+    )
+    if data.is_primary_contact and not current_membership.is_primary_contact:
+        raise HTTPException(403, "Only the primary contact may assign another primary contact")
+
+    user = db.get(User, data.user_id)
+    if not user:
+        raise HTTPException(404, "User not found")
+    existing_membership = (
+        db.query(LogisticsCompanyUser)
+        .filter(LogisticsCompanyUser.user_id == data.user_id)
+        .first()
+    )
+    if existing_membership:
+        raise HTTPException(409, "User is already linked to a logistics company")
+    membership = LogisticsCompanyUser(
+        logistics_company_id=current_membership.logistics_company_id,
+        **data.model_dump(),
+    )
+    db.add(membership)
+    _commit(db)
+    db.refresh(membership)
+    membership.user = user
+    return _member_response(membership)
+
+
+@router.patch(
+    "/me/users/{user_id}", response_model=LogisticsCompanyMemberResponse
+)
+def update_my_company_user(
+    user_id: UUID,
+    data: LogisticsCompanyUserUpdate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    current_membership = _membership_for_user(db, current_user.id)
+    if not current_membership:
+        raise HTTPException(403, "User is not linked to a logistics company")
+    _require_company_permission(
+        current_membership, LogisticsCompanyPermission.users_manage
+    )
+
+    target = (
+        db.query(LogisticsCompanyUser)
+        .options(joinedload(LogisticsCompanyUser.user))
+        .filter(
+            LogisticsCompanyUser.logistics_company_id
+            == current_membership.logistics_company_id,
+            LogisticsCompanyUser.user_id == user_id,
+        )
+        .first()
+    )
+    if not target:
+        raise HTTPException(404, "Logistics company user membership not found")
+
+    changes = data.model_dump(exclude_unset=True)
+    if "is_primary_contact" in changes and not current_membership.is_primary_contact:
+        raise HTTPException(403, "Only the primary contact may change the primary contact")
+    if target.is_primary_contact and (
+        changes.get("is_primary_contact") is False
+        or changes.get("is_active") is False
+    ):
+        other_primary = (
+            db.query(LogisticsCompanyUser)
+            .filter(
+                LogisticsCompanyUser.logistics_company_id
+                == current_membership.logistics_company_id,
+                LogisticsCompanyUser.id != target.id,
+                LogisticsCompanyUser.is_primary_contact.is_(True),
+                LogisticsCompanyUser.is_active.is_(True),
+            )
+            .first()
+        )
+        if not other_primary:
+            raise HTTPException(409, "Assign another active primary contact first")
+
+    for key, value in changes.items():
+        setattr(target, key, value)
+    _commit(db)
+    db.refresh(target)
+    return _member_response(target)
+
+
+@router.delete("/me/users/{user_id}")
+def remove_my_company_user(
+    user_id: UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    current_membership = _membership_for_user(db, current_user.id)
+    if not current_membership:
+        raise HTTPException(403, "User is not linked to a logistics company")
+    _require_company_permission(
+        current_membership, LogisticsCompanyPermission.users_manage
+    )
+
+    target = (
+        db.query(LogisticsCompanyUser)
+        .filter(
+            LogisticsCompanyUser.logistics_company_id
+            == current_membership.logistics_company_id,
+            LogisticsCompanyUser.user_id == user_id,
+        )
+        .first()
+    )
+    if not target:
+        raise HTTPException(404, "Logistics company user membership not found")
+    if target.is_primary_contact and target.is_active:
+        other_primary = (
+            db.query(LogisticsCompanyUser)
+            .filter(
+                LogisticsCompanyUser.logistics_company_id
+                == current_membership.logistics_company_id,
+                LogisticsCompanyUser.id != target.id,
+                LogisticsCompanyUser.is_primary_contact.is_(True),
+                LogisticsCompanyUser.is_active.is_(True),
+            )
+            .first()
+        )
+        if not other_primary:
+            raise HTTPException(409, "Assign another active primary contact first")
+
+    db.delete(target)
     _commit(db)
     return {"message": "User removed from logistics company"}
 
@@ -766,10 +1069,16 @@ def my_logistics_account(
         "company": membership.company,
         "membership_id": membership.id,
         "title": membership.title,
+        "member_role": membership.member_role,
+        "effective_permissions": sorted(
+            _effective_company_permissions(membership), key=lambda item: item.value
+        ),
         "is_primary_contact": membership.is_primary_contact,
         "can_manage_profile": (
             membership.is_primary_contact
             or PermissionCode.logistics_profile_manage.value in permissions
+            or LogisticsCompanyPermission.profile_manage
+            in _effective_company_permissions(membership)
         ),
     }
 
@@ -788,6 +1097,8 @@ def update_my_logistics_company(
     if (
         not membership.is_primary_contact
         and PermissionCode.logistics_profile_manage.value not in permissions
+        and LogisticsCompanyPermission.profile_manage
+        not in _effective_company_permissions(membership)
     ):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
