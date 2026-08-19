@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
-from sqlalchemy import or_
+from sqlalchemy import or_, func
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, joinedload, selectinload
 
@@ -24,6 +24,7 @@ from api.models import (
     LogisticsCompany,
     LogisticsCompanyUser,
     LogisticsIntegrationConfig,
+    LogisticsWebhookEvent,
     LogisticsPickupJob,
     SellerOrder,
     Shipment,
@@ -55,6 +56,9 @@ from api.schemas import (
     LogisticsIntegrationCreate,
     LogisticsIntegrationResponse,
     LogisticsIntegrationUpdate,
+    LogisticsDashboardResponse,
+    LogisticsWebhookEventResponse,
+    PaginatedLogisticsWebhookEventResponse,
     LogisticsCourierArrivalRequest,
     LogisticsPickupJobAssign,
     LogisticsPickupJobCreate,
@@ -1448,6 +1452,111 @@ def update_integration(
     _commit(db)
     db.refresh(integration)
     return integration
+
+
+@router.get("/me/integration", response_model=LogisticsIntegrationResponse)
+def my_integration(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    membership = _membership_for_user(db, current_user.id)
+    if not membership:
+        raise HTTPException(403, "User is not linked to a logistics company")
+    integration = db.query(LogisticsIntegrationConfig).filter(
+        LogisticsIntegrationConfig.logistics_company_id == membership.logistics_company_id
+    ).first()
+    if not integration:
+        raise HTTPException(404, "Logistics integration configuration not found")
+    return integration
+
+
+@router.put("/me/integration", response_model=LogisticsIntegrationResponse)
+def upsert_my_integration(
+    data: LogisticsIntegrationCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    membership = _membership_for_user(db, current_user.id)
+    if not membership:
+        raise HTTPException(403, "User is not linked to a logistics company")
+    _require_company_permission(membership, LogisticsCompanyPermission.integrations_manage)
+    integration = db.query(LogisticsIntegrationConfig).filter(
+        LogisticsIntegrationConfig.logistics_company_id == membership.logistics_company_id
+    ).first()
+    if integration is None:
+        integration = LogisticsIntegrationConfig(
+            logistics_company_id=membership.logistics_company_id,
+            **data.model_dump(),
+        )
+        db.add(integration)
+    else:
+        for key, value in data.model_dump().items(): setattr(integration, key, value)
+    membership.company.supports_webhooks = bool(data.outbound_webhook_url)
+    _commit(db); db.refresh(integration); return integration
+
+
+@router.get(
+    "/me/webhook-events", response_model=PaginatedLogisticsWebhookEventResponse
+)
+def my_webhook_events(
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=100),
+    direction: str | None = Query(None, pattern="^(inbound|outbound)$"),
+    processed: bool | None = Query(None),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    membership = _membership_for_user(db, current_user.id)
+    if not membership:
+        raise HTTPException(403, "User is not linked to a logistics company")
+    query = db.query(LogisticsWebhookEvent).filter(
+        LogisticsWebhookEvent.logistics_company_id == membership.logistics_company_id
+    )
+    if direction: query = query.filter(LogisticsWebhookEvent.direction == direction)
+    if processed is not None: query = query.filter(LogisticsWebhookEvent.processed.is_(processed))
+    total = query.count()
+    rows = query.order_by(LogisticsWebhookEvent.created_at.desc()).offset((page - 1) * page_size).limit(page_size).all()
+    return {"total": total, "page": page, "page_size": page_size, "total_pages": _pages(total, page_size), "results": rows}
+
+
+@router.get("/me/dashboard", response_model=LogisticsDashboardResponse)
+def my_logistics_dashboard(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    membership = _membership_for_user(db, current_user.id)
+    if not membership:
+        raise HTTPException(403, "User is not linked to a logistics company")
+    company_id = membership.logistics_company_id
+    shipment_rows = db.query(Shipment.status, func.count(Shipment.id)).filter(
+        Shipment.logistics_company_id == company_id
+    ).group_by(Shipment.status).all()
+    pickup_rows = db.query(LogisticsPickupJob.status, func.count(LogisticsPickupJob.id)).filter(
+        LogisticsPickupJob.logistics_company_id == company_id
+    ).group_by(LogisticsPickupJob.status).all()
+    since = datetime.now(timezone.utc) - timedelta(hours=24)
+    event_query = db.query(LogisticsWebhookEvent).filter(
+        LogisticsWebhookEvent.logistics_company_id == company_id,
+        LogisticsWebhookEvent.created_at >= since,
+    )
+    integration = db.query(LogisticsIntegrationConfig).filter(
+        LogisticsIntegrationConfig.logistics_company_id == company_id
+    ).first()
+    shipments = {getattr(status_value, "value", str(status_value)): count for status_value, count in shipment_rows}
+    pickups = {getattr(status_value, "value", str(status_value)): count for status_value, count in pickup_rows}
+    return {
+        "logistics_company_id": company_id,
+        "members": db.query(LogisticsCompanyUser).filter(LogisticsCompanyUser.logistics_company_id == company_id, LogisticsCompanyUser.is_active.is_(True)).count(),
+        "active_zones": db.query(ShippingZone).filter(ShippingZone.logistics_company_id == company_id, ShippingZone.is_active.is_(True)).count(),
+        "active_services": db.query(ShippingMethod).filter(ShippingMethod.logistics_company_id == company_id, ShippingMethod.is_active.is_(True)).count(),
+        "active_rates": db.query(ShippingRate).join(ShippingMethod).filter(ShippingMethod.logistics_company_id == company_id, ShippingRate.is_active.is_(True)).count(),
+        "shipments_total": sum(shipments.values()), "shipments_by_status": shipments,
+        "pickup_jobs_total": sum(pickups.values()), "pickup_jobs_by_status": pickups,
+        "webhook_events_24h": event_query.count(),
+        "webhook_failures_24h": event_query.filter(or_(LogisticsWebhookEvent.error_message.isnot(None), LogisticsWebhookEvent.http_status >= 400)).count(),
+        "integration_configured": integration is not None,
+        "integration_active": bool(integration and integration.is_active),
+    }
 
 
     

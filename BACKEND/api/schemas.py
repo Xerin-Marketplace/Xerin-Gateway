@@ -2359,6 +2359,7 @@ class LogisticsIntegrationCreate(BaseModel):
     webhook_secret_reference: Optional[str] = Field(default=None, max_length=255)
     api_key_header: Optional[str] = Field(default=None, max_length=120)
     extra_config: dict[str, Any] = Field(default_factory=dict)
+    webhook_enabled_events: list[str] = Field(default_factory=list)
     is_active: bool = False
 
 
@@ -2371,6 +2372,7 @@ class LogisticsIntegrationUpdate(BaseModel):
     webhook_secret_reference: Optional[str] = Field(default=None, max_length=255)
     api_key_header: Optional[str] = Field(default=None, max_length=120)
     extra_config: Optional[dict[str, Any]] = None
+    webhook_enabled_events: Optional[list[str]] = None
     is_active: Optional[bool] = None
 
 
@@ -2380,9 +2382,49 @@ class LogisticsIntegrationResponse(LogisticsIntegrationCreate):
     last_tested_at: Optional[datetime] = None
     last_test_success: Optional[bool] = None
     last_test_message: Optional[str] = None
+    last_webhook_sent_at: Optional[datetime] = None
+    last_webhook_received_at: Optional[datetime] = None
     created_at: datetime
     updated_at: Optional[datetime] = None
     model_config = ORM_CONFIG
+
+
+class LogisticsWebhookEventResponse(BaseModel):
+    id: UUID
+    logistics_company_id: UUID
+    direction: str
+    event_type: str
+    external_event_id: Optional[str]
+    shipment_id: Optional[UUID]
+    http_status: Optional[int]
+    processed: bool
+    error_message: Optional[str]
+    created_at: datetime
+    model_config = ORM_CONFIG
+
+
+class PaginatedLogisticsWebhookEventResponse(BaseModel):
+    total: int
+    page: int
+    page_size: int
+    total_pages: int
+    results: list[LogisticsWebhookEventResponse]
+
+
+class LogisticsDashboardResponse(BaseModel):
+    logistics_company_id: UUID
+    members: int
+    active_zones: int
+    active_services: int
+    active_rates: int
+    shipments_total: int
+    shipments_by_status: dict[str, int]
+    pickup_jobs_total: int
+    pickup_jobs_by_status: dict[str, int]
+    webhook_events_24h: int
+    webhook_failures_24h: int
+    integration_configured: bool
+    integration_active: bool
 
 
 class PaginatedShippingMethodResponse(BaseModel):
