@@ -626,7 +626,7 @@ ALLOWED_SHIPMENT_TRANSITIONS = {
     ShipmentStatus.ready_for_dispatch: {ShipmentStatus.dispatched, ShipmentStatus.cancelled},
     ShipmentStatus.dispatched: {ShipmentStatus.in_transit, ShipmentStatus.delivery_failed},
     ShipmentStatus.in_transit: {ShipmentStatus.out_for_delivery, ShipmentStatus.delivery_failed, ShipmentStatus.returned_to_sender},
-    ShipmentStatus.out_for_delivery: {ShipmentStatus.delivered, ShipmentStatus.delivery_failed, ShipmentStatus.returned_to_sender},
+    ShipmentStatus.out_for_delivery: {ShipmentStatus.delivery_failed, ShipmentStatus.returned_to_sender},
     ShipmentStatus.delivery_failed: {ShipmentStatus.out_for_delivery, ShipmentStatus.returned_to_sender},
     ShipmentStatus.delivered: set(),
     ShipmentStatus.returned_to_sender: set(),
@@ -676,6 +676,8 @@ def update_shipment(shipment_id: UUID, data: ShipmentTrackingEventCreate, db: Se
         raise HTTPException(status_code=404, detail="Shipment not found")
     if not _can_manage_shipment(db, current_user, shipment):
         raise HTTPException(status_code=403, detail="Not authorized to manage this shipment")
+    if data.status == ShipmentStatus.delivered:
+        raise HTTPException(status_code=409, detail="Delivered status requires customer OTP proof of delivery")
     if data.status not in ALLOWED_SHIPMENT_TRANSITIONS.get(shipment.status, set()):
         raise HTTPException(status_code=409, detail=f"Invalid shipment transition: {shipment.status.value} -> {data.status.value}")
     if data.tracking_number:
@@ -689,8 +691,6 @@ def update_shipment(shipment_id: UUID, data: ShipmentTrackingEventCreate, db: Se
     now = datetime.now(timezone.utc)
     if data.status == ShipmentStatus.dispatched and shipment.dispatched_at is None:
         shipment.dispatched_at = now
-    if data.status == ShipmentStatus.delivered:
-        shipment.delivered_at = now
     db.add(ShipmentTrackingEvent(shipment_id=shipment.id, status=data.status, location=data.location, notes=data.notes, created_by_id=current_user.id))
     _commit(db)
     return db.query(Shipment).options(selectinload(Shipment.items), selectinload(Shipment.tracking_events)).filter(Shipment.id == shipment.id).one()

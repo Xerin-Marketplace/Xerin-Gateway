@@ -288,17 +288,16 @@ async def delivery_webhook(
     job.last_synced_at = now
 
     shipment = db.query(Shipment).filter(Shipment.id == job.shipment_id).first()
-    shipment.status = STATUS_MAP[status]
+    # A provider callback is tracking evidence, not recipient confirmation.
+    # Keep arrival awaiting XERIM OTP verification instead of trusting a remote
+    # "delivered" flag as proof of delivery.
+    shipment.status = ShipmentStatus.out_for_delivery if status == DeliveryStatus.delivered else STATUS_MAP[status]
     shipment.tracking_number = job.tracking_number or shipment.tracking_number
     shipment.carrier_name = settings.DELIVERY_PROVIDER_NAME
     if status == DeliveryStatus.picked_up and not shipment.dispatched_at:
         shipment.dispatched_at = now
     if status == DeliveryStatus.delivered:
-        shipment.delivered_at = now
-        seller_order = db.query(SellerOrder).filter(SellerOrder.id == job.seller_order_id).first()
-        if seller_order:
-            seller_order.status = SellerOrderStatus.delivered
-            seller_order.delivered_at = now
-    db.add(ShipmentTrackingEvent(shipment_id=shipment.id, status=shipment.status, location=payload.get("location"), notes=payload.get("notes") or f"External delivery status: {status.value}"))
+        shipment.delivered_at = None
+    db.add(ShipmentTrackingEvent(shipment_id=shipment.id, status=shipment.status, location=payload.get("location"), notes=(payload.get("notes") or f"External delivery status: {status.value}") + ("; awaiting customer OTP verification" if status == DeliveryStatus.delivered else "")))
     db.commit()
     return {"accepted": True, "delivery_id": external_id, "status": status}

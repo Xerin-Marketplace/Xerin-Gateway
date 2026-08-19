@@ -117,6 +117,43 @@ def debit_order_delivery_entitlement(db: Session, *, order: Order, refund_id):
     return transaction, remaining
 
 
+def release_verified_delivery_entitlement(db: Session, *, order: Order, proof_id):
+    """Release an order's carrier entitlement once every shipment has verified POD."""
+    reference = f"logistics_delivery_release:{order.id}"
+    existing = db.query(LogisticsWalletTransaction).filter(LogisticsWalletTransaction.reference == reference).first()
+    if existing:
+        return existing
+    credit = db.query(LogisticsWalletTransaction).filter(
+        LogisticsWalletTransaction.order_id == order.id,
+        LogisticsWalletTransaction.transaction_type == "delivery_credit",
+    ).first()
+    if credit is None:
+        return None  # COD or no captured delivery charge; remittance must credit it later.
+    recoveries = sum((money(row.amount) for row in db.query(LogisticsWalletTransaction).filter(
+        LogisticsWalletTransaction.order_id == order.id,
+        LogisticsWalletTransaction.transaction_type == "debt_recovery",
+    ).all()), Decimal("0.00"))
+    reversals = sum((money(row.amount) for row in db.query(LogisticsWalletTransaction).filter(
+        LogisticsWalletTransaction.order_id == order.id,
+        LogisticsWalletTransaction.transaction_type == "refund_debit",
+    ).all()), Decimal("0.00"))
+    amount = money(max(Decimal("0.00"), money(credit.amount) - recoveries - reversals))
+    if amount <= 0:
+        return None
+    wallet = db.query(LogisticsWallet).filter(LogisticsWallet.id == credit.wallet_id).with_for_update().one()
+    if money(wallet.pending_balance) < amount:
+        raise ValueError("Logistics pending balance is inconsistent with verified delivery")
+    wallet.pending_balance = money(wallet.pending_balance) - amount
+    wallet.available_balance = money(wallet.available_balance) + amount
+    now = datetime.now(timezone.utc)
+    transaction = LogisticsWalletTransaction(
+        wallet_id=wallet.id, transaction_type="funds_release", amount=amount,
+        currency=wallet.currency, reference=reference, order_id=order.id,
+        released_at=now, description=f"Delivery entitlement released after verified POD {proof_id}",
+    )
+    db.add(transaction); db.flush(); return transaction
+
+
 def create_logistics_payout(db: Session, *, company_id, account_id, amount, note=None):
     wallet = get_or_create_logistics_wallet(db, company_id)
     amount = money(amount)

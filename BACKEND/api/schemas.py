@@ -2912,6 +2912,62 @@ class ShipmentResponse(BaseModel):
     model_config = ORM_CONFIG
 
 
+class DeliveryProofEventResponse(BaseModel):
+    model_config = ORM_CONFIG
+    id: UUID
+    action: str
+    note: str | None = None
+    created_by_id: UUID | None = None
+    created_at: datetime
+
+
+class DeliveryProofResponse(BaseModel):
+    model_config = ORM_CONFIG
+    id: UUID
+    shipment_id: UUID
+    order_id: UUID
+    customer_id: UUID
+    logistics_company_id: UUID
+    status: str
+    recipient_name: str
+    recipient_phone_last4: str | None = None
+    photo_url: str
+    delivery_latitude: Decimal
+    delivery_longitude: Decimal
+    destination_latitude: Decimal
+    destination_longitude: Decimal
+    distance_from_destination_meters: Decimal
+    otp_expires_at: datetime
+    otp_attempts: int
+    notes: str | None = None
+    verified_at: datetime | None = None
+    disputed_at: datetime | None = None
+    dispute_reason: str | None = None
+    dispute_notes: str | None = None
+    logistics_release_transaction_id: UUID | None = None
+    settlement_status: str
+    created_at: datetime
+    updated_at: datetime | None = None
+    events: list[DeliveryProofEventResponse] = Field(default_factory=list)
+
+
+class DeliveryProofStartResponse(BaseModel):
+    proof: DeliveryProofResponse
+    otp_delivery_channels: list[str]
+    dev_otp: str | None = None
+
+
+class DeliveryProofVerifyRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    otp_code: str = Field(pattern=r"^\d{6}$")
+
+
+class DeliveryProofDisputeRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    reason: Literal["not_received", "wrong_recipient", "damaged", "wrong_location", "other"]
+    notes: str | None = Field(default=None, max_length=2000)
+
+
 class LogisticsPickupJobCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
     assigned_membership_id: Optional[UUID] = None

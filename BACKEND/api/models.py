@@ -1808,6 +1808,10 @@ class Shipment(Base):
         cascade="all, delete-orphan",
         order_by="ShipmentTrackingEvent.created_at",
     )
+    delivery_proof = relationship(
+        "ShipmentDeliveryProof", back_populates="shipment", uselist=False,
+        cascade="all, delete-orphan",
+    )
 
     __table_args__ = (
         UniqueConstraint("order_id", "seller_id", name="uq_shipment_order_seller"),
@@ -1863,6 +1867,61 @@ class ShipmentTrackingEvent(Base):
 
     shipment = relationship("Shipment", back_populates="tracking_events")
     created_by = relationship("User")
+
+
+class ShipmentDeliveryProof(Base):
+    __tablename__ = "shipment_delivery_proofs"
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    shipment_id = Column(UUID(as_uuid=True), ForeignKey("shipments.id", ondelete="CASCADE"), nullable=False, unique=True, index=True)
+    order_id = Column(UUID(as_uuid=True), ForeignKey("orders.id", ondelete="CASCADE"), nullable=False, index=True)
+    customer_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    logistics_company_id = Column(UUID(as_uuid=True), ForeignKey("logistics_companies.id", ondelete="RESTRICT"), nullable=False, index=True)
+    status = Column(String(30), nullable=False, default="pending_otp", server_default="pending_otp", index=True)
+    recipient_name = Column(String(150), nullable=False)
+    recipient_phone_last4 = Column(String(4), nullable=True)
+    photo_url = Column(Text, nullable=False)
+    original_filename = Column(String(255), nullable=True)
+    mime_type = Column(String(120), nullable=False)
+    file_size = Column(Integer, nullable=False)
+    delivery_latitude = Column(Numeric(10, 7), nullable=False)
+    delivery_longitude = Column(Numeric(10, 7), nullable=False)
+    destination_latitude = Column(Numeric(10, 7), nullable=False)
+    destination_longitude = Column(Numeric(10, 7), nullable=False)
+    distance_from_destination_meters = Column(Numeric(12, 2), nullable=False)
+    otp_hash = Column(String(64), nullable=False)
+    otp_expires_at = Column(DateTime(timezone=True), nullable=False, index=True)
+    otp_attempts = Column(Integer, nullable=False, default=0, server_default="0")
+    notes = Column(Text, nullable=True)
+    initiated_by_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    verified_by_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    verified_at = Column(DateTime(timezone=True), nullable=True)
+    disputed_at = Column(DateTime(timezone=True), nullable=True)
+    dispute_reason = Column(String(100), nullable=True)
+    dispute_notes = Column(Text, nullable=True)
+    logistics_release_transaction_id = Column(UUID(as_uuid=True), ForeignKey("logistics_wallet_transactions.id", ondelete="SET NULL"), nullable=True, index=True)
+    settlement_status = Column(String(40), nullable=False, default="held", server_default="held")
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), nullable=True, onupdate=func.now())
+    shipment = relationship("Shipment", back_populates="delivery_proof")
+    events = relationship("ShipmentDeliveryProofEvent", back_populates="proof", cascade="all, delete-orphan", order_by="ShipmentDeliveryProofEvent.created_at")
+    __table_args__ = (
+        CheckConstraint("status IN ('pending_otp','verified','disputed','expired')", name="ck_shipment_delivery_proof_status"),
+        CheckConstraint("settlement_status IN ('held','released','awaiting_cod_remittance','blocked')", name="ck_shipment_delivery_proof_settlement"),
+        CheckConstraint("delivery_latitude BETWEEN -90 AND 90 AND destination_latitude BETWEEN -90 AND 90", name="ck_shipment_delivery_proof_latitudes"),
+        CheckConstraint("delivery_longitude BETWEEN -180 AND 180 AND destination_longitude BETWEEN -180 AND 180", name="ck_shipment_delivery_proof_longitudes"),
+        CheckConstraint("distance_from_destination_meters >= 0 AND file_size > 0 AND otp_attempts >= 0", name="ck_shipment_delivery_proof_values"),
+    )
+
+
+class ShipmentDeliveryProofEvent(Base):
+    __tablename__ = "shipment_delivery_proof_events"
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    proof_id = Column(UUID(as_uuid=True), ForeignKey("shipment_delivery_proofs.id", ondelete="CASCADE"), nullable=False, index=True)
+    action = Column(String(40), nullable=False)
+    note = Column(Text, nullable=True)
+    created_by_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    proof = relationship("ShipmentDeliveryProof", back_populates="events")
 
 
 class LogisticsPickupJob(Base):

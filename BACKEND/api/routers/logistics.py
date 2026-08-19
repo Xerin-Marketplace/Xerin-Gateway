@@ -1696,7 +1696,6 @@ ALLOWED_LOGISTICS_TRANSITIONS = {
         ShipmentStatus.returned_to_sender,
     },
     ShipmentStatus.out_for_delivery: {
-        ShipmentStatus.delivered,
         ShipmentStatus.delivery_failed,
         ShipmentStatus.returned_to_sender,
     },
@@ -1963,6 +1962,8 @@ def update_company_shipment(
         raise HTTPException(404, "Shipment not found for this logistics company")
 
     allowed = ALLOWED_LOGISTICS_TRANSITIONS.get(shipment.status, set())
+    if data.status == ShipmentStatus.delivered:
+        raise HTTPException(409, "Delivered status requires customer OTP proof of delivery")
     if data.status not in allowed:
         raise HTTPException(
             status_code=409,
@@ -1990,8 +1991,6 @@ def update_company_shipment(
     now = datetime.now(timezone.utc)
     if data.status == ShipmentStatus.dispatched and shipment.dispatched_at is None:
         shipment.dispatched_at = now
-    if data.status == ShipmentStatus.delivered and shipment.delivered_at is None:
-        shipment.delivered_at = now
 
     db.add(
         ShipmentTrackingEvent(

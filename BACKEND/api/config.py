@@ -46,6 +46,9 @@ class Settings(BaseSettings):
     UPLOAD_DIRECTORY: str = "uploads"
     SERVE_LOCAL_UPLOADS: bool = True
     MAX_UPLOAD_SIZE_MB: int = Field(default=5, ge=1)
+    DELIVERY_OTP_EXPIRE_MINUTES: int = Field(default=5, ge=1, le=30)
+    DELIVERY_OTP_MAX_ATTEMPTS: int = Field(default=5, ge=1, le=10)
+    DELIVERY_PROOF_MAX_DISTANCE_METERS: int = Field(default=500, ge=25, le=10000)
 
     # Inventory reservations
     INVENTORY_RESERVATION_MINUTES: int = Field(default=30, ge=5, le=1440)
