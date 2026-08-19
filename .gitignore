@@ -151,6 +151,9 @@ azampay_path/*
 errors
 errors/*
 Frontend  
+BACKEND/tests/
+BACKEND/backend.zip
+
 
 
 # Python virtual environment
