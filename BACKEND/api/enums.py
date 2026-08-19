@@ -288,6 +288,25 @@ class LogisticsScope(str, enum.Enum):
     both = "both"
 
 
+class LogisticsMemberRole(str, enum.Enum):
+    company_admin = "company_admin"
+    operations_manager = "operations_manager"
+    dispatcher = "dispatcher"
+    driver = "driver"
+    viewer = "viewer"
+
+
+class LogisticsCompanyPermission(str, enum.Enum):
+    profile_manage = "profile:manage"
+    users_manage = "users:manage"
+    zones_manage = "zones:manage"
+    rates_manage = "rates:manage"
+    pickups_manage = "pickups:manage"
+    shipments_manage = "shipments:manage"
+    integrations_manage = "integrations:manage"
+    dashboard_read = "dashboard:read"
+
+
 class LogisticsIntegrationAuthType(str, enum.Enum):
     none = "none"
     api_key = "api_key"
