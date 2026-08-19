@@ -1117,7 +1117,7 @@ class ShippingMethod(Base):
         nullable=True,
         index=True,
     )
-    name = Column(String(120), nullable=False, unique=True)
+    name = Column(String(120), nullable=False)
     service_code = Column(String(100), nullable=True, index=True)
     description = Column(Text, nullable=True)
     carrier_name = Column(String(120), nullable=True)
@@ -1148,6 +1148,14 @@ class ShippingMethod(Base):
     logistics_company = relationship("LogisticsCompany", back_populates="services")
 
     __table_args__ = (
+        UniqueConstraint(
+            "logistics_company_id", "name", name="uq_shipping_method_company_name"
+        ),
+        UniqueConstraint(
+            "logistics_company_id",
+            "service_code",
+            name="uq_shipping_method_company_service_code",
+        ),
         CheckConstraint(
             "min_delivery_days >= 0", name="ck_shipping_method_min_days_nonnegative"
         ),

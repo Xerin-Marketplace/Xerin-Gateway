@@ -2591,6 +2591,17 @@ class ShippingRateResponse(ShippingRateCreate):
     model_config = ORM_CONFIG
 
 
+class LogisticsPricingSettingsUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    multi_seller_pricing_strategy: MultiSellerPricingStrategy
+
+
+class LogisticsPricingSettingsResponse(BaseModel):
+    logistics_company_id: UUID
+    multi_seller_pricing_strategy: MultiSellerPricingStrategy
+    supported_strategies: list[MultiSellerPricingStrategy]
+
+
 class ShippingCheckoutConfig(BaseModel):
     default_country: str = "Tanzania"
     local_delivery_allowed: bool = True

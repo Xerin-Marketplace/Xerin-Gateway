@@ -14,6 +14,7 @@ from api.enums import (
     LogisticsCompanyStatus,
     LogisticsCompanyPermission,
     LogisticsMemberRole,
+    MultiSellerPricingStrategy,
     LogisticsScope,
     PermissionCode,
     ShipmentStatus,
@@ -53,6 +54,8 @@ from api.schemas import (
     LogisticsIntegrationResponse,
     LogisticsIntegrationUpdate,
     LogisticsCourierArrivalRequest,
+    LogisticsPricingSettingsResponse,
+    LogisticsPricingSettingsUpdate,
     PaginatedLogisticsCompanyResponse,
     PaginatedShipmentResponse,
     PaginatedShippingMethodResponse,
@@ -1060,10 +1063,14 @@ def create_rate(
         require_permission(PermissionCode.logistics_rates_manage.value)
     ),
 ):
-    if not db.get(ShippingZone, data.zone_id):
+    zone = db.get(ShippingZone, data.zone_id)
+    if not zone:
         raise HTTPException(404, "Shipping zone not found")
-    if not db.get(ShippingMethod, data.method_id):
+    method = db.get(ShippingMethod, data.method_id)
+    if not method:
         raise HTTPException(404, "Logistics service not found")
+    if zone.logistics_company_id not in (None, method.logistics_company_id):
+        raise HTTPException(409, "Shipping zone and service belong to different companies")
 
     rate = ShippingRate(**data.model_dump())
     db.add(rate)
@@ -1090,10 +1097,14 @@ def update_rate(
     if not rate:
         raise HTTPException(404, "Shipping rate not found")
 
-    if not db.get(ShippingZone, data.zone_id):
+    zone = db.get(ShippingZone, data.zone_id)
+    if not zone:
         raise HTTPException(404, "Shipping zone not found")
-    if not db.get(ShippingMethod, data.method_id):
+    method = db.get(ShippingMethod, data.method_id)
+    if not method:
         raise HTTPException(404, "Logistics service not found")
+    if zone.logistics_company_id not in (None, method.logistics_company_id):
+        raise HTTPException(409, "Shipping zone and service belong to different companies")
 
     for key, value in data.model_dump().items():
         setattr(rate, key, value)
@@ -1122,6 +1133,223 @@ def deactivate_rate(
     rate.is_active = False
     _commit(db)
     return {"message": "Shipping rate deactivated"}
+
+
+def _company_zone(db: Session, company_id: UUID, zone_id: UUID) -> ShippingZone:
+    zone = (
+        db.query(ShippingZone)
+        .filter(
+            ShippingZone.id == zone_id,
+            ShippingZone.logistics_company_id == company_id,
+        )
+        .first()
+    )
+    if not zone:
+        raise HTTPException(404, "Company shipping zone not found")
+    return zone
+
+
+def _company_service(
+    db: Session, company_id: UUID, service_id: UUID
+) -> ShippingMethod:
+    service = (
+        db.query(ShippingMethod)
+        .filter(
+            ShippingMethod.id == service_id,
+            ShippingMethod.logistics_company_id == company_id,
+        )
+        .first()
+    )
+    if not service:
+        raise HTTPException(404, "Company logistics service not found")
+    return service
+
+
+@router.get("/me/pricing", response_model=LogisticsPricingSettingsResponse)
+def my_pricing_settings(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    membership = _membership_for_user(db, current_user.id)
+    if not membership or not membership.company:
+        raise HTTPException(403, "User is not linked to a logistics company")
+    return {
+        "logistics_company_id": membership.logistics_company_id,
+        "multi_seller_pricing_strategy": membership.company.multi_seller_pricing_strategy,
+        "supported_strategies": [
+            MultiSellerPricingStrategy.farthest_seller,
+            MultiSellerPricingStrategy.sum_individual,
+        ],
+    }
+
+
+@router.patch("/me/pricing", response_model=LogisticsPricingSettingsResponse)
+def update_my_pricing_settings(
+    data: LogisticsPricingSettingsUpdate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    membership = _membership_for_user(db, current_user.id)
+    if not membership or not membership.company:
+        raise HTTPException(403, "User is not linked to a logistics company")
+    _require_company_permission(
+        membership, LogisticsCompanyPermission.rates_manage
+    )
+    supported = {
+        MultiSellerPricingStrategy.farthest_seller,
+        MultiSellerPricingStrategy.sum_individual,
+    }
+    if data.multi_seller_pricing_strategy not in supported:
+        raise HTTPException(409, "Selected pricing strategy is not available for launch")
+    membership.company.multi_seller_pricing_strategy = data.multi_seller_pricing_strategy
+    _commit(db)
+    return {
+        "logistics_company_id": membership.logistics_company_id,
+        "multi_seller_pricing_strategy": membership.company.multi_seller_pricing_strategy,
+        "supported_strategies": sorted(supported, key=lambda item: item.value),
+    }
+
+
+@router.get("/me/services", response_model=PaginatedShippingMethodResponse)
+def my_company_services(
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=100),
+    active: bool | None = Query(None),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    membership = _membership_for_user(db, current_user.id)
+    if not membership:
+        raise HTTPException(403, "User is not linked to a logistics company")
+    query = db.query(ShippingMethod).filter(
+        ShippingMethod.logistics_company_id == membership.logistics_company_id
+    )
+    if active is not None:
+        query = query.filter(ShippingMethod.is_active.is_(active))
+    total = query.count()
+    rows = query.order_by(ShippingMethod.name).offset((page - 1) * page_size).limit(page_size).all()
+    return {"total": total, "page": page, "page_size": page_size, "total_pages": _pages(total, page_size), "results": rows}
+
+
+@router.post("/me/services", response_model=ShippingMethodResponse, status_code=201)
+def create_my_company_service(
+    data: ShippingMethodCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    membership = _membership_for_user(db, current_user.id)
+    if not membership:
+        raise HTTPException(403, "User is not linked to a logistics company")
+    _require_company_permission(membership, LogisticsCompanyPermission.rates_manage)
+    if data.logistics_company_id not in (None, membership.logistics_company_id):
+        raise HTTPException(403, "Cannot create a service for another company")
+    values = data.model_dump(exclude={"logistics_company_id"})
+    service = ShippingMethod(
+        logistics_company_id=membership.logistics_company_id,
+        carrier_name=data.carrier_name or membership.company.name,
+        **{key: value for key, value in values.items() if key != "carrier_name"},
+    )
+    db.add(service); _commit(db); db.refresh(service); return service
+
+
+@router.patch("/me/services/{service_id}", response_model=ShippingMethodResponse)
+def update_my_company_service(
+    service_id: UUID,
+    data: ShippingMethodUpdate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    membership = _membership_for_user(db, current_user.id)
+    if not membership:
+        raise HTTPException(403, "User is not linked to a logistics company")
+    _require_company_permission(membership, LogisticsCompanyPermission.rates_manage)
+    service = _company_service(db, membership.logistics_company_id, service_id)
+    changes = data.model_dump(exclude_unset=True)
+    if changes.get("logistics_company_id") not in (None, membership.logistics_company_id):
+        raise HTTPException(403, "Cannot transfer a service to another company")
+    changes.pop("logistics_company_id", None)
+    for key, value in changes.items(): setattr(service, key, value)
+    _commit(db); db.refresh(service); return service
+
+
+@router.delete("/me/services/{service_id}")
+def deactivate_my_company_service(
+    service_id: UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    membership = _membership_for_user(db, current_user.id)
+    if not membership:
+        raise HTTPException(403, "User is not linked to a logistics company")
+    _require_company_permission(membership, LogisticsCompanyPermission.rates_manage)
+    service = _company_service(db, membership.logistics_company_id, service_id)
+    service.is_active = False; _commit(db); return {"message": "Logistics service deactivated"}
+
+
+@router.get("/me/rates", response_model=PaginatedShippingRateResponse)
+def my_company_rates(
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=100),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    membership = _membership_for_user(db, current_user.id)
+    if not membership:
+        raise HTTPException(403, "User is not linked to a logistics company")
+    query = db.query(ShippingRate).join(ShippingMethod).options(joinedload(ShippingRate.zone), joinedload(ShippingRate.method)).filter(ShippingMethod.logistics_company_id == membership.logistics_company_id)
+    total = query.count(); rows = query.order_by(ShippingRate.created_at.desc()).offset((page - 1) * page_size).limit(page_size).all()
+    return {"total": total, "page": page, "page_size": page_size, "total_pages": _pages(total, page_size), "results": rows}
+
+
+@router.post("/me/rates", response_model=ShippingRateResponse, status_code=201)
+def create_my_company_rate(
+    data: ShippingRateCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    membership = _membership_for_user(db, current_user.id)
+    if not membership:
+        raise HTTPException(403, "User is not linked to a logistics company")
+    _require_company_permission(membership, LogisticsCompanyPermission.rates_manage)
+    _company_zone(db, membership.logistics_company_id, data.zone_id)
+    _company_service(db, membership.logistics_company_id, data.method_id)
+    rate = ShippingRate(**data.model_dump()); db.add(rate); _commit(db)
+    return db.query(ShippingRate).options(joinedload(ShippingRate.zone), joinedload(ShippingRate.method)).filter(ShippingRate.id == rate.id).one()
+
+
+@router.patch("/me/rates/{rate_id}", response_model=ShippingRateResponse)
+def update_my_company_rate(
+    rate_id: UUID,
+    data: ShippingRateCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    membership = _membership_for_user(db, current_user.id)
+    if not membership:
+        raise HTTPException(403, "User is not linked to a logistics company")
+    _require_company_permission(membership, LogisticsCompanyPermission.rates_manage)
+    _company_zone(db, membership.logistics_company_id, data.zone_id)
+    _company_service(db, membership.logistics_company_id, data.method_id)
+    rate = db.query(ShippingRate).join(ShippingMethod).filter(ShippingRate.id == rate_id, ShippingMethod.logistics_company_id == membership.logistics_company_id).first()
+    if not rate: raise HTTPException(404, "Company shipping rate not found")
+    for key, value in data.model_dump().items(): setattr(rate, key, value)
+    _commit(db)
+    return db.query(ShippingRate).options(joinedload(ShippingRate.zone), joinedload(ShippingRate.method)).filter(ShippingRate.id == rate.id).one()
+
+
+@router.delete("/me/rates/{rate_id}")
+def deactivate_my_company_rate(
+    rate_id: UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    membership = _membership_for_user(db, current_user.id)
+    if not membership:
+        raise HTTPException(403, "User is not linked to a logistics company")
+    _require_company_permission(membership, LogisticsCompanyPermission.rates_manage)
+    rate = db.query(ShippingRate).join(ShippingMethod).filter(ShippingRate.id == rate_id, ShippingMethod.logistics_company_id == membership.logistics_company_id).first()
+    if not rate: raise HTTPException(404, "Company shipping rate not found")
+    rate.is_active = False; _commit(db); return {"message": "Shipping rate deactivated"}
 
 
     
