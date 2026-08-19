@@ -10,8 +10,19 @@ from api.models import (Order, Seller, Product, User, Payment, Refund, DeliveryJ
                         NotificationDelivery, SystemAlert, AdminActivityLog)
 from api.permissions import require_permission
 from api.services.admin_dashboard_service import date_window, summary, status_breakdown, top_searches, most_viewed
+from api.services.operations_overview import operations_overview
+from api.schemas import OperationsOverviewResponse
 
 router = APIRouter(prefix="/admin/dashboard", tags=["Admin Dashboard"])
+
+
+@router.get("/operations-overview", response_model=OperationsOverviewResponse)
+def dashboard_operations_overview(
+    limit: int = Query(50, ge=1, le=200),
+    db: Session = Depends(get_db),
+    _=Depends(require_permission(PermissionCode.admin_dashboard_operations_read)),
+):
+    return operations_overview(db, limit=limit)
 
 
 def _window(period: str, start_at: datetime | None, end_at: datetime | None):
@@ -45,7 +56,7 @@ def dashboard_products(db: Session=Depends(get_db), _=Depends(require_permission
 def dashboard_customers(db: Session=Depends(get_db), _=Depends(require_permission(PermissionCode.admin_dashboard_read))): return {"total":db.query(User).count(),"verified":db.query(User).filter(User.is_verified.is_(True)).count()}
 
 @router.get("/payments")
-def dashboard_payments(db: Session=Depends(get_db), _=Depends(require_permission(PermissionCode.admin_dashboard_finance_read))): return {"total":db.query(Payment).count(),"failed":db.query(Payment).filter(Payment.status=="failed").count(),"successful":db.query(Payment).filter(Payment.status=="successful").count()}
+def dashboard_payments(db: Session=Depends(get_db), _=Depends(require_permission(PermissionCode.admin_dashboard_finance_read))): return {"total":db.query(Payment).count(),"failed":db.query(Payment).filter(Payment.status=="failed").count(),"successful":db.query(Payment).filter(Payment.status=="completed").count()}
 
 @router.get("/refunds")
 def dashboard_refunds(db: Session=Depends(get_db), _=Depends(require_permission(PermissionCode.admin_dashboard_finance_read))): return {"total":db.query(Refund).count(),"pending":db.query(Refund).filter(Refund.status.in_(["requested","under_review","approved"])).count()}

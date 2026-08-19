@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -8,9 +8,10 @@ from sqlalchemy import String, cast, or_
 from sqlalchemy.orm import Session, selectinload
 
 from api.deps import get_db
-from api.enums import PermissionCode
+from api.enums import NotificationEvent, PermissionCode
 from api.models import Order, Seller, Shipment, SupportTicket, SupportTicketMessage, User
 from api.permissions import get_user_permissions, require_any_permission, require_permission
+from api.services.notification_service import notification_service
 from api.schemas import (
     PaginatedSupportTicketResponse,
     SupportTicketCreate,
@@ -21,6 +22,32 @@ from api.schemas import (
 )
 
 router = APIRouter(tags=["Support"])
+
+SLA_HOURS = {
+    "low": (24, 72),
+    "medium": (8, 48),
+    "high": (4, 24),
+    "urgent": (1, 4),
+}
+
+
+def _sla_deadlines(priority: str, *, now: datetime | None = None) -> tuple[datetime, datetime]:
+    created = now or datetime.now(timezone.utc)
+    first_hours, resolution_hours = SLA_HOURS[priority]
+    return created + timedelta(hours=first_hours), created + timedelta(hours=resolution_hours)
+
+
+def _notify_ticket_update(db: Session, ticket: SupportTicket, title: str, message: str) -> None:
+    notification_service.notify(
+        db=db,
+        user_id=ticket.customer_id,
+        event=NotificationEvent.system_alert,
+        title=title,
+        message=message,
+        data={"ticket_id": str(ticket.id), "ticket_number": ticket.ticket_number},
+        action_url=f"/support/tickets/{ticket.id}",
+        commit=False,
+    )
 
 
 def _ticket_number() -> str:
@@ -79,6 +106,10 @@ def _serialize_ticket(ticket: SupportTicket, *, include_internal_messages: bool)
         participants=participants,
         messages=[_serialize_message(m) for m in ticket.messages if include_internal_messages or m.visibility != "internal"],
         resolution_note=ticket.resolution_note,
+        first_response_due_at=ticket.first_response_due_at,
+        resolution_due_at=ticket.resolution_due_at,
+        first_responded_at=ticket.first_responded_at,
+        sla_breached_at=ticket.sla_breached_at,
         resolved_at=ticket.resolved_at,
         closed_at=ticket.closed_at,
         created_at=ticket.created_at,
@@ -143,6 +174,7 @@ def create_support_ticket(
         if not shipment:
             raise HTTPException(status_code=404, detail="Shipment not found")
 
+    first_due, resolution_due = _sla_deadlines(data.priority)
     ticket = SupportTicket(
         ticket_number=_ticket_number(),
         customer_id=current_user.id,
@@ -155,6 +187,8 @@ def create_support_ticket(
         channel=data.channel,
         priority=data.priority,
         status="open",
+        first_response_due_at=first_due,
+        resolution_due_at=resolution_due,
     )
     db.add(ticket)
     db.flush()
@@ -244,6 +278,13 @@ def reply_support_ticket(
         visibility=data.visibility,
     )
     db.add(message)
+    if sender_role == "staff" and ticket.first_responded_at is None:
+        now = datetime.now(timezone.utc)
+        ticket.first_responded_at = now
+        if now > ticket.first_response_due_at:
+            ticket.sla_breached_at = ticket.sla_breached_at or now
+    if sender_role in {"staff", "seller"} and data.visibility == "all":
+        _notify_ticket_update(db, ticket, f"Support ticket {ticket.ticket_number} updated", "A new reply was added to your support ticket.")
     if ticket.status in {"resolved", "closed"}:
         ticket.status = "in_progress"
         ticket.resolved_at = None
@@ -362,6 +403,7 @@ def update_admin_support_ticket(
         if update_data["priority"] not in {"low", "medium", "high", "urgent"}:
             raise HTTPException(status_code=400, detail="Invalid priority")
         ticket.priority = update_data["priority"]
+        ticket.first_response_due_at, ticket.resolution_due_at = _sla_deadlines(ticket.priority, now=ticket.created_at)
 
     if "status" in update_data:
         next_status = update_data["status"]
@@ -378,6 +420,10 @@ def update_admin_support_ticket(
             if PermissionCode.support_tickets_manage.value not in granted:
                 raise HTTPException(status_code=403, detail="Permission denied. Required: support_tickets:manage")
         ticket.status = next_status
+        now = datetime.now(timezone.utc)
+        if next_status in {"resolved", "closed"} and now > ticket.resolution_due_at:
+            ticket.sla_breached_at = ticket.sla_breached_at or now
+        _notify_ticket_update(db, ticket, f"Support ticket {ticket.ticket_number} status changed", f"Your support ticket is now {next_status.replace('_', ' ')}.")
 
     if "resolution_note" in update_data:
         if PermissionCode.support_tickets_resolve.value not in granted:
@@ -407,6 +453,13 @@ def reply_admin_support_ticket(
         visibility=data.visibility,
     )
     db.add(message)
+    now = datetime.now(timezone.utc)
+    if ticket.first_responded_at is None:
+        ticket.first_responded_at = now
+        if now > ticket.first_response_due_at:
+            ticket.sla_breached_at = ticket.sla_breached_at or now
+    if data.visibility == "all":
+        _notify_ticket_update(db, ticket, f"Support ticket {ticket.ticket_number} updated", "A support agent replied to your ticket.")
     db.commit()
     db.refresh(message)
     return _serialize_message(message)

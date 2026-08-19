@@ -6,8 +6,8 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from api.deps import get_db
-from api.enums import PermissionCode
-from api.models import DeviceToken, Notification, NotificationPreference, NotificationTemplate, User
+from api.enums import NotificationDeliveryStatus, PermissionCode
+from api.models import DeviceToken, Notification, NotificationDelivery, NotificationPreference, NotificationTemplate, User
 from api.permissions import require_permission
 from api.schemas import (
     DeviceTokenCreate, DeviceTokenResponse, NotificationPreferenceResponse, NotificationPreferenceUpdate,
@@ -107,3 +107,32 @@ def update_template(template_id: UUID, data: NotificationTemplateUpdate, db: Ses
     if not item: raise HTTPException(status_code=404, detail="Notification template not found")
     for key,value in data.model_dump(exclude_unset=True).items(): setattr(item,key,value)
     db.commit(); db.refresh(item); return item
+
+
+@router.post("/admin/notifications/deliveries/process")
+def process_notification_deliveries(
+    limit: int = Query(100, ge=1, le=500),
+    db: Session = Depends(get_db),
+    _: User = Depends(require_permission(PermissionCode.admin_notifications_manage.value)),
+):
+    return notification_service.process_deliveries(db, limit=limit)
+
+
+@router.post("/admin/notifications/deliveries/{delivery_id}/retry")
+def retry_notification_delivery(
+    delivery_id: UUID,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_permission(PermissionCode.admin_notifications_manage.value)),
+):
+    delivery = db.query(NotificationDelivery).filter(NotificationDelivery.id == delivery_id).first()
+    if not delivery:
+        raise HTTPException(status_code=404, detail="Notification delivery not found")
+    if delivery.status not in {NotificationDeliveryStatus.failed, NotificationDeliveryStatus.pending}:
+        raise HTTPException(status_code=409, detail="Only pending or failed deliveries can be retried")
+    return notification_service.process_deliveries(
+        db,
+        delivery_id=delivery.id,
+        include_failed=True,
+        limit=1,
+        max_attempts=max(3, delivery.attempts + 1),
+    )

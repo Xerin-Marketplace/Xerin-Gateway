@@ -12,6 +12,7 @@ from sqlalchemy import text
 
 from api.config import settings
 from api.database import SessionLocal
+from api.errors import install_exception_handlers
 from api.routers import (
     analytics,
     audit_logs,
@@ -84,6 +85,7 @@ api = FastAPI(
     redoc_url="/redoc" if not settings.is_production else None,
     openapi_url="/openapi.json" if not settings.is_production else None,
 )
+install_exception_handlers(api)
 
 if settings.trusted_hosts:
     api.add_middleware(

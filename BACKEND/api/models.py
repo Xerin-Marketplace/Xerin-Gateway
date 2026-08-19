@@ -4019,6 +4019,10 @@ class SupportTicket(Base):
         index=True,
     )
     resolution_note = Column(Text, nullable=True)
+    first_response_due_at = Column(DateTime(timezone=True), nullable=False, index=True)
+    resolution_due_at = Column(DateTime(timezone=True), nullable=False, index=True)
+    first_responded_at = Column(DateTime(timezone=True), nullable=True)
+    sla_breached_at = Column(DateTime(timezone=True), nullable=True, index=True)
     resolved_at = Column(DateTime(timezone=True), nullable=True)
     closed_at = Column(DateTime(timezone=True), nullable=True)
     created_at = Column(

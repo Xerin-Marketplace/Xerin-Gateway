@@ -3885,6 +3885,10 @@ class SupportTicketResponse(BaseModel):
     participants: list[SupportTicketParticipantResponse] = Field(default_factory=list)
     messages: list[SupportTicketMessageResponse] = Field(default_factory=list)
     resolution_note: Optional[str] = None
+    first_response_due_at: datetime
+    resolution_due_at: datetime
+    first_responded_at: Optional[datetime] = None
+    sla_breached_at: Optional[datetime] = None
     resolved_at: Optional[datetime] = None
     closed_at: Optional[datetime] = None
     created_at: datetime
@@ -3897,6 +3901,30 @@ class PaginatedSupportTicketResponse(BaseModel):
     page_size: int
     total_pages: int
     results: list[SupportTicketResponse]
+
+
+class OperationsExceptionResponse(BaseModel):
+    type: str
+    severity: Literal["warning", "critical"]
+    resource_id: str
+    title: str
+    age_minutes: int
+    action_url: Optional[str] = None
+
+
+class OperationsOverviewResponse(BaseModel):
+    generated_at: datetime
+    open_support_tickets: int
+    unassigned_support_tickets: int
+    breached_support_tickets: int
+    urgent_support_tickets: int
+    failed_notification_deliveries: int
+    stale_notification_deliveries: int
+    unresolved_security_events: int
+    failed_payments: int
+    pending_refunds: int
+    failed_deliveries: int
+    exceptions: list[OperationsExceptionResponse]
 
 
 # Phase 3 Task 13: wishlist and favorite stores
