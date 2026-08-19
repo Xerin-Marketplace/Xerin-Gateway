@@ -52,6 +52,7 @@ from api.enums import (
     LogisticsMemberRole,
     LogisticsIntegrationAuthType,
     MultiSellerPricingStrategy,
+    PickupJobStatus,
     AdvertisementStatus,
     AdvertisementPlacement,
     AdvertisementBillingType,
@@ -1859,6 +1860,64 @@ class ShipmentTrackingEvent(Base):
 
     shipment = relationship("Shipment", back_populates="tracking_events")
     created_by = relationship("User")
+
+
+class LogisticsPickupJob(Base):
+    __tablename__ = "logistics_pickup_jobs"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    logistics_company_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("logistics_companies.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    shipment_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("shipments.id", ondelete="CASCADE"),
+        nullable=False,
+        unique=True,
+        index=True,
+    )
+    assigned_membership_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("logistics_company_users.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    status = Column(
+        Enum(PickupJobStatus),
+        nullable=False,
+        default=PickupJobStatus.scheduled,
+        server_default="scheduled",
+        index=True,
+    )
+    scheduled_for = Column(DateTime(timezone=True), nullable=True, index=True)
+    pickup_reference = Column(String(120), nullable=False, unique=True, index=True)
+    dispatcher_notes = Column(Text, nullable=True)
+    courier_notes = Column(Text, nullable=True)
+    failure_reason = Column(String(255), nullable=True)
+    assigned_at = Column(DateTime(timezone=True), nullable=True)
+    started_at = Column(DateTime(timezone=True), nullable=True)
+    arrived_at = Column(DateTime(timezone=True), nullable=True)
+    completed_at = Column(DateTime(timezone=True), nullable=True)
+    cancelled_at = Column(DateTime(timezone=True), nullable=True)
+    created_by_id = Column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), nullable=True, onupdate=func.now())
+
+    shipment = relationship("Shipment")
+    assigned_membership = relationship("LogisticsCompanyUser")
+    created_by = relationship("User")
+
+    __table_args__ = (
+        CheckConstraint(
+            "status != 'failed' OR failure_reason IS NOT NULL",
+            name="ck_logistics_pickup_job_failed_reason",
+        ),
+    )
 
 
 

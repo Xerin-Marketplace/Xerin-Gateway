@@ -364,16 +364,6 @@ class ShipmentStatus(str, enum.Enum):
     cancelled = "cancelled"
 
 
-class PickupJobStatus(str, enum.Enum):
-    scheduled = "scheduled"
-    assigned = "assigned"
-    en_route = "en_route"
-    arrived = "arrived"
-    completed = "completed"
-    failed = "failed"
-    cancelled = "cancelled"
-
-
 class InventoryReservationStatus(str, enum.Enum):
     active = "active"
     committed = "committed"

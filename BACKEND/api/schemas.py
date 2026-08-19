@@ -23,7 +23,7 @@ from api.enums import (
     ShipmentStatus, WalletTransactionType, PayoutStatus, RefundStatus, RefundReason,
     SellerOrderStatus, InventoryMovementType, LogisticsCompanyStatus, LogisticsScope,
     LogisticsMemberRole, LogisticsCompanyPermission,
-    LogisticsIntegrationAuthType, MultiSellerPricingStrategy,
+    LogisticsIntegrationAuthType, MultiSellerPricingStrategy, PickupJobStatus,
 )
 
 
@@ -2833,6 +2833,63 @@ class ShipmentResponse(BaseModel):
     created_at: datetime
     updated_at: Optional[datetime]
     model_config = ORM_CONFIG
+
+
+class LogisticsPickupJobCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    assigned_membership_id: Optional[UUID] = None
+    scheduled_for: Optional[datetime] = None
+    dispatcher_notes: Optional[str] = Field(default=None, max_length=2000)
+
+
+class LogisticsPickupJobAssign(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    assigned_membership_id: UUID
+    scheduled_for: Optional[datetime] = None
+    dispatcher_notes: Optional[str] = Field(default=None, max_length=2000)
+
+
+class LogisticsPickupJobStatusUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    status: PickupJobStatus
+    notes: Optional[str] = Field(default=None, max_length=2000)
+    failure_reason: Optional[str] = Field(default=None, max_length=255)
+
+    @model_validator(mode="after")
+    def validate_failure_reason(self):
+        if self.status == PickupJobStatus.failed and not self.failure_reason:
+            raise ValueError("failure_reason is required when pickup fails")
+        return self
+
+
+class LogisticsPickupJobResponse(BaseModel):
+    id: UUID
+    logistics_company_id: UUID
+    shipment_id: UUID
+    assigned_membership_id: Optional[UUID]
+    status: PickupJobStatus
+    scheduled_for: Optional[datetime]
+    pickup_reference: str
+    dispatcher_notes: Optional[str]
+    courier_notes: Optional[str]
+    failure_reason: Optional[str]
+    assigned_at: Optional[datetime]
+    started_at: Optional[datetime]
+    arrived_at: Optional[datetime]
+    completed_at: Optional[datetime]
+    cancelled_at: Optional[datetime]
+    created_by_id: Optional[UUID]
+    created_at: datetime
+    updated_at: Optional[datetime]
+    model_config = ORM_CONFIG
+
+
+class PaginatedLogisticsPickupJobResponse(BaseModel):
+    total: int
+    page: int
+    page_size: int
+    total_pages: int
+    results: list[LogisticsPickupJobResponse]
 
 
 class CustomerOrderAddressSummary(BaseModel):

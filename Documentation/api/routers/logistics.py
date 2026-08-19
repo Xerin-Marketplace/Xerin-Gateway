@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from decimal import Decimal
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
 from sqlalchemy import or_
@@ -18,11 +18,13 @@ from api.enums import (
     LogisticsScope,
     PermissionCode,
     ShipmentStatus,
+    PickupJobStatus,
 )
 from api.models import (
     LogisticsCompany,
     LogisticsCompanyUser,
     LogisticsIntegrationConfig,
+    LogisticsPickupJob,
     SellerOrder,
     Shipment,
     ShipmentHandover,
@@ -54,6 +56,11 @@ from api.schemas import (
     LogisticsIntegrationResponse,
     LogisticsIntegrationUpdate,
     LogisticsCourierArrivalRequest,
+    LogisticsPickupJobAssign,
+    LogisticsPickupJobCreate,
+    LogisticsPickupJobResponse,
+    LogisticsPickupJobStatusUpdate,
+    PaginatedLogisticsPickupJobResponse,
     LogisticsPricingSettingsResponse,
     LogisticsPricingSettingsUpdate,
     PaginatedLogisticsCompanyResponse,
@@ -1889,3 +1896,176 @@ def update_company_shipment(
     _commit(db)
     db.refresh(shipment)
     return shipment
+
+
+PICKUP_JOB_TRANSITIONS = {
+    PickupJobStatus.scheduled: {PickupJobStatus.assigned, PickupJobStatus.cancelled},
+    PickupJobStatus.assigned: {PickupJobStatus.en_route, PickupJobStatus.cancelled},
+    PickupJobStatus.en_route: {PickupJobStatus.arrived, PickupJobStatus.failed},
+    PickupJobStatus.arrived: {PickupJobStatus.completed, PickupJobStatus.failed},
+    PickupJobStatus.failed: {PickupJobStatus.assigned, PickupJobStatus.cancelled},
+}
+
+
+@router.get(
+    "/me/pickup-jobs", response_model=PaginatedLogisticsPickupJobResponse
+)
+def my_company_pickup_jobs(
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=100),
+    status_filter: PickupJobStatus | None = Query(None, alias="status"),
+    assigned_to_me: bool = Query(False),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    membership = _membership_for_user(db, current_user.id)
+    if not membership:
+        raise HTTPException(403, "User is not linked to a logistics company")
+    query = db.query(LogisticsPickupJob).filter(
+        LogisticsPickupJob.logistics_company_id == membership.logistics_company_id
+    )
+    if status_filter:
+        query = query.filter(LogisticsPickupJob.status == status_filter)
+    if assigned_to_me:
+        query = query.filter(LogisticsPickupJob.assigned_membership_id == membership.id)
+    total = query.count()
+    rows = query.order_by(LogisticsPickupJob.created_at.desc()).offset((page - 1) * page_size).limit(page_size).all()
+    return {"total": total, "page": page, "page_size": page_size, "total_pages": _pages(total, page_size), "results": rows}
+
+
+@router.post(
+    "/me/shipments/{shipment_id}/pickup-job",
+    response_model=LogisticsPickupJobResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+def create_pickup_job(
+    shipment_id: UUID,
+    data: LogisticsPickupJobCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    membership = _membership_for_user(db, current_user.id)
+    if not membership:
+        raise HTTPException(403, "User is not linked to a logistics company")
+    _require_company_permission(membership, LogisticsCompanyPermission.pickups_manage)
+    shipment = db.query(Shipment).filter(
+        Shipment.id == shipment_id,
+        Shipment.logistics_company_id == membership.logistics_company_id,
+    ).with_for_update().first()
+    if not shipment:
+        raise HTTPException(404, "Shipment not found for this logistics company")
+    if shipment.status != ShipmentStatus.ready_for_dispatch:
+        raise HTTPException(409, "Pickup job requires a shipment ready for dispatch")
+    existing = db.query(LogisticsPickupJob).filter(LogisticsPickupJob.shipment_id == shipment.id).first()
+    if existing:
+        return existing
+    assigned = None
+    if data.assigned_membership_id:
+        assigned = db.query(LogisticsCompanyUser).filter(
+            LogisticsCompanyUser.id == data.assigned_membership_id,
+            LogisticsCompanyUser.logistics_company_id == membership.logistics_company_id,
+            LogisticsCompanyUser.is_active.is_(True),
+        ).first()
+        if not assigned:
+            raise HTTPException(404, "Active company member not found")
+    now = datetime.now(timezone.utc)
+    job = LogisticsPickupJob(
+        logistics_company_id=membership.logistics_company_id,
+        shipment_id=shipment.id,
+        assigned_membership_id=data.assigned_membership_id,
+        status=PickupJobStatus.assigned if assigned else PickupJobStatus.scheduled,
+        scheduled_for=data.scheduled_for,
+        pickup_reference=f"PU-{uuid4().hex[:12].upper()}",
+        dispatcher_notes=data.dispatcher_notes,
+        assigned_at=now if assigned else None,
+        created_by_id=current_user.id,
+    )
+    db.add(job); _commit(db); db.refresh(job); return job
+
+
+@router.patch(
+    "/me/pickup-jobs/{job_id}/assign",
+    response_model=LogisticsPickupJobResponse,
+)
+def assign_pickup_job(
+    job_id: UUID,
+    data: LogisticsPickupJobAssign,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    membership = _membership_for_user(db, current_user.id)
+    if not membership:
+        raise HTTPException(403, "User is not linked to a logistics company")
+    _require_company_permission(membership, LogisticsCompanyPermission.pickups_manage)
+    job = db.query(LogisticsPickupJob).filter(
+        LogisticsPickupJob.id == job_id,
+        LogisticsPickupJob.logistics_company_id == membership.logistics_company_id,
+    ).with_for_update().first()
+    if not job:
+        raise HTTPException(404, "Pickup job not found")
+    if job.status in {PickupJobStatus.completed, PickupJobStatus.cancelled}:
+        raise HTTPException(409, "Closed pickup job cannot be reassigned")
+    assigned = db.query(LogisticsCompanyUser).filter(
+        LogisticsCompanyUser.id == data.assigned_membership_id,
+        LogisticsCompanyUser.logistics_company_id == membership.logistics_company_id,
+        LogisticsCompanyUser.is_active.is_(True),
+    ).first()
+    if not assigned:
+        raise HTTPException(404, "Active company member not found")
+    job.assigned_membership_id = assigned.id
+    job.status = PickupJobStatus.assigned
+    job.assigned_at = datetime.now(timezone.utc)
+    if data.scheduled_for is not None: job.scheduled_for = data.scheduled_for
+    if data.dispatcher_notes is not None: job.dispatcher_notes = data.dispatcher_notes
+    job.failure_reason = None
+    _commit(db); db.refresh(job); return job
+
+
+@router.post(
+    "/me/pickup-jobs/{job_id}/status",
+    response_model=LogisticsPickupJobResponse,
+)
+def update_pickup_job_status(
+    job_id: UUID,
+    data: LogisticsPickupJobStatusUpdate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    membership = _membership_for_user(db, current_user.id)
+    if not membership:
+        raise HTTPException(403, "User is not linked to a logistics company")
+    job = db.query(LogisticsPickupJob).filter(
+        LogisticsPickupJob.id == job_id,
+        LogisticsPickupJob.logistics_company_id == membership.logistics_company_id,
+    ).with_for_update().first()
+    if not job:
+        raise HTTPException(404, "Pickup job not found")
+    can_dispatch = LogisticsCompanyPermission.pickups_manage in _effective_company_permissions(membership)
+    if job.assigned_membership_id != membership.id and not can_dispatch:
+        raise HTTPException(403, "Pickup job is assigned to another company member")
+    allowed = PICKUP_JOB_TRANSITIONS.get(job.status, set())
+    if data.status not in allowed:
+        raise HTTPException(409, f"Invalid pickup transition: {job.status.value} -> {data.status.value}")
+    shipment = db.query(Shipment).filter(Shipment.id == job.shipment_id).with_for_update().one()
+    now = datetime.now(timezone.utc)
+    job.status = data.status
+    job.courier_notes = data.notes
+    job.failure_reason = data.failure_reason
+    if data.status == PickupJobStatus.en_route: job.started_at = now
+    elif data.status == PickupJobStatus.arrived: job.arrived_at = now
+    elif data.status == PickupJobStatus.cancelled: job.cancelled_at = now
+    elif data.status == PickupJobStatus.completed:
+        handover = db.query(ShipmentHandover).filter(ShipmentHandover.shipment_id == shipment.id).first()
+        if not handover or handover.status != "seller_confirmed":
+            db.rollback()
+            raise HTTPException(409, "Seller must confirm shipment handover before pickup completion")
+        job.completed_at = now
+        shipment.status = ShipmentStatus.dispatched
+        shipment.dispatched_at = shipment.dispatched_at or now
+        db.add(ShipmentTrackingEvent(
+            shipment_id=shipment.id,
+            status=ShipmentStatus.dispatched,
+            notes=data.notes or "Pickup completed and shipment dispatched",
+            created_by_id=current_user.id,
+        ))
+    _commit(db); db.refresh(job); return job
