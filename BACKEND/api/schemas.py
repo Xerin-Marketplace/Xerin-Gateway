@@ -4435,6 +4435,29 @@ class FxConversionResponse(BaseModel):
     effective_at: datetime
 
 
+class OrderFinanceLifecycleResponse(BaseModel):
+    order_id: UUID
+    currency: str
+    order_total: Decimal
+    completed_payment_total: Decimal
+    commission_total: Decimal
+    seller_net_total: Decimal
+    escrow_gross_total: Decimal
+    escrow_released_total: Decimal
+    escrow_refunded_total: Decimal
+    completed_refund_total: Decimal
+    wallet_sale_credit_total: Decimal
+    wallet_release_total: Decimal
+    wallet_refund_debit_total: Decimal
+    payment_count: int
+    commission_count: int
+    escrow_hold_count: int
+    refund_count: int
+    wallet_transaction_count: int
+    balanced: bool
+    blockers: list[str]
+
+
 class EscrowHoldResponse(BaseModel):
     id: UUID
     payment_id: Optional[UUID]

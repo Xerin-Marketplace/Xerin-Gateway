@@ -111,7 +111,7 @@ def release_escrow_hold_funds(
         return hold
     if hold.status == "disputed":
         raise ValueError("Disputed escrow cannot be released")
-    if hold.status not in {"held", "release_pending"}:
+    if hold.status not in {"held", "release_pending", "partially_refunded"}:
         raise ValueError(f"Escrow hold cannot be released from status {hold.status}")
 
     gross = _money(hold.gross_amount)
@@ -157,7 +157,9 @@ def release_escrow_hold_funds(
         db,
         order_item_id=hold.order_item_id,
         fraction=fraction,
-        force_full=fully_released,
+        # A hold can be fully settled by a mixture of release and refund.
+        # Only force the entire seller credit when no part was refunded.
+        force_full=fully_released and refunded == Decimal("0.00"),
         reference=f"escrow_release:{hold.id}:{event.id}",
         description=(
             "Seller funds released from Xerin escrow"
@@ -173,6 +175,81 @@ def release_escrow_hold_funds(
     else:
         hold.status = "held"
 
+    db.flush()
+    return hold
+
+
+def record_escrow_refund(
+    db: Session,
+    *,
+    order_item_id,
+    amount: Decimal,
+    refund_id,
+    refund_item_id,
+    created_by_id=None,
+) -> EscrowHold | None:
+    """Remove a refund from still-held escrow without double-settling funds.
+
+    Refunds made after some or all funds were released are still recorded as
+    events, while only the portion that remains held increases refunded_amount.
+    The wallet reversal owns recovery of any already-released seller funds.
+    """
+    hold = (
+        db.query(EscrowHold)
+        .filter(EscrowHold.order_item_id == order_item_id)
+        .with_for_update()
+        .first()
+    )
+    if hold is None:
+        return None
+
+    reference = f"refund:{refund_item_id}"
+    existing = (
+        db.query(EscrowEvent)
+        .filter(
+            EscrowEvent.escrow_hold_id == hold.id,
+            EscrowEvent.event_type == reference,
+        )
+        .first()
+    )
+    if existing:
+        return hold
+
+    requested = _money(amount)
+    available = _money(
+        _money(hold.gross_amount)
+        - _money(hold.released_amount)
+        - _money(hold.refunded_amount)
+    )
+    held_reversal = min(requested, max(Decimal("0.00"), available))
+    hold.refunded_amount = _money(hold.refunded_amount) + held_reversal
+    if held_reversal:
+        hold.refunded_at = datetime.now().astimezone()
+
+    remaining = _money(
+        _money(hold.gross_amount)
+        - _money(hold.released_amount)
+        - _money(hold.refunded_amount)
+    )
+    if remaining == 0 and _money(hold.released_amount) == 0:
+        hold.status = "refunded"
+    elif remaining == 0:
+        hold.status = "released"
+    elif _money(hold.refunded_amount) > 0:
+        hold.status = "partially_refunded"
+
+    db.add(
+        EscrowEvent(
+            escrow_hold_id=hold.id,
+            event_type=reference,
+            amount=requested,
+            note=(
+                f"Refund {refund_id} recorded; {held_reversal} removed from "
+                "unreleased escrow and any released portion is recovered by wallet reversal"
+            ),
+            created_by_id=created_by_id,
+        )
+    )
     db.flush()
     return hold
 
@@ -238,6 +315,10 @@ def order_escrow_summary(db: Session, order: Order) -> dict:
         status = "disputed"
     elif statuses == {"released"}:
         status = "released"
+    elif "refunded" in statuses and statuses <= {"refunded", "released"}:
+        status = "refunded" if released == 0 else "settled_with_refunds"
+    elif refunded > 0:
+        status = "partially_refunded"
     elif released > 0:
         status = "partially_released"
     else:
@@ -265,7 +346,7 @@ def order_escrow_summary(db: Session, order: Order) -> dict:
         "remaining_amount": remaining,
         "release_after": max(release_dates) if release_dates else None,
         "can_customer_approve": (
-            status in {"held", "partially_released"}
+            status in {"held", "partially_released", "partially_refunded"}
             and all_delivered
             and payment_completed
         ),
@@ -288,7 +369,7 @@ def release_due_escrow_holds(db: Session, limit: int = 500) -> int:
     rows = (
         db.query(EscrowHold)
         .filter(
-            EscrowHold.status.in_(["held", "release_pending"]),
+            EscrowHold.status.in_(["held", "release_pending", "partially_refunded"]),
             EscrowHold.release_after.is_not(None),
             EscrowHold.release_after <= now,
         )

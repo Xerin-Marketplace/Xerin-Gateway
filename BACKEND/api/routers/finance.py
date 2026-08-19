@@ -17,10 +17,12 @@ from api.models import (
     PaymentCurrency,
     PaymentFxRate,
     PaymentProviderConfig,
+    Order,
     User,
 )
 from api.permissions import require_permission
 from api.services.escrow_service import release_escrow_hold_funds
+from api.services.finance_lifecycle import order_finance_lifecycle
 from api.schemas import (
     EscrowHoldResponse,
     EscrowReleaseRequest,
@@ -30,9 +32,27 @@ from api.schemas import (
     FxConversionRequest,
     FxConversionResponse,
     PaginatedEscrowHoldResponse,
+    OrderFinanceLifecycleResponse,
 )
 
 router = APIRouter(prefix="/admin/finance", tags=["Admin Finance"])
+
+
+@router.get("/orders/{order_id}/lifecycle", response_model=OrderFinanceLifecycleResponse)
+def get_order_finance_lifecycle(
+    order_id: UUID,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_permission(PermissionCode.finance_reports_read.value)),
+):
+    order = (
+        db.query(Order)
+        .options(selectinload(Order.items))
+        .filter(Order.id == order_id)
+        .first()
+    )
+    if not order:
+        raise HTTPException(404, "Order not found")
+    return order_finance_lifecycle(db, order)
 
 
 def _pages(total: int, page_size: int) -> int:
