@@ -12,6 +12,7 @@ from api.models import (
     PaymentStatus,
     Refund,
     WalletTransaction,
+    LogisticsWalletTransaction,
 )
 
 MONEY = Decimal("0.01")
@@ -27,6 +28,7 @@ def order_finance_lifecycle(db: Session, order: Order) -> dict:
     holds = db.query(EscrowHold).filter(EscrowHold.order_id == order.id).all()
     refunds = db.query(Refund).filter(Refund.order_id == order.id).all()
     wallet_rows = db.query(WalletTransaction).filter(WalletTransaction.order_id == order.id).all()
+    logistics_rows = db.query(LogisticsWalletTransaction).filter(LogisticsWalletTransaction.order_id == order.id).all()
 
     completed_payments = [row for row in payments if row.status == PaymentStatus.completed]
     completed_refunds = [row for row in refunds if row.status == RefundStatus.completed]
@@ -52,6 +54,8 @@ def order_finance_lifecycle(db: Session, order: Order) -> dict:
     wallet_sale_credits = sum((_money(row.amount) for row in wallet_rows if row.transaction_type == WalletTransactionType.sale_credit), Decimal("0.00"))
     wallet_releases = sum((_money(row.amount) for row in wallet_rows if row.transaction_type == WalletTransactionType.funds_release), Decimal("0.00"))
     wallet_refunds = sum((_money(row.amount) for row in wallet_rows if row.transaction_type == WalletTransactionType.refund_debit), Decimal("0.00"))
+    logistics_credits = sum((_money(row.amount) for row in logistics_rows if row.transaction_type == "delivery_credit"), Decimal("0.00"))
+    logistics_refunds = sum((_money(row.amount) for row in logistics_rows if row.transaction_type == "refund_debit"), Decimal("0.00"))
 
     return {
         "order_id": order.id,
@@ -67,11 +71,14 @@ def order_finance_lifecycle(db: Session, order: Order) -> dict:
         "wallet_sale_credit_total": _money(wallet_sale_credits),
         "wallet_release_total": _money(wallet_releases),
         "wallet_refund_debit_total": _money(wallet_refunds),
+        "logistics_delivery_credit_total": _money(logistics_credits),
+        "logistics_refund_debit_total": _money(logistics_refunds),
         "payment_count": len(payments),
         "commission_count": len(commissions),
         "escrow_hold_count": len(holds),
         "refund_count": len(refunds),
         "wallet_transaction_count": len(wallet_rows),
+        "logistics_transaction_count": len(logistics_rows),
         "balanced": not blockers,
         "blockers": blockers,
     }

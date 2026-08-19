@@ -5,6 +5,7 @@ from api.enums import RefundStatus, MarketplaceTransactionType, InventoryMovemen
 from api.models import Refund, RefundItem, RefundEvent, Order, OrderItem, OrderItemCommission, MarketplaceTransaction, Inventory, InventoryMovement
 from api.services.wallet_service import debit_refund
 from api.services.escrow_service import record_escrow_refund
+from api.services.logistics_wallet_service import debit_order_delivery_entitlement
 MONEY=Decimal("0.01")
 def money(v): return Decimal(v).quantize(MONEY,rounding=ROUND_HALF_UP)
 
@@ -20,7 +21,7 @@ def create_refund_request(db:Session,*,order:Order,user_id,data):
     tax_already=money(sum((Decimal(x.tax_amount) for x in previous),Decimal("0")))
     shipping_available=max(Decimal("0"),money(order.shipping_amount)-shipping_already)
     tax_available=max(Decimal("0"),money(order.tax_amount)-tax_already)
-    refund=Refund(order_id=order.id,requested_by_id=user_id,status=RefundStatus.requested,reason=data.reason,reason_details=data.reason_details,currency=order.currency,idempotency_key=data.idempotency_key,items_amount=0,shipping_amount=shipping_available if data.refund_shipping else 0,tax_amount=tax_available if data.refund_tax else 0,total_amount=0)
+    refund=Refund(order_id=order.id,requested_by_id=user_id,status=RefundStatus.requested,reason=data.reason,reason_details=data.reason_details,currency=order.currency,idempotency_key=data.idempotency_key,items_amount=0,shipping_amount=shipping_available if data.refund_shipping else 0,tax_amount=tax_available if data.refund_tax else 0,total_amount=0,reverse_logistics_entitlement=data.refund_shipping)
     db.add(refund);db.flush();items_total=Decimal("0")
     for item_id,req in requested.items():
         item=order_items.get(item_id)
@@ -70,4 +71,8 @@ def complete_refund(db:Session,refund:Refund,*,user_id=None):
             if inv and not db.query(InventoryMovement).filter(InventoryMovement.refund_item_id==ri.id).first():
                 before=inv.quantity;inv.quantity+=ri.quantity;inv.available_quantity=inv.quantity-inv.reserved_quantity
                 db.add(InventoryMovement(inventory_id=inv.id,order_item_id=item.id,refund_item_id=ri.id,movement_type=InventoryMovementType.refund_restock,quantity=ri.quantity,before_quantity=before,after_quantity=inv.quantity,note=f"Restocked from refund {refund.id}",created_by_id=user_id))
+    if refund.reverse_logistics_entitlement and refund.order.logistics_company_id:
+        tx, debt = debit_order_delivery_entitlement(db, order=refund.order, refund_id=refund.id)
+        refund.logistics_reversal = money(tx.amount) if tx else Decimal("0.00")
+        refund.logistics_debt_amount = money(debt)
     return refund

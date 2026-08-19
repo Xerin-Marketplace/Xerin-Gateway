@@ -55,11 +55,21 @@ def credit_order_delivery_entitlement(db: Session, *, order: Order):
     if amount <= 0:
         return None
     wallet = get_or_create_logistics_wallet(db, order.logistics_company_id, order.currency)
+    gross_amount = amount
+    debt_offset = min(money(wallet.debt_balance), amount)
+    if debt_offset:
+        wallet.debt_balance = money(wallet.debt_balance) - debt_offset
+        amount = money(amount) - debt_offset
+        db.add(LogisticsWalletTransaction(
+            wallet_id=wallet.id, transaction_type="debt_recovery", amount=debt_offset,
+            currency=wallet.currency, reference=f"logistics_debt_recovery:{order.id}",
+            order_id=order.id, description="Prior logistics debt recovered from delivery earning",
+        ))
     wallet.pending_balance = money(wallet.pending_balance) + amount
     transaction = LogisticsWalletTransaction(
         wallet_id=wallet.id,
         transaction_type="delivery_credit",
-        amount=amount,
+        amount=gross_amount,
         currency=wallet.currency,
         reference=reference,
         order_id=order.id,
@@ -68,6 +78,43 @@ def credit_order_delivery_entitlement(db: Session, *, order: Order):
     db.add(transaction)
     db.flush()
     return transaction
+
+
+def debit_order_delivery_entitlement(db: Session, *, order: Order, refund_id):
+    """Reverse a carrier entitlement once, preserving active payout reserves."""
+    reference = f"logistics_refund_debit:{refund_id}"
+    existing = db.query(LogisticsWalletTransaction).filter(LogisticsWalletTransaction.reference == reference).first()
+    if existing:
+        return existing, Decimal("0.00")
+    credit = db.query(LogisticsWalletTransaction).filter(
+        LogisticsWalletTransaction.order_id == order.id,
+        LogisticsWalletTransaction.transaction_type == "delivery_credit",
+    ).first()
+    if credit is None:
+        return None, Decimal("0.00")
+    wallet = db.query(LogisticsWallet).filter(LogisticsWallet.id == credit.wallet_id).with_for_update().one()
+    already_reversed = sum((money(row.amount) for row in db.query(LogisticsWalletTransaction).filter(
+        LogisticsWalletTransaction.order_id == order.id,
+        LogisticsWalletTransaction.transaction_type == "refund_debit",
+    ).all()), Decimal("0.00"))
+    amount = money(max(Decimal("0.00"), money(credit.amount) - money(already_reversed)))
+    remaining = amount
+    for field in ("pending_balance", "available_balance"):
+        balance = money(getattr(wallet, field))
+        taken = min(balance, remaining)
+        setattr(wallet, field, money(balance - taken))
+        remaining = money(remaining - taken)
+    if remaining:
+        wallet.debt_balance = money(wallet.debt_balance) + remaining
+    wallet.refunded_balance = money(wallet.refunded_balance) + amount
+    transaction = LogisticsWalletTransaction(
+        wallet_id=wallet.id, transaction_type="refund_debit", amount=amount,
+        currency=wallet.currency, reference=reference, order_id=order.id,
+        description=f"Delivery entitlement reversed for refund {refund_id}; debt created: {remaining}",
+    )
+    db.add(transaction)
+    db.flush()
+    return transaction, remaining
 
 
 def create_logistics_payout(db: Session, *, company_id, account_id, amount, note=None):

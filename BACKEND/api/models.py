@@ -3643,6 +3643,15 @@ class Refund(Base):
     shipping_amount = Column(
         Numeric(18, 2), nullable=False, default=0, server_default="0"
     )
+    reverse_logistics_entitlement = Column(
+        Boolean, nullable=False, default=False, server_default="false"
+    )
+    logistics_reversal = Column(
+        Numeric(18, 2), nullable=False, default=0, server_default="0"
+    )
+    logistics_debt_amount = Column(
+        Numeric(18, 2), nullable=False, default=0, server_default="0"
+    )
     tax_amount = Column(Numeric(18, 2), nullable=False, default=0, server_default="0")
     total_amount = Column(Numeric(18, 2), nullable=False)
     provider_reference = Column(String(180), nullable=True, unique=True, index=True)
@@ -3667,10 +3676,38 @@ class Refund(Base):
     )
     __table_args__ = (
         CheckConstraint(
-            "items_amount >= 0 AND shipping_amount >= 0 AND tax_amount >= 0 AND total_amount > 0",
+            "items_amount >= 0 AND shipping_amount >= 0 AND tax_amount >= 0 AND logistics_reversal >= 0 AND logistics_debt_amount >= 0 AND total_amount > 0",
             name="ck_refund_amounts_valid",
         ),
     )
+
+
+class FinancialReconciliationRecord(Base):
+    __tablename__ = "financial_reconciliation_records"
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    order_id = Column(UUID(as_uuid=True), ForeignKey("orders.id", ondelete="RESTRICT"), nullable=False, index=True)
+    idempotency_key = Column(String(180), nullable=False, unique=True, index=True)
+    currency = Column(String(10), nullable=False)
+    status = Column(String(30), nullable=False, index=True)
+    snapshot = Column(JSONB, nullable=False)
+    findings = Column(JSONB, nullable=False, default=list, server_default="[]")
+    snapshot_hash = Column(String(64), nullable=False, index=True)
+    created_by_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now(), index=True)
+    events = relationship("FinancialReconciliationEvent", back_populates="record", cascade="all, delete-orphan", order_by="FinancialReconciliationEvent.created_at")
+    __table_args__ = (CheckConstraint("status IN ('balanced','exception')", name="ck_financial_reconciliation_status"),)
+
+
+class FinancialReconciliationEvent(Base):
+    __tablename__ = "financial_reconciliation_events"
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    reconciliation_id = Column(UUID(as_uuid=True), ForeignKey("financial_reconciliation_records.id", ondelete="CASCADE"), nullable=False, index=True)
+    action = Column(String(30), nullable=False)
+    note = Column(Text, nullable=True)
+    created_by_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    record = relationship("FinancialReconciliationRecord", back_populates="events")
+    __table_args__ = (CheckConstraint("action IN ('created','acknowledged','resolved','reopened')", name="ck_financial_reconciliation_event_action"),)
 
 
 class RefundItem(Base):

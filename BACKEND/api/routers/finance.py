@@ -18,11 +18,13 @@ from api.models import (
     PaymentFxRate,
     PaymentProviderConfig,
     Order,
+    FinancialReconciliationRecord,
     User,
 )
 from api.permissions import require_permission
 from api.services.escrow_service import release_escrow_hold_funds
 from api.services.finance_lifecycle import order_finance_lifecycle
+from api.services.financial_reconciliation_service import create_reconciliation, add_resolution_event
 from api.schemas import (
     EscrowHoldResponse,
     EscrowReleaseRequest,
@@ -33,6 +35,10 @@ from api.schemas import (
     FxConversionResponse,
     PaginatedEscrowHoldResponse,
     OrderFinanceLifecycleResponse,
+    FinancialReconciliationCreate,
+    FinancialReconciliationEventCreate,
+    FinancialReconciliationResponse,
+    PaginatedFinancialReconciliationResponse,
 )
 
 router = APIRouter(prefix="/admin/finance", tags=["Admin Finance"])
@@ -53,6 +59,52 @@ def get_order_finance_lifecycle(
     if not order:
         raise HTTPException(404, "Order not found")
     return order_finance_lifecycle(db, order)
+
+
+@router.post("/reconciliation/orders/{order_id}", response_model=FinancialReconciliationResponse, status_code=201)
+def reconcile_order_finances(
+    order_id: UUID, data: FinancialReconciliationCreate,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_permission(PermissionCode.reconciliation_manage.value)),
+):
+    order = db.query(Order).options(selectinload(Order.items)).filter(Order.id == order_id).with_for_update().first()
+    if order is None:
+        raise HTTPException(404, "Order not found")
+    try:
+        record = create_reconciliation(db, order=order, idempotency_key=data.idempotency_key, user_id=user.id)
+        db.commit(); db.refresh(record); return record
+    except ValueError as exc:
+        db.rollback(); raise HTTPException(409, str(exc)) from exc
+
+
+@router.get("/reconciliation", response_model=PaginatedFinancialReconciliationResponse)
+def list_financial_reconciliations(
+    page: int = Query(1, ge=1), page_size: int = Query(20, ge=1, le=100),
+    reconciliation_status: str | None = Query(default=None, alias="status"), order_id: UUID | None = None,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_permission(PermissionCode.reconciliation_read.value)),
+):
+    query = db.query(FinancialReconciliationRecord)
+    if reconciliation_status:
+        query = query.filter(FinancialReconciliationRecord.status == reconciliation_status)
+    if order_id:
+        query = query.filter(FinancialReconciliationRecord.order_id == order_id)
+    total = query.count()
+    rows = query.options(selectinload(FinancialReconciliationRecord.events)).order_by(FinancialReconciliationRecord.created_at.desc()).offset((page-1)*page_size).limit(page_size).all()
+    return {"total":total,"page":page,"page_size":page_size,"total_pages":0 if total==0 else (total+page_size-1)//page_size,"results":rows}
+
+
+@router.post("/reconciliation/{record_id}/events", response_model=FinancialReconciliationResponse)
+def record_reconciliation_resolution(
+    record_id: UUID, data: FinancialReconciliationEventCreate,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_permission(PermissionCode.reconciliation_manage.value)),
+):
+    record = db.query(FinancialReconciliationRecord).options(selectinload(FinancialReconciliationRecord.events)).filter(FinancialReconciliationRecord.id == record_id).first()
+    if record is None:
+        raise HTTPException(404, "Financial reconciliation record not found")
+    add_resolution_event(db, record=record, action=data.action, note=data.note, user_id=user.id)
+    db.commit(); db.refresh(record); return record
 
 
 def _pages(total: int, page_size: int) -> int:

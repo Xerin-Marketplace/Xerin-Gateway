@@ -30,6 +30,16 @@ def credit_sale(
     if debt_offset:
         w.debt_balance=money(w.debt_balance)-debt_offset
         amount=money(amount)-debt_offset
+        db.add(WalletTransaction(
+            wallet_id=w.id,
+            transaction_type=WalletTransactionType.adjustment,
+            amount=debt_offset,
+            currency=currency,
+            reference=f"debt_recovery:{order_item_id}",
+            order_id=order_id,
+            order_item_id=order_item_id,
+            description="Prior seller debt recovered from this earning",
+        ))
     w.pending_balance=money(w.pending_balance)+amount
     if eligible_at is None:
         eligible_at=datetime.now(timezone.utc)+timedelta(days=settings.SELLER_SETTLEMENT_DAYS)
@@ -228,7 +238,9 @@ def debit_refund(db: Session, *, seller_id, amount, currency, refund_id, refund_
         return existing, Decimal("0.00")
     wallet=get_or_create_wallet(db,seller_id,currency)
     remaining=money(amount)
-    for field in ("pending_balance", "available_balance", "reserved_balance"):
+    # Reserved funds belong to an active payout request. Never consume them or
+    # the payout ledger becomes inconsistent; uncovered refunds become debt.
+    for field in ("pending_balance", "available_balance"):
         balance=money(getattr(wallet,field))
         take=min(balance,remaining)
         setattr(wallet,field,money(balance-take))

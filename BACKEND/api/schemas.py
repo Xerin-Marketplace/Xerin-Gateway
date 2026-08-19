@@ -3400,6 +3400,9 @@ class RefundResponse(BaseModel):
     currency: str
     items_amount: Decimal
     shipping_amount: Decimal
+    reverse_logistics_entitlement: bool
+    logistics_reversal: Decimal
+    logistics_debt_amount: Decimal
     tax_amount: Decimal
     total_amount: Decimal
     provider_reference: str | None = None
@@ -4604,11 +4607,14 @@ class OrderFinanceLifecycleResponse(BaseModel):
     wallet_sale_credit_total: Decimal
     wallet_release_total: Decimal
     wallet_refund_debit_total: Decimal
+    logistics_delivery_credit_total: Decimal
+    logistics_refund_debit_total: Decimal
     payment_count: int
     commission_count: int
     escrow_hold_count: int
     refund_count: int
     wallet_transaction_count: int
+    logistics_transaction_count: int
     balanced: bool
     blockers: list[str]
 
@@ -4739,6 +4745,49 @@ class PaymentRiskUpdate(BaseModel):
 class PaymentReconciliationUpdate(BaseModel):
     status: str | None = None
     reconciliation_note: str | None = None
+
+
+class FinancialReconciliationCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    idempotency_key: str = Field(min_length=8, max_length=180)
+
+
+class FinancialReconciliationEventCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    action: Literal["acknowledged", "resolved", "reopened"]
+    note: str = Field(min_length=3, max_length=2000)
+
+
+class FinancialReconciliationEventResponse(BaseModel):
+    model_config = ORM_CONFIG
+    id: UUID
+    action: str
+    note: str | None = None
+    created_by_id: UUID | None = None
+    created_at: datetime
+
+
+class FinancialReconciliationResponse(BaseModel):
+    model_config = ORM_CONFIG
+    id: UUID
+    order_id: UUID
+    idempotency_key: str
+    currency: str
+    status: str
+    snapshot: dict[str, Any]
+    findings: list[str]
+    snapshot_hash: str
+    created_by_id: UUID | None = None
+    created_at: datetime
+    events: list[FinancialReconciliationEventResponse] = Field(default_factory=list)
+
+
+class PaginatedFinancialReconciliationResponse(BaseModel):
+    total: int
+    page: int
+    page_size: int
+    total_pages: int
+    results: list[FinancialReconciliationResponse]
 
 
          
