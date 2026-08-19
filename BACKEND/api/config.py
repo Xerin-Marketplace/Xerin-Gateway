@@ -49,6 +49,9 @@ class Settings(BaseSettings):
     DELIVERY_OTP_EXPIRE_MINUTES: int = Field(default=5, ge=1, le=30)
     DELIVERY_OTP_MAX_ATTEMPTS: int = Field(default=5, ge=1, le=10)
     DELIVERY_PROOF_MAX_DISTANCE_METERS: int = Field(default=500, ge=25, le=10000)
+    PARTNER_SIGNATURE_MAX_SKEW_SECONDS: int = Field(default=300, ge=30, le=1800)
+    PARTNER_NONCE_TTL_SECONDS: int = Field(default=600, ge=60, le=3600)
+    PARTNER_DEFAULT_RATE_LIMIT_PER_MINUTE: int = Field(default=120, ge=1, le=10000)
 
     # Inventory reservations
     INVENTORY_RESERVATION_MINUTES: int = Field(default=30, ge=5, le=1440)

@@ -1034,6 +1034,8 @@ class LogisticsWebhookEvent(Base):
         nullable=False,
         index=True,
     )
+
+
     direction = Column(String(20), nullable=False)
     event_type = Column(String(120), nullable=False, index=True)
     external_event_id = Column(String(255), nullable=True)
@@ -1061,6 +1063,74 @@ class LogisticsWebhookEvent(Base):
             name="uq_logistics_webhook_external_event",
         ),
     )
+
+
+class PartnerCredential(Base):
+    __tablename__ = "partner_credentials"
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    logistics_company_id = Column(UUID(as_uuid=True), ForeignKey("logistics_companies.id", ondelete="CASCADE"), nullable=False, index=True)
+    name = Column(String(120), nullable=False)
+    key_id = Column(String(80), nullable=False, unique=True, index=True)
+    signing_key_ciphertext = Column(Text, nullable=False)
+    secret_fingerprint = Column(String(16), nullable=False)
+    scopes = Column(JSONB, nullable=False, default=list, server_default="[]")
+    allowed_cidrs = Column(JSONB, nullable=False, default=list, server_default="[]")
+    rate_limit_per_minute = Column(Integer, nullable=False, default=120, server_default="120")
+    status = Column(String(20), nullable=False, default="active", server_default="active", index=True)
+    expires_at = Column(DateTime(timezone=True), nullable=True, index=True)
+    last_used_at = Column(DateTime(timezone=True), nullable=True)
+    last_used_ip = Column(String(64), nullable=True)
+    rotated_from_id = Column(UUID(as_uuid=True), ForeignKey("partner_credentials.id", ondelete="SET NULL"), nullable=True)
+    revoked_at = Column(DateTime(timezone=True), nullable=True)
+    revoked_by_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    created_by_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), nullable=True, onupdate=func.now())
+    __table_args__ = (CheckConstraint("status IN ('active','rotated','revoked','expired')", name="ck_partner_credential_status"), CheckConstraint("rate_limit_per_minute > 0", name="ck_partner_credential_rate_limit"),)
+
+
+class PartnerRequestNonce(Base):
+    __tablename__ = "partner_request_nonces"
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    credential_id = Column(UUID(as_uuid=True), ForeignKey("partner_credentials.id", ondelete="CASCADE"), nullable=False, index=True)
+    nonce = Column(String(128), nullable=False)
+    expires_at = Column(DateTime(timezone=True), nullable=False, index=True)
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    __table_args__ = (UniqueConstraint("credential_id", "nonce", name="uq_partner_credential_nonce"),)
+
+
+class PartnerRequestLog(Base):
+    __tablename__ = "partner_request_logs"
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    credential_id = Column(UUID(as_uuid=True), ForeignKey("partner_credentials.id", ondelete="SET NULL"), nullable=True, index=True)
+    logistics_company_id = Column(UUID(as_uuid=True), ForeignKey("logistics_companies.id", ondelete="SET NULL"), nullable=True, index=True)
+    request_id = Column(String(80), nullable=False, unique=True, index=True)
+    method = Column(String(10), nullable=False)
+    path = Column(Text, nullable=False)
+    source_ip = Column(String(64), nullable=True)
+    nonce = Column(String(128), nullable=True)
+    idempotency_key = Column(String(180), nullable=True)
+    body_sha256 = Column(String(64), nullable=True)
+    auth_result = Column(String(40), nullable=False, index=True)
+    response_status = Column(Integer, nullable=True)
+    error_code = Column(String(80), nullable=True)
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now(), index=True)
+
+
+class PartnerIdempotencyRecord(Base):
+    __tablename__ = "partner_idempotency_records"
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    credential_id = Column(UUID(as_uuid=True), ForeignKey("partner_credentials.id", ondelete="CASCADE"), nullable=False, index=True)
+    idempotency_key = Column(String(180), nullable=False)
+    method = Column(String(10), nullable=False)
+    path = Column(Text, nullable=False)
+    request_hash = Column(String(64), nullable=False)
+    state = Column(String(20), nullable=False, default="processing", server_default="processing")
+    response_status = Column(Integer, nullable=True)
+    response_body = Column(JSONB, nullable=True)
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    completed_at = Column(DateTime(timezone=True), nullable=True)
+    __table_args__ = (UniqueConstraint("credential_id", "idempotency_key", name="uq_partner_credential_idempotency"), CheckConstraint("state IN ('processing','completed','failed')", name="ck_partner_idempotency_state"),)
 
 
 class ShippingZone(Base):
