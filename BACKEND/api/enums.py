@@ -211,6 +211,7 @@ class PermissionCode(str, enum.Enum):
     # Permission-based: custom roles can receive these without role-name checks.
     logistics_companies_read = "logistics_companies:read"
     logistics_companies_manage = "logistics_companies:manage"
+    logistics_profile_manage = "logistics_profile:manage"
     logistics_services_read = "logistics_services:read"
     logistics_services_manage = "logistics_services:manage"
     logistics_zones_read = "logistics_zones:read"

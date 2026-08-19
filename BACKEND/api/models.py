@@ -871,10 +871,21 @@ class LogisticsCompany(Base):
     name = Column(String(150), nullable=False, unique=True)
     code = Column(String(80), nullable=False, unique=True, index=True)
     description = Column(Text, nullable=True)
+    legal_name = Column(String(180), nullable=True)
+    registration_number = Column(String(100), nullable=True, unique=True)
+    tax_identification_number = Column(String(100), nullable=True, unique=True)
+    license_number = Column(String(100), nullable=True)
+    logo_url = Column(Text, nullable=True)
     contact_name = Column(String(150), nullable=True)
     contact_email = Column(String(255), nullable=True)
     contact_phone = Column(String(50), nullable=True)
     website_url = Column(Text, nullable=True)
+    address_line1 = Column(String(255), nullable=True)
+    address_line2 = Column(String(255), nullable=True)
+    city = Column(String(120), nullable=True)
+    region = Column(String(120), nullable=True)
+    country = Column(String(100), nullable=False, default="Tanzania", server_default="Tanzania")
+    postal_code = Column(String(30), nullable=True)
     scope = Column(
         Enum(LogisticsScope),
         nullable=False,

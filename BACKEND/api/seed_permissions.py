@@ -171,6 +171,7 @@ DEFAULT_ROLE_PERMISSIONS: dict[str, set[str]] = {
         PermissionCode.shipping_manage_all.value,
         PermissionCode.logistics_companies_read.value,
         PermissionCode.logistics_companies_manage.value,
+        PermissionCode.logistics_profile_manage.value,
         PermissionCode.logistics_services_read.value,
         PermissionCode.logistics_services_manage.value,
         PermissionCode.logistics_zones_read.value,

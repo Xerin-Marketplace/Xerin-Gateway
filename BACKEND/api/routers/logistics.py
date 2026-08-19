@@ -39,6 +39,8 @@ from api.services.pickup_proof_service import (
 )
 from api.schemas import (
     LogisticsCompanyCreate,
+    LogisticsCompanyAccountResponse,
+    LogisticsCompanyProfileUpdate,
     LogisticsCompanyResponse,
     LogisticsCompanyUpdate,
     LogisticsCompanyUserCreate,
@@ -747,6 +749,56 @@ def my_logistics_company(
     membership = _membership_for_user(db, current_user.id)
     if not membership or not membership.company:
         raise HTTPException(403, "User is not linked to a logistics company")
+    return membership.company
+
+
+@router.get("/me/account", response_model=LogisticsCompanyAccountResponse)
+def my_logistics_account(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    membership = _membership_for_user(db, current_user.id)
+    if not membership or not membership.company:
+        raise HTTPException(403, "User is not linked to a logistics company")
+
+    permissions = get_user_permissions(db, current_user)
+    return {
+        "company": membership.company,
+        "membership_id": membership.id,
+        "title": membership.title,
+        "is_primary_contact": membership.is_primary_contact,
+        "can_manage_profile": (
+            membership.is_primary_contact
+            or PermissionCode.logistics_profile_manage.value in permissions
+        ),
+    }
+
+
+@router.patch("/me/company", response_model=LogisticsCompanyResponse)
+def update_my_logistics_company(
+    data: LogisticsCompanyProfileUpdate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    membership = _membership_for_user(db, current_user.id)
+    if not membership or not membership.company:
+        raise HTTPException(403, "User is not linked to a logistics company")
+
+    permissions = get_user_permissions(db, current_user)
+    if (
+        not membership.is_primary_contact
+        and PermissionCode.logistics_profile_manage.value not in permissions
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Permission denied. Required: logistics_profile:manage",
+        )
+
+    for key, value in data.model_dump(exclude_unset=True).items():
+        setattr(membership.company, key, value)
+
+    _commit(db)
+    db.refresh(membership.company)
     return membership.company
 
 

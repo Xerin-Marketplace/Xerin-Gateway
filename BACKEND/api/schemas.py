@@ -2200,10 +2200,21 @@ class LogisticsCompanyCreate(BaseModel):
     name: str = Field(min_length=2, max_length=150)
     code: str = Field(min_length=2, max_length=80)
     description: Optional[str] = None
+    legal_name: Optional[str] = Field(default=None, max_length=180)
+    registration_number: Optional[str] = Field(default=None, max_length=100)
+    tax_identification_number: Optional[str] = Field(default=None, max_length=100)
+    license_number: Optional[str] = Field(default=None, max_length=100)
+    logo_url: Optional[str] = None
     contact_name: Optional[str] = Field(default=None, max_length=150)
     contact_email: Optional[EmailStr] = None
     contact_phone: Optional[str] = Field(default=None, max_length=50)
     website_url: Optional[str] = None
+    address_line1: Optional[str] = Field(default=None, max_length=255)
+    address_line2: Optional[str] = Field(default=None, max_length=255)
+    city: Optional[str] = Field(default=None, max_length=120)
+    region: Optional[str] = Field(default=None, max_length=120)
+    country: str = Field(default="Tanzania", min_length=2, max_length=100)
+    postal_code: Optional[str] = Field(default=None, max_length=30)
     scope: LogisticsScope = LogisticsScope.local
     status: LogisticsCompanyStatus = LogisticsCompanyStatus.pending
     supports_cod: bool = False
@@ -2224,10 +2235,21 @@ class LogisticsCompanyUpdate(BaseModel):
     model_config = ConfigDict(extra="forbid")
     name: Optional[str] = Field(default=None, min_length=2, max_length=150)
     description: Optional[str] = None
+    legal_name: Optional[str] = Field(default=None, max_length=180)
+    registration_number: Optional[str] = Field(default=None, max_length=100)
+    tax_identification_number: Optional[str] = Field(default=None, max_length=100)
+    license_number: Optional[str] = Field(default=None, max_length=100)
+    logo_url: Optional[str] = None
     contact_name: Optional[str] = Field(default=None, max_length=150)
     contact_email: Optional[EmailStr] = None
     contact_phone: Optional[str] = Field(default=None, max_length=50)
     website_url: Optional[str] = None
+    address_line1: Optional[str] = Field(default=None, max_length=255)
+    address_line2: Optional[str] = Field(default=None, max_length=255)
+    city: Optional[str] = Field(default=None, max_length=120)
+    region: Optional[str] = Field(default=None, max_length=120)
+    country: Optional[str] = Field(default=None, min_length=2, max_length=100)
+    postal_code: Optional[str] = Field(default=None, max_length=30)
     scope: Optional[LogisticsScope] = None
     status: Optional[LogisticsCompanyStatus] = None
     supports_cod: Optional[bool] = None
@@ -2249,6 +2271,41 @@ class PaginatedLogisticsCompanyResponse(BaseModel):
     page_size: int
     total_pages: int
     results: list[LogisticsCompanyResponse]
+
+
+class LogisticsCompanyProfileUpdate(BaseModel):
+    """Fields a logistics-company member may maintain for their own company.
+
+    Administrative fields such as code, status, scope and service capabilities
+    are intentionally excluded from this self-service contract.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+    name: Optional[str] = Field(default=None, min_length=2, max_length=150)
+    legal_name: Optional[str] = Field(default=None, max_length=180)
+    description: Optional[str] = None
+    registration_number: Optional[str] = Field(default=None, max_length=100)
+    tax_identification_number: Optional[str] = Field(default=None, max_length=100)
+    license_number: Optional[str] = Field(default=None, max_length=100)
+    logo_url: Optional[str] = None
+    contact_name: Optional[str] = Field(default=None, max_length=150)
+    contact_email: Optional[EmailStr] = None
+    contact_phone: Optional[str] = Field(default=None, max_length=50)
+    website_url: Optional[str] = None
+    address_line1: Optional[str] = Field(default=None, max_length=255)
+    address_line2: Optional[str] = Field(default=None, max_length=255)
+    city: Optional[str] = Field(default=None, max_length=120)
+    region: Optional[str] = Field(default=None, max_length=120)
+    country: Optional[str] = Field(default=None, min_length=2, max_length=100)
+    postal_code: Optional[str] = Field(default=None, max_length=30)
+
+
+class LogisticsCompanyAccountResponse(BaseModel):
+    company: LogisticsCompanyResponse
+    membership_id: UUID
+    title: Optional[str]
+    is_primary_contact: bool
+    can_manage_profile: bool
 
 
 class LogisticsCompanyUserCreate(BaseModel):
