@@ -11,11 +11,12 @@ from sqlalchemy.orm import Session, selectinload
 
 from api.deps import get_db
 from api.enums import PermissionCode, SellerOrderStatus, ShipmentStatus
-from api.models import Order, OrderStatus, OrderStatusHistory, SellerOrder, Shipment, ShipmentTrackingEvent, User
+from api.models import Order, OrderStatus, OrderStatusHistory, SellerOrder, Shipment, ShipmentHandover, ShipmentTrackingEvent, User
 from api.services.seller_fulfillment_readiness import evaluate_seller_fulfillment_readiness
 from api.services.logistics_orchestration import enqueue_ready_for_pickup
+from api.services.seller_handover import ensure_shipment_handover
 from api.permissions import require_permission
-from api.schemas import SellerFulfillmentReadinessResponse, SellerOrderActionRequest, SellerOrderCancellationRequest, SellerOrderDispatchRequest, SellerOrderListResponse, SellerOrderSummaryResponse, SellerOrderView
+from api.schemas import SellerFulfillmentReadinessResponse, SellerHandoverConfirmationRequest, ShipmentHandoverResponse, SellerOrderActionRequest, SellerOrderCancellationRequest, SellerOrderDispatchRequest, SellerOrderListResponse, SellerOrderSummaryResponse, SellerOrderView
 
 router = APIRouter(prefix="/seller/orders", tags=["Seller Orders"])
 
@@ -256,6 +257,10 @@ def ready_to_ship(seller_order_id: UUID, data: SellerOrderActionRequest, db: Ses
             created_by_id=user.id,
         ))
 
+    ensure_shipment_handover(
+        db, seller_order=row, shipment=shipment
+    )
+
     return _transition(
         db,
         row,
@@ -264,6 +269,100 @@ def ready_to_ship(seller_order_id: UUID, data: SellerOrderActionRequest, db: Ses
         user,
         data.notes,
     )
+
+
+
+@router.get(
+    "/{seller_order_id}/handover",
+    response_model=ShipmentHandoverResponse,
+)
+def get_seller_handover(
+    seller_order_id: UUID,
+    db: Session = Depends(get_db),
+    user: User = Depends(
+        require_permission(PermissionCode.seller_orders_read.value)
+    ),
+):
+    row = _get(db, _seller(user).id, seller_order_id)
+    shipment = _shipment(row)
+    if shipment is None:
+        raise HTTPException(409, "Shipment has not been created")
+
+    handover = (
+        db.query(ShipmentHandover)
+        .filter(
+            ShipmentHandover.shipment_id == shipment.id,
+            ShipmentHandover.seller_id == row.seller_id,
+        )
+        .first()
+    )
+    if handover is None:
+        raise HTTPException(404, "Handover record has not been created yet")
+    return handover
+
+
+@router.post(
+    "/{seller_order_id}/handover/confirm",
+    response_model=ShipmentHandoverResponse,
+)
+def confirm_seller_handover(
+    seller_order_id: UUID,
+    data: SellerHandoverConfirmationRequest,
+    db: Session = Depends(get_db),
+    user: User = Depends(
+        require_permission(PermissionCode.seller_orders_manage.value)
+    ),
+):
+    row = _get(db, _seller(user).id, seller_order_id, True)
+    if row.status != SellerOrderStatus.ready_to_ship:
+        raise HTTPException(
+            409,
+            "Seller order must be READY_TO_SHIP before handover confirmation",
+        )
+
+    shipment = _shipment(row)
+    if shipment is None:
+        raise HTTPException(409, "Shipment has not been created")
+    if shipment.logistics_company_id is None:
+        raise HTTPException(409, "A logistics company must be assigned before handover")
+
+    handover = (
+        db.query(ShipmentHandover)
+        .filter(ShipmentHandover.shipment_id == shipment.id)
+        .with_for_update()
+        .first()
+    )
+    if handover is None:
+        handover = ensure_shipment_handover(db, seller_order=row, shipment=shipment)
+
+    if handover.status == "seller_confirmed":
+        return handover
+    if handover.status != "courier_arrived" or handover.courier_arrived_at is None:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "courier_arrival_required",
+                "message": "The assigned logistics company must confirm courier arrival before the seller can confirm handover.",
+            },
+        )
+
+    now = datetime.now(timezone.utc)
+    handover.status = "seller_confirmed"
+    handover.seller_confirmed_at = now
+    handover.seller_confirmed_by_id = user.id
+    handover.seller_confirmation_notes = data.notes
+
+    db.add(
+        ShipmentTrackingEvent(
+            shipment_id=shipment.id,
+            status=shipment.status,
+            notes="Seller confirmed physical handover of the prepared package(s) to the assigned logistics company",
+            created_by_id=user.id,
+        )
+    )
+    db.commit()
+    db.refresh(handover)
+    return handover
 
 
 @router.post("/{seller_order_id}/dispatch", response_model=SellerOrderView)

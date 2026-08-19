@@ -19,7 +19,9 @@ from api.models import (
     LogisticsCompany,
     LogisticsCompanyUser,
     LogisticsIntegrationConfig,
+    SellerOrder,
     Shipment,
+    ShipmentHandover,
     ShipmentTrackingEvent,
     ShippingMethod,
     ShippingRate,
@@ -27,6 +29,7 @@ from api.models import (
     User,
 )
 from api.permissions import get_user_permissions, require_permission
+from api.services.seller_handover import ensure_shipment_handover
 from api.schemas import (
     LogisticsCompanyCreate,
     LogisticsCompanyResponse,
@@ -36,12 +39,14 @@ from api.schemas import (
     LogisticsIntegrationCreate,
     LogisticsIntegrationResponse,
     LogisticsIntegrationUpdate,
+    LogisticsCourierArrivalRequest,
     PaginatedLogisticsCompanyResponse,
     PaginatedShipmentResponse,
     PaginatedShippingMethodResponse,
     PaginatedShippingRateResponse,
     PaginatedShippingZoneResponse,
     ShipmentResponse,
+    ShipmentHandoverResponse,
     ShipmentTrackingEventCreate,
     ShippingMethodCreate,
     ShippingMethodResponse,
@@ -809,6 +814,121 @@ ALLOWED_LOGISTICS_TRANSITIONS = {
         ShipmentStatus.returned_to_sender,
     },
 }
+
+
+
+@router.get(
+    "/me/shipments/{shipment_id}/handover",
+    response_model=ShipmentHandoverResponse,
+)
+def get_company_shipment_handover(
+    shipment_id: UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(
+        require_permission(PermissionCode.logistics_shipments_read.value)
+    ),
+):
+    membership = _membership_for_user(db, current_user.id)
+    if not membership:
+        raise HTTPException(403, "User is not linked to a logistics company")
+
+    handover = (
+        db.query(ShipmentHandover)
+        .filter(
+            ShipmentHandover.shipment_id == shipment_id,
+            ShipmentHandover.logistics_company_id == membership.logistics_company_id,
+        )
+        .first()
+    )
+    if not handover:
+        raise HTTPException(404, "Handover record not found for this logistics company")
+    return handover
+
+
+@router.post(
+    "/me/shipments/{shipment_id}/arrived-for-pickup",
+    response_model=ShipmentHandoverResponse,
+)
+def confirm_courier_arrival_for_pickup(
+    shipment_id: UUID,
+    data: LogisticsCourierArrivalRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(
+        require_permission(PermissionCode.logistics_shipments_update.value)
+    ),
+):
+    membership = _membership_for_user(db, current_user.id)
+    if not membership:
+        raise HTTPException(403, "User is not linked to a logistics company")
+
+    shipment = (
+        db.query(Shipment)
+        .filter(
+            Shipment.id == shipment_id,
+            Shipment.logistics_company_id == membership.logistics_company_id,
+        )
+        .with_for_update()
+        .first()
+    )
+    if not shipment:
+        raise HTTPException(404, "Shipment not found for this logistics company")
+    if shipment.status != ShipmentStatus.ready_for_dispatch:
+        raise HTTPException(
+            409,
+            "Courier arrival can only be confirmed for a shipment ready for dispatch",
+        )
+
+    seller_order = (
+        db.query(SellerOrder)
+        .filter(
+            SellerOrder.order_id == shipment.order_id,
+            SellerOrder.seller_id == shipment.seller_id,
+        )
+        .first()
+    )
+    if seller_order is None:
+        raise HTTPException(409, "Seller order is missing for this shipment")
+
+    handover = (
+        db.query(ShipmentHandover)
+        .filter(ShipmentHandover.shipment_id == shipment.id)
+        .with_for_update()
+        .first()
+    )
+    if handover is None:
+        handover = ensure_shipment_handover(
+            db, seller_order=seller_order, shipment=shipment
+        )
+
+    if handover.status == "seller_confirmed":
+        return handover
+    if handover.courier_arrived_at is not None:
+        return handover
+
+    now = datetime.now(timezone.utc)
+    handover.status = "courier_arrived"
+    handover.courier_arrived_at = now
+    handover.courier_arrived_by_id = current_user.id
+    handover.courier_arrival_latitude = data.latitude
+    handover.courier_arrival_longitude = data.longitude
+    handover.courier_arrival_notes = data.notes
+
+    db.add(
+        ShipmentTrackingEvent(
+            shipment_id=shipment.id,
+            status=shipment.status,
+            location=(
+                f"{data.latitude},{data.longitude}"
+                if data.latitude is not None and data.longitude is not None
+                else None
+            ),
+            notes=data.notes or "Assigned logistics company confirmed courier arrival for pickup",
+            created_by_id=current_user.id,
+        )
+    )
+    _commit(db)
+    db.refresh(handover)
+    return handover
 
 
 @router.post(

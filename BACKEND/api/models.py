@@ -1638,6 +1638,114 @@ class ShipmentTrackingEvent(Base):
     created_by = relationship("User")
 
 
+class ShipmentHandover(Base):
+    """Auditable seller-to-logistics handover checkpoint.
+
+    This record deliberately does not release funds. It captures that the
+    assigned logistics company arrived and that the seller confirmed physical
+    handover. Later pickup-proof/customer-verification phases can consume this
+    immutable checkpoint safely.
+    """
+
+    __tablename__ = "shipment_handovers"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    shipment_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("shipments.id", ondelete="CASCADE"),
+        nullable=False,
+        unique=True,
+        index=True,
+    )
+    seller_order_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("seller_orders.id", ondelete="CASCADE"),
+        nullable=False,
+        unique=True,
+        index=True,
+    )
+    seller_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("sellers.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
+    logistics_company_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("logistics_companies.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+
+    status = Column(
+        String(32),
+        nullable=False,
+        default="awaiting_courier",
+        server_default="awaiting_courier",
+        index=True,
+    )
+
+    courier_arrived_at = Column(DateTime(timezone=True), nullable=True)
+    courier_arrived_by_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    courier_arrival_latitude = Column(Numeric(10, 7), nullable=True)
+    courier_arrival_longitude = Column(Numeric(10, 7), nullable=True)
+    courier_arrival_notes = Column(Text, nullable=True)
+
+    seller_confirmed_at = Column(DateTime(timezone=True), nullable=True)
+    seller_confirmed_by_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    seller_confirmation_notes = Column(Text, nullable=True)
+
+    # Immutable operational snapshots. These protect historical handovers if a
+    # seller later edits the pickup point or package preparation data.
+    pickup_snapshot = Column(JSONB, nullable=False, default=dict, server_default="{}")
+    package_snapshot = Column(JSONB, nullable=False, default=list, server_default="[]")
+
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), nullable=True, onupdate=func.now())
+
+    shipment = relationship("Shipment")
+    seller_order = relationship("SellerOrder")
+    seller = relationship("Seller")
+    logistics_company = relationship("LogisticsCompany")
+    courier_arrived_by = relationship("User", foreign_keys=[courier_arrived_by_id])
+    seller_confirmed_by = relationship("User", foreign_keys=[seller_confirmed_by_id])
+
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('awaiting_courier', 'courier_arrived', 'seller_confirmed')",
+            name="ck_shipment_handover_status",
+        ),
+        CheckConstraint(
+            "courier_arrival_latitude IS NULL OR courier_arrival_latitude BETWEEN -90 AND 90",
+            name="ck_shipment_handover_arrival_latitude",
+        ),
+        CheckConstraint(
+            "courier_arrival_longitude IS NULL OR courier_arrival_longitude BETWEEN -180 AND 180",
+            name="ck_shipment_handover_arrival_longitude",
+        ),
+        Index(
+            "ix_shipment_handovers_company_status",
+            "logistics_company_id",
+            "status",
+            "created_at",
+        ),
+        Index(
+            "ix_shipment_handovers_seller_status",
+            "seller_id",
+            "status",
+            "created_at",
+        ),
+    )
+
+
 #
 # EXTERNAL DELIVERY INTEGRATION
 #
