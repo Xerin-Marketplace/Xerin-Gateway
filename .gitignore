@@ -170,3 +170,5 @@ __pycache__/
 .env
 .env.* 
 Frontend/xerin-marketplace/
+BACKEND/tests/
+BACKEND/backend.zip
