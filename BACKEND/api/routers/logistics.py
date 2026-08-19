@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
 from sqlalchemy import or_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, joinedload, selectinload
@@ -22,6 +22,7 @@ from api.models import (
     SellerOrder,
     Shipment,
     ShipmentHandover,
+    ShipmentPickupProof,
     ShipmentTrackingEvent,
     ShippingMethod,
     ShippingRate,
@@ -30,6 +31,11 @@ from api.models import (
 )
 from api.permissions import get_user_permissions, require_permission
 from api.services.seller_handover import ensure_shipment_handover
+from api.services.pickup_proof_service import (
+    PickupProofError,
+    create_pickup_proof,
+    store_pickup_proof_image,
+)
 from api.schemas import (
     LogisticsCompanyCreate,
     LogisticsCompanyResponse,
@@ -47,6 +53,7 @@ from api.schemas import (
     PaginatedShippingZoneResponse,
     ShipmentResponse,
     ShipmentHandoverResponse,
+    PickupProofResponse,
     ShipmentTrackingEventCreate,
     ShippingMethodCreate,
     ShippingMethodResponse,
@@ -929,6 +936,113 @@ def confirm_courier_arrival_for_pickup(
     _commit(db)
     db.refresh(handover)
     return handover
+
+
+@router.get(
+    "/me/shipments/{shipment_id}/pickup-proof",
+    response_model=PickupProofResponse,
+)
+def get_logistics_pickup_proof(
+    shipment_id: UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(
+        require_permission(PermissionCode.logistics_shipments_read.value)
+    ),
+):
+    membership = _membership_for_user(db, current_user.id)
+    if not membership:
+        raise HTTPException(403, "User is not linked to a logistics company")
+
+    proof = (
+        db.query(ShipmentPickupProof)
+        .filter(
+            ShipmentPickupProof.shipment_id == shipment_id,
+            ShipmentPickupProof.logistics_company_id == membership.logistics_company_id,
+        )
+        .first()
+    )
+    if proof is None:
+        raise HTTPException(404, "Pickup proof not found")
+    return proof
+
+
+@router.post(
+    "/me/shipments/{shipment_id}/pickup-proof",
+    response_model=PickupProofResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def upload_logistics_pickup_proof(
+    shipment_id: UUID,
+    photo: UploadFile = File(...),
+    latitude: Decimal = Form(...),
+    longitude: Decimal = Form(...),
+    courier_reference: str | None = Form(default=None),
+    notes: str | None = Form(default=None),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(
+        require_permission(PermissionCode.logistics_shipments_update.value)
+    ),
+):
+    membership = _membership_for_user(db, current_user.id)
+    if not membership:
+        raise HTTPException(403, "User is not linked to a logistics company")
+
+    if latitude < Decimal("-90") or latitude > Decimal("90"):
+        raise HTTPException(422, "latitude must be between -90 and 90")
+    if longitude < Decimal("-180") or longitude > Decimal("180"):
+        raise HTTPException(422, "longitude must be between -180 and 180")
+
+    shipment = (
+        db.query(Shipment)
+        .options(joinedload(Shipment.order))
+        .filter(
+            Shipment.id == shipment_id,
+            Shipment.logistics_company_id == membership.logistics_company_id,
+        )
+        .with_for_update()
+        .first()
+    )
+    if shipment is None:
+        raise HTTPException(404, "Shipment not found for this logistics company")
+
+    existing = (
+        db.query(ShipmentPickupProof)
+        .filter(ShipmentPickupProof.shipment_id == shipment.id)
+        .first()
+    )
+    if existing:
+        return existing
+
+    handover = (
+        db.query(ShipmentHandover)
+        .filter(ShipmentHandover.shipment_id == shipment.id)
+        .first()
+    )
+    if handover is None:
+        raise HTTPException(409, "Shipment handover record is missing")
+
+    try:
+        image = await store_pickup_proof_image(photo, shipment_id=shipment.id)
+        proof = create_pickup_proof(
+            db,
+            shipment=shipment,
+            handover=handover,
+            customer_id=shipment.order.user_id,
+            logistics_company_id=membership.logistics_company_id,
+            uploaded_by_id=current_user.id,
+            image=image,
+            latitude=latitude,
+            longitude=longitude,
+            courier_reference=courier_reference,
+            notes=notes,
+        )
+        return proof
+    except PickupProofError as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=exc.status_code,
+            detail={"code": exc.code, "message": exc.message},
+        ) from exc
 
 
 @router.post(

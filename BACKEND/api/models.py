@@ -1804,6 +1804,128 @@ class ShipmentTrackingEvent(Base):
     created_by = relationship("User")
 
 
+
+class ShipmentPickupProof(Base):
+    """Courier pickup evidence reviewed by the customer.
+
+    This is an auditable verification checkpoint. It does NOT release seller
+    settlement directly; later settlement logic consumes approved/auto-approved
+    proofs together with the seller handover.
+    """
+
+    __tablename__ = "shipment_pickup_proofs"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    shipment_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("shipments.id", ondelete="CASCADE"),
+        nullable=False,
+        unique=True,
+        index=True,
+    )
+    handover_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("shipment_handovers.id", ondelete="RESTRICT"),
+        nullable=False,
+        unique=True,
+        index=True,
+    )
+    order_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("orders.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    customer_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    seller_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("sellers.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
+    logistics_company_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("logistics_companies.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
+
+    photo_url = Column(Text, nullable=False)
+    original_filename = Column(String(255), nullable=True)
+    mime_type = Column(String(120), nullable=False)
+    file_size = Column(Integer, nullable=False)
+
+    pickup_latitude = Column(Numeric(10, 7), nullable=False)
+    pickup_longitude = Column(Numeric(10, 7), nullable=False)
+    courier_reference = Column(String(180), nullable=True)
+    notes = Column(Text, nullable=True)
+
+    status = Column(
+        String(32),
+        nullable=False,
+        default="pending",
+        server_default="pending",
+        index=True,
+    )
+    review_deadline = Column(DateTime(timezone=True), nullable=False, index=True)
+
+    customer_reviewed_at = Column(DateTime(timezone=True), nullable=True)
+    customer_reviewed_by_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    problem_reason = Column(String(80), nullable=True)
+    problem_notes = Column(Text, nullable=True)
+
+    uploaded_by_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), nullable=True, onupdate=func.now())
+
+    shipment = relationship("Shipment")
+    handover = relationship("ShipmentHandover")
+    order = relationship("Order")
+    customer = relationship("User", foreign_keys=[customer_id])
+    seller = relationship("Seller")
+    logistics_company = relationship("LogisticsCompany")
+    uploaded_by = relationship("User", foreign_keys=[uploaded_by_id])
+    customer_reviewed_by = relationship("User", foreign_keys=[customer_reviewed_by_id])
+
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('pending','approved','disputed','auto_approved')",
+            name="ck_shipment_pickup_proof_status",
+        ),
+        CheckConstraint(
+            "pickup_latitude BETWEEN -90 AND 90",
+            name="ck_shipment_pickup_proof_latitude",
+        ),
+        CheckConstraint(
+            "pickup_longitude BETWEEN -180 AND 180",
+            name="ck_shipment_pickup_proof_longitude",
+        ),
+        CheckConstraint(
+            "file_size > 0",
+            name="ck_shipment_pickup_proof_file_size_positive",
+        ),
+        Index(
+            "ix_shipment_pickup_proofs_customer_status_created",
+            "customer_id",
+            "status",
+            "created_at",
+        ),
+    )
+
+
 class ShipmentHandover(Base):
     """Auditable seller-to-logistics handover checkpoint.
 

@@ -33,6 +33,7 @@ from api.models import (
     PromotionUsage,
     SellerOrder,
     Shipment,
+    ShipmentPickupProof,
     ShippingMethod,
     ShippingRate,
     ShippingZone,
@@ -45,6 +46,9 @@ from api.schemas import (
     CustomerEscrowSummary,
     CustomerOrderDetailResponse,
     OrderCreateRequest,
+    PaginatedPickupProofResponse,
+    PickupProofProblemRequest,
+    PickupProofResponse,
     OrderResponse,
     OrderStatusUpdateRequest,
     PaginatedAdminOrderResponse,
@@ -53,6 +57,12 @@ from api.schemas import (
 from api.enums import InventoryReservationStatus
 from api.services.inventory_reservations import create_reservation, release_order_reservations
 from api.services.escrow_service import order_escrow_summary, release_order_escrow
+from api.services.pickup_proof_service import (
+    PickupProofError,
+    approve_pickup_proof,
+    auto_approve_if_expired,
+    dispute_pickup_proof,
+)
 from api.services.checkout_delivery_quote import (
     CheckoutDeliveryQuoteError,
     get_usable_checkout_delivery_quote,
@@ -550,6 +560,138 @@ def _is_privileged_order_operator(db: Session, user: User) -> bool:
 def _is_order_seller(user: User, order: Order) -> bool:
     seller = user.seller_profile
     return bool(seller and any(item.seller_id == seller.id for item in order.items))
+
+
+@router.get(
+    "/pickup-proofs",
+    response_model=PaginatedPickupProofResponse,
+)
+def list_my_pickup_proofs(
+    status_filter: str | None = Query(default=None, alias="status"),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=20, ge=1, le=100),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    query = (
+        db.query(ShipmentPickupProof)
+        .filter(ShipmentPickupProof.customer_id == current_user.id)
+    )
+    if status_filter:
+        if status_filter not in {"pending", "approved", "disputed", "auto_approved"}:
+            raise HTTPException(422, "Invalid pickup proof status")
+        query = query.filter(ShipmentPickupProof.status == status_filter)
+
+    total = query.count()
+    rows = (
+        query.order_by(ShipmentPickupProof.created_at.desc())
+        .offset((page - 1) * page_size)
+        .limit(page_size)
+        .all()
+    )
+    for proof in rows:
+        auto_approve_if_expired(db, proof, commit=False)
+    db.commit()
+    for proof in rows:
+        db.refresh(proof)
+
+    return {
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+        "total_pages": (total + page_size - 1) // page_size if total else 0,
+        "results": rows,
+    }
+
+
+@router.get(
+    "/pickup-proofs/{proof_id}",
+    response_model=PickupProofResponse,
+)
+def get_my_pickup_proof(
+    proof_id: UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    proof = (
+        db.query(ShipmentPickupProof)
+        .filter(
+            ShipmentPickupProof.id == proof_id,
+            ShipmentPickupProof.customer_id == current_user.id,
+        )
+        .first()
+    )
+    if proof is None:
+        raise HTTPException(404, "Pickup proof not found")
+    proof = auto_approve_if_expired(db, proof)
+    return proof
+
+
+@router.post(
+    "/pickup-proofs/{proof_id}/approve",
+    response_model=PickupProofResponse,
+)
+def approve_my_pickup_proof(
+    proof_id: UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    proof = (
+        db.query(ShipmentPickupProof)
+        .filter(ShipmentPickupProof.id == proof_id)
+        .with_for_update()
+        .first()
+    )
+    if proof is None or proof.customer_id != current_user.id:
+        raise HTTPException(404, "Pickup proof not found")
+
+    try:
+        return approve_pickup_proof(
+            db,
+            proof=proof,
+            customer_id=current_user.id,
+        )
+    except PickupProofError as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=exc.status_code,
+            detail={"code": exc.code, "message": exc.message},
+        ) from exc
+
+
+@router.post(
+    "/pickup-proofs/{proof_id}/report-problem",
+    response_model=PickupProofResponse,
+)
+def report_pickup_proof_problem(
+    proof_id: UUID,
+    data: PickupProofProblemRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    proof = (
+        db.query(ShipmentPickupProof)
+        .filter(ShipmentPickupProof.id == proof_id)
+        .with_for_update()
+        .first()
+    )
+    if proof is None or proof.customer_id != current_user.id:
+        raise HTTPException(404, "Pickup proof not found")
+
+    try:
+        return dispute_pickup_proof(
+            db,
+            proof=proof,
+            customer_id=current_user.id,
+            reason=data.reason,
+            notes=data.notes,
+        )
+    except PickupProofError as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=exc.status_code,
+            detail={"code": exc.code, "message": exc.message},
+        ) from exc
 
 
 @router.post("", response_model=OrderResponse, status_code=status.HTTP_201_CREATED)

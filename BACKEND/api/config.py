@@ -181,4 +181,6 @@ class Settings(BaseSettings):
         return self.APP_ENV == "production"
 
 
+    PICKUP_PROOF_REVIEW_MINUTES: int = 120
+
 settings = Settings()

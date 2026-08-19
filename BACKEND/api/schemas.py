@@ -4816,6 +4816,61 @@ class ShipmentHandoverResponse(BaseModel):
 
 
    
+# PHASE 2 TASK 7: CUSTOMER PICKUP PROOF VERIFICATION
+
+class PickupProofProblemRequest(BaseModel):
+    reason: Literal[
+        "wrong_product",
+        "wrong_variant",
+        "wrong_quantity",
+        "damaged",
+        "photo_unclear",
+        "other",
+    ]
+    notes: Optional[str] = Field(default=None, max_length=2000)
+
+
+class PickupProofResponse(BaseModel):
+    id: UUID
+    shipment_id: UUID
+    handover_id: UUID
+    order_id: UUID
+    customer_id: UUID
+    seller_id: UUID
+    logistics_company_id: UUID
+
+    photo_url: str
+    original_filename: Optional[str]
+    mime_type: str
+    file_size: int
+
+    pickup_latitude: Decimal
+    pickup_longitude: Decimal
+    courier_reference: Optional[str]
+    notes: Optional[str]
+
+    status: Literal["pending", "approved", "disputed", "auto_approved"]
+    review_deadline: datetime
+    customer_reviewed_at: Optional[datetime]
+    customer_reviewed_by_id: Optional[UUID]
+    problem_reason: Optional[str]
+    problem_notes: Optional[str]
+
+    uploaded_by_id: Optional[UUID]
+    created_at: datetime
+    updated_at: Optional[datetime]
+
+    model_config = ORM_CONFIG
+
+
+class PaginatedPickupProofResponse(BaseModel):
+    total: int
+    page: int
+    page_size: int
+    total_pages: int
+    results: list[PickupProofResponse] = Field(default_factory=list)
+
+
 # PHASE 1 TASK 7: SELLER FULFILLMENT VIEW
    
 class SellerFulfillmentPickupView(BaseModel):
