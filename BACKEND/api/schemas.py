@@ -1684,6 +1684,41 @@ class OrderResponse(BaseModel):
     model_config = ORM_CONFIG
 
 
+class OrderWorkflowStageResponse(BaseModel):
+    name: Literal["checkout", "payment", "seller_fulfillment", "logistics", "pickup", "delivery"]
+    status: Literal["complete", "in_progress", "waiting", "blocked"]
+    detail: str
+
+
+class OrderShipmentWorkflowResponse(BaseModel):
+    shipment_id: UUID
+    seller_id: UUID
+    seller_order_id: Optional[UUID] = None
+    seller_order_status: Optional[str] = None
+    shipment_status: str
+    logistics_company_id: Optional[UUID] = None
+    pickup_job_status: Optional[str] = None
+    handover_status: Optional[str] = None
+    pickup_proof_status: Optional[str] = None
+    latest_tracking_status: Optional[str] = None
+    tracking_event_count: int
+
+
+class OrderWorkflowResponse(BaseModel):
+    order_id: UUID
+    order_status: str
+    overall_status: Literal["in_progress", "action_required", "complete", "terminal"]
+    delivery_quote_id: Optional[UUID] = None
+    payment_ready: bool
+    seller_order_count: int
+    shipment_count: int
+    delivered_shipment_count: int
+    stages: list[OrderWorkflowStageResponse]
+    shipments: list[OrderShipmentWorkflowResponse]
+    blockers: list[str]
+    reconciliation_actions: list[str] = Field(default_factory=list)
+
+
 class PaginatedOrderResponse(BaseModel):
     total: int
     page: int

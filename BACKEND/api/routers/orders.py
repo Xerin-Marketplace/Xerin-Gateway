@@ -52,6 +52,7 @@ from api.schemas import (
     PickupProofProblemRequest,
     PickupProofResponse,
     OrderResponse,
+    OrderWorkflowResponse,
     OrderStatusUpdateRequest,
     PaginatedAdminOrderResponse,
     PaginatedOrderResponse,
@@ -74,6 +75,7 @@ from api.services.checkout_delivery_quote import (
     CheckoutDeliveryQuoteError,
     get_usable_checkout_delivery_quote,
 )
+from api.services.order_workflow import build_order_workflow, reconcile_order_workflow
 
 router = APIRouter(prefix="/orders", tags=["Orders"])
 
@@ -1615,6 +1617,49 @@ def get_order(
     return order
 
 
+@router.get("/{order_id}/workflow", response_model=OrderWorkflowResponse)
+def get_order_workflow(
+    order_id: UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    order = (
+        db.query(Order)
+        .options(selectinload(Order.items))
+        .filter(Order.id == order_id)
+        .first()
+    )
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+    if order.user_id != current_user.id and not _is_order_seller(current_user, order) and not _is_privileged_order_operator(db, current_user):
+        raise HTTPException(status_code=403, detail="Not authorized to view this workflow")
+    return build_order_workflow(db, order)
+
+
+@router.post("/{order_id}/workflow/reconcile", response_model=OrderWorkflowResponse)
+def reconcile_order_workflow_endpoint(
+    order_id: UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    if not _is_privileged_order_operator(db, current_user):
+        raise HTTPException(status_code=403, detail="Order operations permission is required")
+    order = (
+        db.query(Order)
+        .options(selectinload(Order.items))
+        .filter(Order.id == order_id)
+        .with_for_update()
+        .first()
+    )
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+    try:
+        return reconcile_order_workflow(db, order, actor_id=current_user.id)
+    except SQLAlchemyError as exc:
+        db.rollback()
+        raise HTTPException(status_code=500, detail="Could not reconcile order workflow") from exc
+
+
 @router.patch("/{order_id}/status", response_model=OrderResponse)
 def update_order_status(
     order_id: UUID,
@@ -1667,5 +1712,4 @@ def update_order_status(
     except SQLAlchemyError as exc:
         db.rollback()
         raise HTTPException(status_code=500, detail="Could not update order status") from exc
-
 
