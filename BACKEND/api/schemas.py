@@ -2409,6 +2409,59 @@ class ShippingCheckoutConfig(BaseModel):
     configured: bool = False
 
 
+class EligibleLogisticsSelectionRequest(BaseModel):
+    address_id: UUID
+    delivery_mode: Literal["local", "international"]
+
+
+class EligibleSellerPickupCoverage(BaseModel):
+    seller_id: UUID
+    seller_name: str
+    pickup_location_id: UUID
+    pickup_label: str
+    country: str
+    region: str
+    city: str
+    latitude: Decimal
+    longitude: Decimal
+
+
+class EligibleLogisticsServiceSummary(BaseModel):
+    method_id: UUID
+    method_name: str
+    service_code: Optional[str] = None
+    scope: LogisticsScope
+    min_delivery_days: int
+    max_delivery_days: int
+    supports_cod: bool
+    supports_tracking: bool
+
+
+class EligibleLogisticsCompanyOption(BaseModel):
+    logistics_company_id: UUID
+    name: str
+    code: str
+    scope: LogisticsScope
+    supports_cod: bool
+    supports_tracking: bool
+    supports_webhooks: bool
+    seller_count: int
+    covered_seller_count: int
+    services: list[EligibleLogisticsServiceSummary] = Field(default_factory=list)
+
+
+class PaginatedEligibleLogisticsCompanyResponse(BaseModel):
+    address_id: UUID
+    delivery_mode: Literal["local", "international"]
+    seller_count: int
+    total: int
+    page: int
+    page_size: int
+    total_pages: int
+    sellers: list[EligibleSellerPickupCoverage] = Field(default_factory=list)
+    results: list[EligibleLogisticsCompanyOption] = Field(default_factory=list)
+
+
 class ShippingQuoteRequest(BaseModel):
     address_id: UUID
     delivery_mode: Literal["local", "international"]

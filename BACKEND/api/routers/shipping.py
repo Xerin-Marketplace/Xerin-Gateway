@@ -2,7 +2,7 @@ from datetime import datetime, timezone
 from decimal import Decimal
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, joinedload, selectinload
 
@@ -14,7 +14,13 @@ from api.models import (
     ShippingMethod, ShippingRate, ShippingZone, User,
 )
 from api.permissions import require_permission
+from api.services.eligible_logistics import (
+    EligibleLogisticsError,
+    find_eligible_logistics_companies,
+)
 from api.schemas import (
+    EligibleLogisticsSelectionRequest,
+    PaginatedEligibleLogisticsCompanyResponse,
     ShippingMethodCreate, ShippingMethodResponse, ShippingMethodUpdate,
     ShippingCheckoutConfig, ShippingQuoteOption, ShippingQuoteRequest,
     ShippingRateCreate, ShippingRateResponse, ShippingZoneCreate,
@@ -204,6 +210,44 @@ def checkout_delivery_config(
             and settings_row.international_delivery_allowed is not None
         ),
     }
+
+
+@router.post(
+    "/eligible-logistics",
+    response_model=PaginatedEligibleLogisticsCompanyResponse,
+)
+def eligible_logistics_companies(
+    data: EligibleLogisticsSelectionRequest,
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=20, ge=1, le=100),
+    search: str | None = Query(default=None, min_length=1, max_length=150),
+    supports_cod: bool | None = Query(default=None),
+    supports_tracking: bool | None = Query(default=None),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    try:
+        return find_eligible_logistics_companies(
+            db,
+            user_id=current_user.id,
+            address_id=data.address_id,
+            delivery_mode=data.delivery_mode,
+            page=page,
+            page_size=page_size,
+            search=search,
+            supports_cod=supports_cod,
+            supports_tracking=supports_tracking,
+        )
+    except EligibleLogisticsError as exc:
+        detail = {
+            "code": exc.code,
+            "message": exc.message,
+        }
+        detail.update(exc.extra)
+        raise HTTPException(
+            status_code=exc.status_code,
+            detail=detail,
+        ) from exc
 
 
 @router.post("/quote", response_model=list[ShippingQuoteOption])

@@ -172,3 +172,9 @@ __pycache__/
 Frontend/xerin-marketplace/
 BACKEND/tests/
 BACKEND/backend.zip
+azampay_patch
+BACKEND/tests/
+BACKEND/backend.zip
+-r
+tabase.sql
+pytest.ini
