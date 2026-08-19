@@ -1262,10 +1262,10 @@ class CheckoutDeliveryQuote(Base):
 
     user = relationship("User")
     shipping_address = relationship("Address")
-    delivery_quote = relationship("CheckoutDeliveryQuote")
     logistics_company = relationship("LogisticsCompany")
     shipping_method = relationship("ShippingMethod")
     shipping_rate = relationship("ShippingRate")
+    order = relationship("Order", back_populates="delivery_quote", uselist=False)
 
     __table_args__ = (
         CheckConstraint("seller_count > 0", name="ck_checkout_delivery_quote_seller_count"),
@@ -1383,6 +1383,9 @@ class Order(Base):
 
     user = relationship("User")
     shipping_address = relationship("Address")
+    delivery_quote = relationship(
+        "CheckoutDeliveryQuote", back_populates="order", uselist=False
+    )
     items = relationship(
         "OrderItem", back_populates="order", cascade="all, delete-orphan"
     )
