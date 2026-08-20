@@ -2382,13 +2382,27 @@ class LogisticsOnboardingStatusResponse(BaseModel):
     company_id: UUID
     company_name: str
     company_status: LogisticsCompanyStatus
-    state: Literal["invited", "in_progress", "ready_for_review", "approved"]
+    state: Literal["invited", "in_progress", "ready_for_review", "submitted", "changes_requested", "approved"]
     required_completed: int
     required_total: int
     progress_percent: int
     ready_for_review: bool
     steps: list[LogisticsOnboardingStep]
     next_step: Optional[LogisticsOnboardingStep] = None
+    submitted_at: Optional[datetime] = None
+    reviewed_at: Optional[datetime] = None
+    review_note: Optional[str] = None
+
+
+class LogisticsOnboardingReviewRequest(BaseModel):
+    decision: Literal["approve", "changes_requested"]
+    note: Optional[str] = Field(default=None, max_length=2000)
+
+    @model_validator(mode="after")
+    def require_changes_note(self):
+        if self.decision == "changes_requested" and not (self.note or "").strip():
+            raise ValueError("A review note is required when requesting changes")
+        return self
 
 
 class PaginatedLogisticsCompanyResponse(BaseModel):

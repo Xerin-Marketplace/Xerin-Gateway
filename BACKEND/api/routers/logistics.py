@@ -52,6 +52,7 @@ from api.schemas import (
     LogisticsCompanyOnboardCreate,
     LogisticsCompanyOnboardResponse,
     LogisticsOnboardingStatusResponse,
+    LogisticsOnboardingReviewRequest,
     LogisticsCompanyAccountResponse,
     LogisticsCompanyProfileUpdate,
     LogisticsCompanyResponse,
@@ -1732,17 +1733,8 @@ def my_logistics_account(
     }
 
 
-@router.get("/me/onboarding", response_model=LogisticsOnboardingStatusResponse)
-def my_logistics_onboarding(
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    """Return the authenticated company's live onboarding readiness checklist."""
-    membership = _membership_for_user(db, current_user.id)
-    if not membership or not membership.company:
-        raise HTTPException(403, "User is not linked to a logistics company")
-
-    company = membership.company
+def _company_onboarding_status(db: Session, company: LogisticsCompany) -> dict:
+    """Build one authoritative readiness view for company and admin workflows."""
     company_id = company.id
     required_profile_values = (
         company.legal_name,
@@ -1798,8 +1790,14 @@ def my_logistics_onboarding(
     completed = sum(bool(step["completed"]) for step in required_steps)
     ready = completed == len(required_steps)
     next_step = next((step for step in required_steps if not step["completed"]), None)
+    onboarding = (company.metadata_json or {}).get("onboarding") or {}
+    stored_state = onboarding.get("state")
     if company.status == LogisticsCompanyStatus.active:
         state = "approved"
+    elif stored_state == "submitted" and ready:
+        state = "submitted"
+    elif stored_state == "changes_requested":
+        state = "changes_requested"
     elif ready:
         state = "ready_for_review"
     elif completed:
@@ -1817,7 +1815,111 @@ def my_logistics_onboarding(
         "ready_for_review": ready,
         "steps": steps,
         "next_step": next_step,
+        "submitted_at": onboarding.get("submitted_at"),
+        "reviewed_at": onboarding.get("reviewed_at"),
+        "review_note": onboarding.get("review_note"),
     }
+
+
+@router.get("/me/onboarding", response_model=LogisticsOnboardingStatusResponse)
+def my_logistics_onboarding(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    membership = _membership_for_user(db, current_user.id)
+    if not membership or not membership.company:
+        raise HTTPException(403, "User is not linked to a logistics company")
+    return _company_onboarding_status(db, membership.company)
+
+
+@router.post("/me/onboarding/submit", response_model=LogisticsOnboardingStatusResponse)
+def submit_my_logistics_onboarding(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    membership = _membership_for_user(db, current_user.id)
+    if not membership or not membership.company:
+        raise HTTPException(403, "User is not linked to a logistics company")
+    _require_company_permission(membership, LogisticsCompanyPermission.profile_manage)
+    company = membership.company
+    readiness = _company_onboarding_status(db, company)
+    if company.status == LogisticsCompanyStatus.active:
+        return readiness
+    if not readiness["ready_for_review"]:
+        missing = [step["label"] for step in readiness["steps"] if step["required"] and not step["completed"]]
+        raise HTTPException(409, f"Complete required onboarding steps first: {', '.join(missing)}")
+    metadata = dict(company.metadata_json or {})
+    metadata["onboarding"] = {
+        **(metadata.get("onboarding") or {}),
+        "state": "submitted",
+        "submitted_at": datetime.now(timezone.utc).isoformat(),
+        "submitted_by_user_id": str(current_user.id),
+        "review_note": None,
+    }
+    company.metadata_json = metadata
+    _commit(db)
+    db.refresh(company)
+    return _company_onboarding_status(db, company)
+
+
+@router.get("/companies/{company_id}/onboarding", response_model=LogisticsOnboardingStatusResponse)
+def review_company_onboarding_details(
+    company_id: UUID,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_permission(PermissionCode.logistics_companies_read.value)),
+):
+    company = db.get(LogisticsCompany, company_id)
+    if not company:
+        raise HTTPException(404, "Logistics company not found")
+    return _company_onboarding_status(db, company)
+
+
+@router.post("/companies/{company_id}/onboarding/review", response_model=LogisticsOnboardingStatusResponse)
+def review_company_onboarding(
+    company_id: UUID,
+    data: LogisticsOnboardingReviewRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permission(PermissionCode.logistics_companies_manage.value)),
+):
+    company = db.get(LogisticsCompany, company_id)
+    if not company:
+        raise HTTPException(404, "Logistics company not found")
+    readiness = _company_onboarding_status(db, company)
+    if data.decision == "approve" and not readiness["ready_for_review"]:
+        raise HTTPException(409, "Company onboarding is incomplete and cannot be approved")
+    onboarding = (company.metadata_json or {}).get("onboarding") or {}
+    if data.decision == "approve" and onboarding.get("state") != "submitted":
+        raise HTTPException(409, "The logistics company must submit onboarding before approval")
+
+    now = datetime.now(timezone.utc).isoformat()
+    metadata = dict(company.metadata_json or {})
+    metadata["onboarding"] = {
+        **onboarding,
+        "state": "approved" if data.decision == "approve" else "changes_requested",
+        "reviewed_at": now,
+        "reviewed_by_user_id": str(current_user.id),
+        "review_note": (data.note or "").strip() or None,
+    }
+    company.metadata_json = metadata
+    company.status = LogisticsCompanyStatus.active if data.decision == "approve" else LogisticsCompanyStatus.pending
+    _commit(db)
+    db.refresh(company)
+
+    recipient = company.contact_email
+    if recipient:
+        try:
+            approved = data.decision == "approve"
+            send_email(
+                to=recipient,
+                subject=f"Xerin Logistics onboarding {'approved' if approved else 'needs changes'} – {company.name}",
+                body=(f"Hello {company.contact_name or company.name},\n\n"
+                      + ("Your logistics company onboarding has been approved. You can now use the operational workspace."
+                         if approved else f"Your onboarding needs changes before approval.\n\nReview note: {(data.note or '').strip()}")
+                      + "\n\nSign in to Xerin Logistics to continue."),
+            )
+        except Exception:
+            pass
+    return _company_onboarding_status(db, company)
 
 
 @router.patch("/me/company", response_model=LogisticsCompanyResponse)
