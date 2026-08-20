@@ -35,6 +35,9 @@ from api.models import (
     ShippingRate,
     ShippingZone,
     User,
+    UserRole,
+    Role,
+    UserStatus,
 )
 from api.permissions import get_user_permissions, require_permission
 from api.services.seller_handover import ensure_shipment_handover
@@ -45,6 +48,8 @@ from api.services.pickup_proof_service import (
 )
 from api.schemas import (
     LogisticsCompanyCreate,
+    LogisticsCompanyOnboardCreate,
+    LogisticsCompanyOnboardResponse,
     LogisticsCompanyAccountResponse,
     LogisticsCompanyProfileUpdate,
     LogisticsCompanyResponse,
@@ -85,6 +90,9 @@ from api.schemas import (
     ShippingZoneResponse,
     ShippingZoneUpdate,
 )
+from api.security import hash_password
+from api.routers.email import send_email
+from api.config import settings
 
 router = APIRouter(prefix="/logistics", tags=["Logistics"])
 
@@ -254,6 +262,125 @@ def create_company(
     _commit(db)
     db.refresh(company)
     return company
+
+
+@router.post(
+    "/companies/onboard",
+    response_model=LogisticsCompanyOnboardResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+def onboard_company(
+    data: LogisticsCompanyOnboardCreate,
+    db: Session = Depends(get_db),
+    _: User = Depends(
+        require_permission(PermissionCode.logistics_companies_manage.value)
+    ),
+):
+    """Create company, first user, role and primary membership atomically."""
+    email = str(data.administrator.email).strip().lower()
+    phone = (data.administrator.phone or "").strip() or None
+
+    if db.query(User.id).filter(func.lower(User.email) == email).first():
+        raise HTTPException(status.HTTP_409_CONFLICT, "Administrator email already exists")
+    if phone and db.query(User.id).filter(User.phone == phone).first():
+        raise HTTPException(status.HTTP_409_CONFLICT, "Administrator phone already exists")
+    if db.query(LogisticsCompany.id).filter(
+        or_(
+            func.lower(LogisticsCompany.name) == data.company.name.strip().lower(),
+            func.lower(LogisticsCompany.code) == data.company.code.strip().lower(),
+        )
+    ).first():
+        raise HTTPException(status.HTTP_409_CONFLICT, "Logistics company name or code already exists")
+
+    company_values = data.company.model_dump()
+    company_values["status"] = LogisticsCompanyStatus.pending
+    company_values["metadata_json"] = {
+        **(company_values.get("metadata_json") or {}),
+        "onboarding": {
+            "state": "invited",
+            "webhook_optional": True,
+            "created_by_admin": True,
+        },
+    }
+    company = LogisticsCompany(**company_values)
+    user = User(
+        first_name=data.administrator.first_name.strip(),
+        last_name=data.administrator.last_name.strip(),
+        email=email,
+        phone=phone,
+        password_hash=hash_password(data.administrator.password),
+        status=UserStatus.active,
+        is_verified=True,
+    )
+    try:
+        role = db.query(Role).filter(Role.name == "company_admin").first()
+        if role is None:
+            role = Role(
+                name="company_admin",
+                description="Primary administrator of a logistics company",
+            )
+            db.add(role)
+            db.flush()
+        db.add_all([company, user])
+        db.flush()
+        db.add(UserRole(user_id=user.id, role_id=role.id))
+        membership = LogisticsCompanyUser(
+            logistics_company_id=company.id,
+            user_id=user.id,
+            title="Company Administrator",
+            member_role=LogisticsMemberRole.company_admin,
+            permissions_json=[],
+            is_primary_contact=True,
+            is_active=True,
+        )
+        db.add(membership)
+        db.flush()
+        company_id = company.id
+        user_id = user.id
+        membership_id = membership.id
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            "Company, administrator or membership conflicts with existing data",
+        ) from exc
+    except Exception:
+        db.rollback()
+        raise
+
+    company = db.get(LogisticsCompany, company_id)
+    email_sent = False
+    warning = None
+    login_url = settings.LOGISTICS_PORTAL_LOGIN_URL
+    try:
+        recipient_name = f"{data.administrator.first_name} {data.administrator.last_name}".strip()
+        body = (
+            f"Hello {recipient_name},\n\n"
+            f"Welcome to Xerin Marketplace. {company.name} has been registered and you are its primary logistics administrator.\n\n"
+            f"Sign in with {email}: {login_url}\n"
+            "Use the temporary password provided securely by your platform administrator. "
+            "After login, complete the company profile, delivery zones, services, charges and payout account. "
+            "API and webhook setup is optional and may be skipped for now.\n\n"
+            "Your company will remain pending until onboarding is reviewed."
+        )
+        send_email(
+            to=email,
+            subject=f"Welcome to Xerin Logistics – {company.name}",
+            body=body,
+        )
+        email_sent = True
+    except Exception:
+        # SMTP must not roll back the already-committed company account.
+        warning = "Account created, but the welcome email could not be delivered"
+
+    return {
+        "company": company,
+        "administrator_user_id": user_id,
+        "membership_id": membership_id,
+        "welcome_email_sent": email_sent,
+        "warning": warning,
+    }
 
 
 @router.get("/companies/{company_id}", response_model=LogisticsCompanyResponse)

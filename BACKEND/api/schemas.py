@@ -2297,6 +2297,36 @@ class LogisticsCompanyCreate(BaseModel):
         return value
 
 
+class LogisticsCompanyAdminCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    first_name: str = Field(min_length=1, max_length=100)
+    last_name: str = Field(min_length=1, max_length=100)
+    email: EmailStr
+    phone: Optional[str] = Field(default=None, max_length=30)
+    password: str = Field(min_length=8, max_length=72)
+
+    @field_validator("password")
+    @classmethod
+    def validate_password_bytes(cls, value: str) -> str:
+        if len(value.encode("utf-8")) > 72:
+            raise ValueError("password must not exceed 72 UTF-8 bytes")
+        return value
+
+
+class LogisticsCompanyOnboardCreate(BaseModel):
+    """Atomic platform-admin bootstrap for a logistics organization."""
+
+    model_config = ConfigDict(extra="forbid")
+    company: LogisticsCompanyCreate
+    administrator: LogisticsCompanyAdminCreate
+
+    @model_validator(mode="after")
+    def force_safe_initial_status(self):
+        if self.company.status != LogisticsCompanyStatus.pending:
+            raise ValueError("A newly onboarded logistics company must start as pending")
+        return self
+
+
 class LogisticsCompanyUpdate(BaseModel):
     model_config = ConfigDict(extra="forbid")
     name: Optional[str] = Field(default=None, min_length=2, max_length=150)
@@ -2329,6 +2359,14 @@ class LogisticsCompanyResponse(LogisticsCompanyCreate):
     created_at: datetime
     updated_at: Optional[datetime] = None
     model_config = ORM_CONFIG
+
+
+class LogisticsCompanyOnboardResponse(BaseModel):
+    company: LogisticsCompanyResponse
+    administrator_user_id: UUID
+    membership_id: UUID
+    welcome_email_sent: bool
+    warning: Optional[str] = None
 
 
 class PaginatedLogisticsCompanyResponse(BaseModel):

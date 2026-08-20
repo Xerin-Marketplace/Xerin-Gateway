@@ -15,6 +15,7 @@ class Settings(BaseSettings):
     DEBUG: bool = False
     API_PREFIX: str = "/api/v1"
     PUBLIC_BASE_URL: str | None = None
+    LOGISTICS_PORTAL_LOGIN_URL: str = "https://xerinmarketplace.com/signin"
     LOG_LEVEL: str = "INFO"
 
     # Database

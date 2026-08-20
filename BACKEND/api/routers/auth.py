@@ -23,6 +23,7 @@ from api.models import (
     Role,
     RolePermission,
     UserPermission,
+    LogisticsCompanyUser,
 )
 from api.schemas import *
 from api.security import (
@@ -549,6 +550,10 @@ def register_seller(data: SellerRegisterRequest, db: Session = Depends(get_db)):
 
 def build_auth_user_response(db: Session, user: User):
     seller = db.query(Seller).filter(Seller.user_id == user.id).first()
+    logistics_membership = db.query(LogisticsCompanyUser).filter(
+        LogisticsCompanyUser.user_id == user.id,
+        LogisticsCompanyUser.is_active.is_(True),
+    ).first()
 
     user_roles = db.query(UserRole).filter(
         UserRole.user_id == user.id
@@ -589,6 +594,8 @@ def build_auth_user_response(db: Session, user: User):
         account_type = "admin"
     elif seller:
         account_type = "seller"
+    elif logistics_membership:
+        account_type = "logistics"
     else:
         account_type = "customer"
 
