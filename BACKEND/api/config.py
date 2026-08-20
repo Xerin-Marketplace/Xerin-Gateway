@@ -91,6 +91,20 @@ class Settings(BaseSettings):
     # Payment webhook security
     PAYMENT_WEBHOOK_SECRET: str | None = None
 
+    # Provider routing. Existing payments retain the provider recorded on the
+    # payment row; this setting only selects the provider for new MNO attempts.
+    MNO_PAYMENT_PROVIDER: Literal["azampay", "zenopay"] = "azampay"
+    CARD_PAYMENT_PROVIDER: Literal["azampay"] = "azampay"
+
+    # ZenoPay (Tanzania mobile money)
+    ZENOPAY_API_KEY: str | None = None
+    ZENOPAY_BASE_URL: str = "https://zenoapi.com"
+    ZENOPAY_MNO_PAYMENT_PATH: str = "/api/payments/mobile_money_tanzania"
+    ZENOPAY_ORDER_STATUS_PATH: str = "/api/payments/order-status"
+    ZENOPAY_WEBHOOK_URL: str | None = None
+    ZENOPAY_TIMEOUT_SECONDS: int = Field(default=30, ge=1, le=120)
+    ZENOPAY_MAX_AMOUNT_TZS: int = Field(default=5_000_000, ge=1)
+
     # AzamPay (MNO push + hosted card checkout)
     AZAMPAY_SANDBOX: bool = True
     AZAMPAY_APP_NAME: str | None = None

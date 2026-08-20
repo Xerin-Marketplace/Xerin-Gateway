@@ -30,3 +30,23 @@ git pull origin main
 J3W2q5srfbxd
 
 b53aL4j0#
+
+cd /var/Frontend
+
+git pull
+npm install
+npm run build
+
+# Required for Next.js standalone deployment
+rm -rf .next/standalone/.next/static
+cp -a .next/static .next/standalone/.next/
+
+# If you have a public directory
+if [ -d public ]; then
+    rm -rf .next/standalone/public
+    cp -a public .next/standalone/
+fi
+
+sudo systemctl restart xerin-frontend
+
+psql -h localhost -U xerin -d xerin

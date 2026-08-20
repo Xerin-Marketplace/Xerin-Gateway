@@ -1,0 +1,42 @@
+Xerin ZenoPay - Phase 1 Task 2
+================================
+
+Copy api/ and tests/ over the same paths in BACKEND.
+
+Required production .env values:
+
+MNO_PAYMENT_PROVIDER=zenopay
+CARD_PAYMENT_PROVIDER=azampay
+ZENOPAY_API_KEY=YOUR_LIVE_ZENOPAY_API_KEY
+ZENOPAY_BASE_URL=https://zenoapi.com
+ZENOPAY_MNO_PAYMENT_PATH=/api/payments/mobile_money_tanzania
+ZENOPAY_ORDER_STATUS_PATH=/api/payments/order-status
+ZENOPAY_WEBHOOK_URL=https://YOUR_API_DOMAIN/api/v1/payments/zenopay/webhook
+ZENOPAY_TIMEOUT_SECONDS=30
+ZENOPAY_MAX_AMOUNT_TZS=5000000
+
+Validation:
+
+python -m compileall api
+pytest tests/test_zenopay_service.py tests/test_payments.py -q
+alembic current
+alembic upgrade head
+
+No new Alembic migration is required by Task 2.
+
+What changes:
+- New mobile-money attempts use MNO_PAYMENT_PROVIDER.
+- The frontend request provider field still means Airtel/Mixx/Vodacom network.
+- ZenoPay webhook data is never trusted directly. Xerin calls the authenticated
+  ZenoPay order-status API and verifies payment ID and amount before finalizing.
+- Successful verification continues through Xerin's existing inventory,
+  shipment, commission, escrow and logistics-wallet finalization.
+- AzamPay card checkout and AzamPay callbacks remain enabled.
+
+Smoke test after deployment:
+
+sudo systemctl restart xerin-api
+sudo journalctl -u xerin-api -n 100 --no-pager
+
+Do not manually resend the same payment through both providers. A pending
+payment must be verified or allowed to fail before creating another attempt.
