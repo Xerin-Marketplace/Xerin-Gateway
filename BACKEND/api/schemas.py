@@ -2369,6 +2369,28 @@ class LogisticsCompanyOnboardResponse(BaseModel):
     warning: Optional[str] = None
 
 
+class LogisticsOnboardingStep(BaseModel):
+    key: Literal["company_profile", "zones", "services", "rates", "payout_account", "webhook"]
+    label: str
+    description: str
+    completed: bool
+    required: bool
+    href: str
+
+
+class LogisticsOnboardingStatusResponse(BaseModel):
+    company_id: UUID
+    company_name: str
+    company_status: LogisticsCompanyStatus
+    state: Literal["invited", "in_progress", "ready_for_review", "approved"]
+    required_completed: int
+    required_total: int
+    progress_percent: int
+    ready_for_review: bool
+    steps: list[LogisticsOnboardingStep]
+    next_step: Optional[LogisticsOnboardingStep] = None
+
+
 class PaginatedLogisticsCompanyResponse(BaseModel):
     total: int
     page: int

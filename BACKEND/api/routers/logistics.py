@@ -24,6 +24,7 @@ from api.models import (
     LogisticsCompany,
     LogisticsCompanyUser,
     LogisticsIntegrationConfig,
+    LogisticsPayoutAccount,
     LogisticsWebhookEvent,
     LogisticsPickupJob,
     SellerOrder,
@@ -50,6 +51,7 @@ from api.schemas import (
     LogisticsCompanyCreate,
     LogisticsCompanyOnboardCreate,
     LogisticsCompanyOnboardResponse,
+    LogisticsOnboardingStatusResponse,
     LogisticsCompanyAccountResponse,
     LogisticsCompanyProfileUpdate,
     LogisticsCompanyResponse,
@@ -1727,6 +1729,94 @@ def my_logistics_account(
             or LogisticsCompanyPermission.profile_manage
             in _effective_company_permissions(membership)
         ),
+    }
+
+
+@router.get("/me/onboarding", response_model=LogisticsOnboardingStatusResponse)
+def my_logistics_onboarding(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Return the authenticated company's live onboarding readiness checklist."""
+    membership = _membership_for_user(db, current_user.id)
+    if not membership or not membership.company:
+        raise HTTPException(403, "User is not linked to a logistics company")
+
+    company = membership.company
+    company_id = company.id
+    required_profile_values = (
+        company.legal_name,
+        company.registration_number,
+        company.tax_identification_number,
+        company.contact_name,
+        company.contact_email,
+        company.contact_phone,
+        company.address_line1,
+        company.city,
+        company.region,
+    )
+    profile_complete = all(
+        isinstance(value, str) and bool(value.strip()) for value in required_profile_values
+    )
+    has_zones = db.query(ShippingZone.id).filter(
+        ShippingZone.logistics_company_id == company_id,
+        ShippingZone.is_active.is_(True),
+    ).first() is not None
+    has_services = db.query(ShippingMethod.id).filter(
+        ShippingMethod.logistics_company_id == company_id,
+        ShippingMethod.is_active.is_(True),
+    ).first() is not None
+    has_rates = db.query(ShippingRate.id).join(
+        ShippingMethod, ShippingRate.method_id == ShippingMethod.id
+    ).filter(
+        ShippingMethod.logistics_company_id == company_id,
+        ShippingMethod.is_active.is_(True),
+        ShippingRate.is_active.is_(True),
+    ).first() is not None
+    has_payout_account = db.query(LogisticsPayoutAccount.id).filter(
+        LogisticsPayoutAccount.logistics_company_id == company_id,
+        LogisticsPayoutAccount.is_active.is_(True),
+    ).first() is not None
+    integration = db.query(LogisticsIntegrationConfig).filter(
+        LogisticsIntegrationConfig.logistics_company_id == company_id
+    ).first()
+    has_webhook = bool(
+        integration
+        and integration.is_active
+        and (integration.outbound_webhook_url or integration.api_base_url)
+    )
+
+    steps = [
+        {"key": "company_profile", "label": "Company profile", "description": "Add legal, tax, contact and operating-address details.", "completed": profile_complete, "required": True, "href": "/logistics/settings"},
+        {"key": "zones", "label": "Delivery zones", "description": "Define at least one active delivery coverage zone.", "completed": has_zones, "required": True, "href": "/logistics/pricing"},
+        {"key": "services", "label": "Delivery services", "description": "Create at least one active delivery service and its ETA.", "completed": has_services, "required": True, "href": "/logistics/pricing"},
+        {"key": "rates", "label": "Shipping charges", "description": "Configure at least one active rate for your service and zone.", "completed": has_rates, "required": True, "href": "/logistics/pricing"},
+        {"key": "payout_account", "label": "Payment account", "description": "Add the account where Xerin should send your settlements.", "completed": has_payout_account, "required": True, "href": "/logistics/wallet"},
+        {"key": "webhook", "label": "Webhook integration", "description": "Connect your own system now, or skip this optional step.", "completed": has_webhook, "required": False, "href": "/logistics/integration"},
+    ]
+    required_steps = [step for step in steps if step["required"]]
+    completed = sum(bool(step["completed"]) for step in required_steps)
+    ready = completed == len(required_steps)
+    next_step = next((step for step in required_steps if not step["completed"]), None)
+    if company.status == LogisticsCompanyStatus.active:
+        state = "approved"
+    elif ready:
+        state = "ready_for_review"
+    elif completed:
+        state = "in_progress"
+    else:
+        state = "invited"
+    return {
+        "company_id": company_id,
+        "company_name": company.name,
+        "company_status": company.status,
+        "state": state,
+        "required_completed": completed,
+        "required_total": len(required_steps),
+        "progress_percent": round((completed / len(required_steps)) * 100),
+        "ready_for_review": ready,
+        "steps": steps,
+        "next_step": next_step,
     }
 
 
