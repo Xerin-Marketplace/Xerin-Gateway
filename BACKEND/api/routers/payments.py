@@ -42,6 +42,7 @@ from api.schemas import (
     NameLookupResponse,
     OrderPaymentStateResponse,
     ZenoPayWebhookRequest,
+    ZenoPayDiagnosticsResponse,
 )
 from api.enums import InventoryReservationStatus, SellerOrderStatus
 from api.services.azampay_service import AzamPayAPIError, AzamPayClient, AzamPayConfigurationError
@@ -397,6 +398,43 @@ def azampay_diagnostics(
     base["provider_names"] = provider_names
     base["merchant_configured"] = bool(rows)
     return base
+
+
+@router.get("/zenopay/diagnostics", response_model=ZenoPayDiagnosticsResponse)
+def zenopay_diagnostics(
+    current_user: User = Depends(require_permission("payment_providers:read")),
+):
+    """Return safe ZenoPay rollout readiness without exposing credentials."""
+    del current_user
+    api_key_configured = bool(settings.ZENOPAY_API_KEY)
+    webhook_configured = bool(settings.ZENOPAY_WEBHOOK_URL)
+    webhook_uses_https = bool(
+        settings.ZENOPAY_WEBHOOK_URL
+        and settings.ZENOPAY_WEBHOOK_URL.lower().startswith("https://")
+    )
+    errors: list[str] = []
+    if not api_key_configured:
+        errors.append("ZENOPAY_API_KEY is not configured")
+    if not webhook_configured:
+        errors.append("ZENOPAY_WEBHOOK_URL is not configured")
+    elif not webhook_uses_https:
+        errors.append("ZENOPAY_WEBHOOK_URL must use HTTPS")
+    if settings.MNO_PAYMENT_PROVIDER != "zenopay":
+        errors.append("MNO_PAYMENT_PROVIDER is not set to zenopay")
+    return {
+        "provider": "zenopay",
+        "configured": api_key_configured and webhook_uses_https,
+        "active_for_mno": settings.MNO_PAYMENT_PROVIDER == "zenopay",
+        "base_url": settings.ZENOPAY_BASE_URL,
+        "mobile_money_path": settings.ZENOPAY_MNO_PAYMENT_PATH,
+        "order_status_path": settings.ZENOPAY_ORDER_STATUS_PATH,
+        "api_key_configured": api_key_configured,
+        "webhook_configured": webhook_configured,
+        "webhook_uses_https": webhook_uses_https,
+        "timeout_seconds": settings.ZENOPAY_TIMEOUT_SECONDS,
+        "max_amount_tzs": settings.ZENOPAY_MAX_AMOUNT_TZS,
+        "errors": errors,
+    }
 
 
 def _execute_azampay_payment(
@@ -840,10 +878,15 @@ def retry_payment(
             status_code=status.HTTP_409_CONFLICT,
             detail=f"Payment in {payment.status.value} status cannot be retried",
         )
-    if payment.method not in {PaymentMethod.mobile_money, PaymentMethod.card} or (payment.provider or "").lower() != "azampay":
+    retry_provider = (payment.provider or "").lower()
+    provider_supported = (
+        retry_provider == "azampay"
+        or (retry_provider == "zenopay" and payment.method == PaymentMethod.mobile_money)
+    )
+    if payment.method not in {PaymentMethod.mobile_money, PaymentMethod.card} or not provider_supported:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            detail="Only failed or cancelled AzamPay online payments can be retried",
+            detail="Only failed or cancelled supported online payments can be retried",
         )
 
     # A failed provider attempt must not have consumed the order's stock hold.
@@ -869,7 +912,7 @@ def retry_payment(
         )
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=detail)
 
-    # Each retry is a NEW Payment row and therefore a NEW AzamPay externalId.
+    # Each retry is a NEW Payment row and therefore a NEW provider order ID.
     # The order itself is reused, preventing duplicate orders.
     attempt = Payment(
         order_id=order.id,
@@ -877,7 +920,7 @@ def retry_payment(
         amount=order.total,
         currency=order.currency,
         method=payment.method,
-        provider="azampay",
+        provider=retry_provider,
         status=PaymentStatus.pending,
     )
     db.add(attempt)
@@ -922,10 +965,81 @@ def retry_payment(
             "previous_payment_id": str(payment.id),
             "payment_reference": str(attempt.id),
             "method": attempt.method.value,
-            "provider": "azampay",
+            "provider": retry_provider,
             "mno": mno_provider if attempt.method == PaymentMethod.mobile_money else None,
         },
     )
+
+    if retry_provider == "zenopay":
+        client = ZenoPayClient()
+        try:
+            result = client.initiate_mobile_money(
+                external_order_id=str(attempt.id),
+                buyer_email=current_user.email,
+                buyer_name=(f"{current_user.first_name or ''} {current_user.last_name or ''}".strip() or "Xerin customer"),
+                buyer_phone=phone_number or "",
+                amount=Decimal(order.total),
+                metadata={"order_id": str(order.id), "payment_id": str(attempt.id),
+                          "previous_payment_id": str(payment.id)},
+            )
+        except ValueError as exc:
+            attempt.status = PaymentStatus.failed
+            attempt.failure_reason = str(exc)
+            _record_transaction(db, attempt, "provider_rejected", PaymentStatus.failed.value,
+                                order.total, {"provider": "zenopay", "message": str(exc),
+                                              "retryable": False, "previous_payment_id": str(payment.id)})
+            _commit(db)
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                                detail=_payment_error_detail(code="INVALID_PAYMENT_REQUEST", message=str(exc),
+                                                             payment=attempt, order=order, retryable=False)) from exc
+        except ZenoPayConfigurationError as exc:
+            attempt.status = PaymentStatus.failed
+            attempt.failure_reason = str(exc)
+            _record_transaction(db, attempt, "provider_configuration_error", PaymentStatus.failed.value,
+                                order.total, {"provider": "zenopay", "message": str(exc),
+                                              "retryable": False, "previous_payment_id": str(payment.id)})
+            _commit(db)
+            raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                                detail=_payment_error_detail(code="PAYMENT_PROVIDER_CONFIGURATION_ERROR",
+                                                             message=str(exc), payment=attempt, order=order,
+                                                             retryable=False)) from exc
+        except ZenoPayAPIError as exc:
+            attempt.status = PaymentStatus.failed
+            attempt.failure_reason = str(exc)
+            _record_transaction(db, attempt, "provider_error", PaymentStatus.failed.value,
+                                order.total, {"provider": "zenopay", "provider_status": exc.status_code,
+                                              "message": str(exc), "retryable": exc.retryable,
+                                              "previous_payment_id": str(payment.id)})
+            _commit(db)
+            http_status = exc.status_code if exc.status_code in {502, 503, 504} else status.HTTP_502_BAD_GATEWAY
+            raise HTTPException(status_code=http_status,
+                                detail=_payment_error_detail(code="PAYMENT_PROVIDER_UNAVAILABLE" if exc.retryable else "PAYMENT_PROVIDER_ERROR",
+                                                             message=str(exc), payment=attempt, order=order,
+                                                             retryable=exc.retryable,
+                                                             provider_status=exc.status_code)) from exc
+        if not result.accepted:
+            attempt.status = PaymentStatus.failed
+            attempt.failure_reason = result.message or "ZenoPay rejected the payment retry"
+            attempt.provider_response = result.raw
+            _record_transaction(db, attempt, "provider_rejected", PaymentStatus.failed.value,
+                                order.total, result.raw)
+            _commit(db)
+            raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY,
+                                detail=_payment_error_detail(code="PAYMENT_PROVIDER_REJECTED",
+                                                             message=attempt.failure_reason, payment=attempt,
+                                                             order=order, retryable=False))
+        attempt.status = PaymentStatus.processing
+        attempt.provider_transaction_id = result.provider_reference
+        attempt.provider_response = {
+            **result.raw, "external_order_id": result.external_order_id,
+            "message": result.message, "mno": mno_provider,
+            "previous_payment_id": str(payment.id),
+        }
+        _record_transaction(db, attempt, "provider_request", PaymentStatus.processing.value,
+                            order.total, attempt.provider_response)
+        _commit(db, conflict_detail="ZenoPay retry transaction conflict")
+        db.refresh(attempt)
+        return attempt
 
     client = AzamPayClient()
     try:
