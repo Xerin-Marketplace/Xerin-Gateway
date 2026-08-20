@@ -30,6 +30,16 @@ class FulfillmentReadiness:
     def blockers(self) -> list[ReadinessCheck]:
         return [check for check in self.checks if check.blocking and not check.ready]
 
+    @property
+    def packages(self) -> list[SellerOrderPackage]:
+        """Compatibility collection for readiness summaries.
+
+        Phase 1 stores one package record per seller order. The response
+        contract is already multi-package capable, so expose the current record
+        as a collection without changing the persistence model.
+        """
+        return [self.package] if self.package is not None else []
+
 
 def _positive(value) -> bool:
     if value is None:
