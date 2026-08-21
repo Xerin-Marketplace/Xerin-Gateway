@@ -54,6 +54,7 @@ from api.schemas import (
     LogisticsCompanyOnboardResponse,
     LogisticsCredentialsEmailResponse,
     LogisticsOnboardingStatusResponse,
+    PaginatedLogisticsOnboardingResponse,
     LogisticsOnboardingReviewRequest,
     LogisticsCompanyAccountResponse,
     LogisticsCompanyProfileUpdate,
@@ -1870,7 +1871,9 @@ def _company_onboarding_status(db: Session, company: LogisticsCompany) -> dict:
     elif stored_state == "changes_requested":
         state = "changes_requested"
     elif ready:
-        state = "ready_for_review"
+        # Completing every required item automatically places the company in
+        # the admin-decision state; a separate submit click is not required.
+        state = "submitted"
     elif completed:
         state = "in_progress"
     else:
@@ -1901,6 +1904,45 @@ def my_logistics_onboarding(
     if not membership or not membership.company:
         raise HTTPException(403, "User is not linked to a logistics company")
     return _company_onboarding_status(db, membership.company)
+
+
+@router.get("/onboarding/review-queue", response_model=PaginatedLogisticsOnboardingResponse)
+def logistics_onboarding_review_queue(
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=100),
+    search: str | None = Query(None, max_length=150),
+    state_filter: str | None = Query(None, alias="state"),
+    db: Session = Depends(get_db),
+    _: User = Depends(require_permission(PermissionCode.logistics_companies_read.value)),
+):
+    """Admin queue for company onboarding readiness and approval decisions."""
+    allowed_states = {"invited", "in_progress", "ready_for_review", "submitted", "changes_requested", "approved"}
+    if state_filter and state_filter not in allowed_states:
+        raise HTTPException(422, "Invalid onboarding state filter")
+    query = db.query(LogisticsCompany)
+    term = (search or "").strip()
+    if term:
+        pattern = f"%{term}%"
+        query = query.filter(or_(
+            LogisticsCompany.name.ilike(pattern),
+            LogisticsCompany.code.ilike(pattern),
+            LogisticsCompany.contact_email.ilike(pattern),
+            LogisticsCompany.contact_phone.ilike(pattern),
+        ))
+    statuses = [_company_onboarding_status(db, company) for company in query.order_by(LogisticsCompany.created_at.desc()).all()]
+    if state_filter:
+        statuses = [item for item in statuses if item["state"] == state_filter]
+    priority = {"submitted": 0, "changes_requested": 1, "ready_for_review": 2, "in_progress": 3, "invited": 4, "approved": 5}
+    statuses.sort(key=lambda item: (priority.get(item["state"], 99), item["company_name"].lower()))
+    total = len(statuses)
+    start = (page - 1) * page_size
+    return {
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+        "total_pages": _pages(total, page_size),
+        "results": statuses[start:start + page_size],
+    }
 
 
 @router.post("/me/onboarding/submit", response_model=LogisticsOnboardingStatusResponse)
@@ -1959,8 +2001,6 @@ def review_company_onboarding(
     if data.decision == "approve" and not readiness["ready_for_review"]:
         raise HTTPException(409, "Company onboarding is incomplete and cannot be approved")
     onboarding = (company.metadata_json or {}).get("onboarding") or {}
-    if data.decision == "approve" and onboarding.get("state") != "submitted":
-        raise HTTPException(409, "The logistics company must submit onboarding before approval")
 
     now = datetime.now(timezone.utc).isoformat()
     metadata = dict(company.metadata_json or {})

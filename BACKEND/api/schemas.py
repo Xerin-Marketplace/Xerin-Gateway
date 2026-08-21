@@ -2394,6 +2394,14 @@ class LogisticsOnboardingStatusResponse(BaseModel):
     review_note: Optional[str] = None
 
 
+class PaginatedLogisticsOnboardingResponse(BaseModel):
+    total: int
+    page: int
+    page_size: int
+    total_pages: int
+    results: list[LogisticsOnboardingStatusResponse]
+
+
 class LogisticsOnboardingReviewRequest(BaseModel):
     decision: Literal["approve", "changes_requested"]
     note: Optional[str] = Field(default=None, max_length=2000)
