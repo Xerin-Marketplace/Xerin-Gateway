@@ -178,3 +178,13 @@ BACKEND/backend.zip
 -r
 tabase.sql
 pytest.ini
+
+# Backend generated/runtime files
+BACKEND/scripts/
+BACKEND/alembic/
+BACKEND/uploads/
+BACKEND/api/services/
+BACKEND/api/middleware/
+BACKEND/api/Backup/
+BACKEND/api/routers/shipping/
+BACKEND/api/logistics/
