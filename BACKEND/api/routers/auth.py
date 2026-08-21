@@ -38,12 +38,14 @@ from api.security import (
     ALGORITHM,
 )
 from api.config import settings
+
 # from api.utils import send_email, send_sms
 from api.routers.email import (
     send_email as _send_email,
     send_otp_email as _send_otp_email,
 )
 from api.routers.sms import send_sms as _send_sms
+
 
 def send_email(to: str, subject: str, body: str, html: str | None = None) -> None:
     return _send_email(to=to, subject=subject, body=body, html=html)
@@ -67,6 +69,7 @@ def send_otp_email(
 
 def send_sms(to: str, message: str) -> None:
     return _send_sms(to=to, message=message)
+
 
 logger = logging.getLogger(__name__)
 
@@ -200,7 +203,9 @@ def _clear_otp_failures(phone: str) -> None:
         _otp_attempts.pop(phone, None)
 
 
-def _invalidate_existing_otps(db: Session, phone: str, purpose: str = "generic") -> None:
+def _invalidate_existing_otps(
+    db: Session, phone: str, purpose: str = "generic"
+) -> None:
     """
     Mark any previously-issued, unverified OTPs for this phone AND this
     purpose as used/invalid, so only the most recently issued OTP for that
@@ -265,6 +270,7 @@ def cleanup_old_otp_requests(db: Session, older_than_days: int = 30) -> int:
     db.commit()
     return deleted
 
+
 def _get_required_role(db: Session, role_name: str) -> Role:
     role = db.query(Role).filter(Role.name == role_name).first()
     if role is None:
@@ -297,9 +303,7 @@ def register(data: RegisterRequest, db: Session = Depends(get_db)):
         raise HTTPException(status_code=422, detail="Phone number is required")
 
     existing_user = (
-        db.query(User)
-        .filter((User.email == email) | (User.phone == phone))
-        .first()
+        db.query(User).filter((User.email == email) | (User.phone == phone)).first()
     )
 
     resumed_registration = False
@@ -404,19 +408,23 @@ def register_seller(data: SellerRegisterRequest, db: Session = Depends(get_db)):
         raise HTTPException(status_code=400, detail="Seller agreement must be accepted")
 
     if not data.business_category_ids:
-        raise HTTPException(status_code=400, detail="At least one business category is required")
+        raise HTTPException(
+            status_code=400, detail="At least one business category is required"
+        )
 
-    categories = db.query(BusinessCategory).filter(
-        BusinessCategory.id.in_(data.business_category_ids)
-    ).all()
+    categories = (
+        db.query(BusinessCategory)
+        .filter(BusinessCategory.id.in_(data.business_category_ids))
+        .all()
+    )
 
     if len(categories) != len(set(data.business_category_ids)):
-        raise HTTPException(status_code=400, detail="One or more business categories are invalid")
+        raise HTTPException(
+            status_code=400, detail="One or more business categories are invalid"
+        )
 
     existing_user = (
-        db.query(User)
-        .filter((User.email == email) | (User.phone == phone))
-        .first()
+        db.query(User).filter((User.email == email) | (User.phone == phone)).first()
     )
 
     resumed_registration = False
@@ -544,20 +552,25 @@ def register_seller(data: SellerRegisterRequest, db: Session = Depends(get_db)):
         seller_id=seller.id,
         email=user.email,
         phone=user.phone,
-        seller_status=seller.status.value if hasattr(seller.status, "value") else str(seller.status),
+        seller_status=seller.status.value
+        if hasattr(seller.status, "value")
+        else str(seller.status),
         resumed_registration=resumed_registration,
     )
 
+
 def build_auth_user_response(db: Session, user: User):
     seller = db.query(Seller).filter(Seller.user_id == user.id).first()
-    logistics_membership = db.query(LogisticsCompanyUser).filter(
-        LogisticsCompanyUser.user_id == user.id,
-        LogisticsCompanyUser.is_active.is_(True),
-    ).first()
+    logistics_membership = (
+        db.query(LogisticsCompanyUser)
+        .filter(
+            LogisticsCompanyUser.user_id == user.id,
+            LogisticsCompanyUser.is_active.is_(True),
+        )
+        .first()
+    )
 
-    user_roles = db.query(UserRole).filter(
-        UserRole.user_id == user.id
-    ).all()
+    user_roles = db.query(UserRole).filter(UserRole.user_id == user.id).all()
 
     roles = [user_role.role.name for user_role in user_roles]
 
@@ -566,9 +579,9 @@ def build_auth_user_response(db: Session, user: User):
     permissions = []
 
     if role_ids:
-        role_permissions = db.query(RolePermission).filter(
-            RolePermission.role_id.in_(role_ids)
-        ).all()
+        role_permissions = (
+            db.query(RolePermission).filter(RolePermission.role_id.in_(role_ids)).all()
+        )
 
         permissions = {
             role_permission.permission.code
@@ -578,13 +591,11 @@ def build_auth_user_response(db: Session, user: User):
     else:
         permissions = set()
 
-    direct_permissions = db.query(UserPermission).filter(
-        UserPermission.user_id == user.id
-    ).all()
+    direct_permissions = (
+        db.query(UserPermission).filter(UserPermission.user_id == user.id).all()
+    )
     permissions.update(
-        row.permission.code
-        for row in direct_permissions
-        if row.permission is not None
+        row.permission.code for row in direct_permissions if row.permission is not None
     )
     permissions = sorted(permissions)
 
@@ -654,11 +665,11 @@ def login(request: Request, data: LoginRequest, db: Session = Depends(get_db)):
     db.commit()
 
     return {
-    "access_token": access_token,
-    "refresh_token": refresh_token,
-    "token_type": "bearer",
-    "user": build_auth_user_response(db, user),
-}
+        "access_token": access_token,
+        "refresh_token": refresh_token,
+        "token_type": "bearer",
+        "user": build_auth_user_response(db, user),
+    }
 
 
 @router.post("/logout")
@@ -798,7 +809,10 @@ def send_otp(request: Request, data: SendOTPRequest, db: Session = Depends(get_d
         except Exception as e:
             logger.exception("send_email failed for %s: %s", user.email, e)
 
-    return {"message": "OTP sent successfully", "dev_otp": otp if settings.DEBUG else None}
+    return {
+        "message": "OTP sent successfully",
+        "dev_otp": otp if settings.DEBUG else None,
+    }
 
 
 @router.post("/verify-otp")
@@ -844,7 +858,6 @@ def verify_otp(data: VerifyOTPRequest, db: Session = Depends(get_db)):
     _clear_otp_failures(phone)
 
     return {"message": "OTP verified successfully"}
-
 
 
 def _find_user_by_verification_identifier(db: Session, identifier: str) -> User | None:
@@ -952,7 +965,7 @@ def resend_verification(
         logger.exception("send_email failed for %s: %s", user.email, exc)
 
     if not sms_sent and not email_sent:
-        # Do not tell the frontend that the OTP was sent when no delivery
+        # Do not tell the Frontend that the OTP was sent when no delivery
         # channel actually accepted the message.
         raise HTTPException(
             status_code=503,
@@ -1041,7 +1054,9 @@ def verify_account_otp(
 
 
 @router.post("/forgot-password")
-def forgot_password(request: Request, data: ForgotPasswordRequest, db: Session = Depends(get_db)):
+def forgot_password(
+    request: Request, data: ForgotPasswordRequest, db: Session = Depends(get_db)
+):
     email = data.email.strip().lower()
     ip = _client_ip(request)
 
@@ -1088,7 +1103,10 @@ def forgot_password(request: Request, data: ForgotPasswordRequest, db: Session =
     except Exception as e:
         logger.exception("send_sms failed for %s: %s", user.phone, e)
 
-    return {"message": "Password reset OTP sent", "dev_otp": otp if settings.DEBUG else None}
+    return {
+        "message": "Password reset OTP sent",
+        "dev_otp": otp if settings.DEBUG else None,
+    }
 
 
 @router.post("/reset-password")
@@ -1142,7 +1160,8 @@ def change_password(
 
     if data.current_password == data.new_password:
         raise HTTPException(
-            status_code=400, detail="New password must be different from current password"
+            status_code=400,
+            detail="New password must be different from current password",
         )
 
     user.password_hash = hash_password(data.new_password)

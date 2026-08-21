@@ -79,6 +79,7 @@ async def lifespan(_: FastAPI):
     yield
     logger.info("Stopping %s", settings.APP_NAME)
 
+
 api = FastAPI(
     title=settings.APP_NAME,
     version="1.0.0",
@@ -94,15 +95,15 @@ if settings.trusted_hosts:
     api.add_middleware(
         TrustedHostMiddleware,
         allowed_hosts=[
-        "127.0.0.1",
-        "testserver",
-        "localhost",
-        "api.xerinmarketplace.com",
-        "169.58.54.110",
-        "169.58.54.110:8080",
-        "https://frontend-new-five-puce.vercel.app",
-    ],
-)
+            "127.0.0.1",
+            "testserver",
+            "localhost",
+            "api.xerinmarketplace.com",
+            "169.58.54.110",
+            "169.58.54.110:8080",
+            "https://Frontend-new-five-puce.vercel.app",
+        ],
+    )
 
 
 api.add_middleware(AuditMiddleware)

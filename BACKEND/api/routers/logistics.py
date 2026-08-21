@@ -2607,3 +2607,53 @@ def update_pickup_job_status(
             created_by_id=current_user.id,
         ))
     _commit(db); db.refresh(job); return job
+    
+    
+@router.get(
+    "/eligible",
+    response_model=list[LogisticsCompanyResponse],
+)
+def get_eligible_logistics_companies(
+    city: str = Query(...),
+    region: str | None = Query(None),
+    country: str | None = Query(None),
+    scope: LogisticsScope = Query(LogisticsScope.local),
+    db: Session = Depends(get_db),
+):
+    """Find active logistics companies that cover the delivery address."""
+    query = db.query(LogisticsCompany).filter(
+        LogisticsCompany.status == LogisticsCompanyStatus.active,
+        LogisticsCompany.scope == scope,
+    )
+    
+    # Join with zones to match coverage
+    query = query.join(
+        ShippingZone,
+        ShippingZone.logistics_company_id == LogisticsCompany.id,
+    ).filter(
+        ShippingZone.is_active.is_(True),
+    )
+    
+    # Match by city or entire country coverage
+    zone_filter = or_(
+        ShippingZone.cities.icontains(city),
+        ShippingZone.covers_entire_country.is_(True),
+    )
+    if region:
+        zone_filter = or_(zone_filter, ShippingZone.regions.icontains(region))
+    
+    query = query.filter(zone_filter)
+    
+    # Ensure company has active services and rates
+    query = query.join(
+        ShippingMethod,
+        ShippingMethod.logistics_company_id == LogisticsCompany.id,
+    ).filter(ShippingMethod.is_active.is_(True))
+    
+    query = query.join(
+        ShippingRate,
+        ShippingRate.method_id == ShippingMethod.id,
+    ).filter(ShippingRate.is_active.is_(True))
+    
+    companies = query.distinct().all()
+    return companies

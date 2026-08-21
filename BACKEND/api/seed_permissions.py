@@ -117,6 +117,8 @@ DEFAULT_ROLE_PERMISSIONS: dict[str, set[str]] = {
         PermissionCode.STORE_UPLOAD_MEDIA.value,
         PermissionCode.STORE_MANAGE_GALLERY.value,
         PermissionCode.STORE_MANAGE_HOURS.value,
+        PermissionCode.seller_pickup_locations_read.value,
+        PermissionCode.seller_pickup_locations_manage.value,
     },
     "admin": {
         PermissionCode.view_profile.value,

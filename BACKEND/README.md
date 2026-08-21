@@ -47,6 +47,11 @@ if [ -d public ]; then
     cp -a public .next/standalone/
 fi
 
-sudo systemctl restart xerin-frontend
+sudo systemctl restart xerin-Frontend
 
 psql -h localhost -U xerin -d xerin
+
+
+
+
+

@@ -39,8 +39,10 @@ class Settings(BaseSettings):
     REFRESH_TOKEN_EXPIRE_DAYS: int = Field(default=7, ge=1)
 
     # Browser and proxy security
-    CORS_ORIGINS: str = "http://localhost:3000,http://127.0.0.1:3000, http://169.58.54.110:8081, https://frontend-new-five-puce.vercel.app, https://xerinmarketplace.com"
-    TRUSTED_HOSTS: str = "localhost,127.0.0.1, http://169.58.54.110:8081 https://xerinmarketplace.com/"
+    CORS_ORIGINS: str = "http://localhost:3000,http://127.0.0.1:3000, http://169.58.54.110:8081, https://Frontend-new-five-puce.vercel.app, https://xerinmarketplace.com"
+    TRUSTED_HOSTS: str = (
+        "localhost,127.0.0.1, http://169.58.54.110:8081 https://xerinmarketplace.com/"
+    )
     TRUST_PROXY_HEADERS: bool = False
 
     # Local uploads (temporary until object storage is introduced)
@@ -119,8 +121,12 @@ class Settings(BaseSettings):
     AZAMPAY_CARD_FAILURE_URL: str | None = None
     AZAMPAY_CALLBACK_SECRET: str | None = None
     AZAMPAY_LANGUAGE: str = "en"
-    AZAMPAY_SANDBOX_AUTH_URL: str = "https://authenticator-sandbox.azampay.co.tz/AppRegistration/GenerateToken"
-    AZAMPAY_LIVE_AUTH_URL: str = "https://authenticator.azampay.co.tz/AppRegistration/GenerateToken"
+    AZAMPAY_SANDBOX_AUTH_URL: str = (
+        "https://authenticator-sandbox.azampay.co.tz/AppRegistration/GenerateToken"
+    )
+    AZAMPAY_LIVE_AUTH_URL: str = (
+        "https://authenticator.azampay.co.tz/AppRegistration/GenerateToken"
+    )
     AZAMPAY_SANDBOX_BASE_URL: str = "https://sandbox.azampay.co.tz"
     AZAMPAY_LIVE_BASE_URL: str = "https://checkout.azampay.co.tz"
     AZAMPAY_MNO_CHECKOUT_PATH: str = "/azampay/mno/checkout"
@@ -209,7 +215,7 @@ class Settings(BaseSettings):
     def is_production(self) -> bool:
         return self.APP_ENV == "production"
 
-
     PICKUP_PROOF_REVIEW_MINUTES: int = 120
+
 
 settings = Settings()

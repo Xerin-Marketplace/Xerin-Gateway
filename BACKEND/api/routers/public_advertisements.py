@@ -61,8 +61,6 @@ def _no_stale_ad_cache(response: Response) -> None:
     response.headers["Pragma"] = "no-cache"
 
 
-
-
 def _session_hash(session_id: str) -> str:
     return hashlib.sha256(session_id.encode("utf-8")).hexdigest()
 
@@ -96,9 +94,7 @@ def _record_engagement(
             event_key=event_key,
             page_path=payload.page_path,
         )
-        .on_conflict_do_nothing(
-            index_elements=[AdvertisementEngagementEvent.event_key]
-        )
+        .on_conflict_do_nothing(index_elements=[AdvertisementEngagementEvent.event_key])
         .returning(AdvertisementEngagementEvent.id)
     )
 
@@ -127,11 +123,8 @@ def _record_engagement(
 
 def _live_ad_for_tracking(db: Session, advertisement_id):
     now = datetime.now(timezone.utc)
-    return (
-        _live_query(db, now=now)
-        .filter(Advertisement.id == advertisement_id)
-        .first()
-    )
+    return _live_query(db, now=now).filter(Advertisement.id == advertisement_id).first()
+
 
 @router.get(
     "/active",
@@ -166,8 +159,6 @@ def active_advertisements(
     return [_public_ad(row) for row in rows]
 
 
-
-
 @router.post(
     "/{advertisement_id}/impression",
     response_model=AdvertisementTrackingResponse,
@@ -179,7 +170,7 @@ def track_advertisement_impression(
 ):
     """Count a real storefront impression once per browser session.
 
-    The frontend only calls this after at least 50% of the advertisement has
+    The Frontend only calls this after at least 50% of the advertisement has
     remained visible for a short period. Server-side event_key uniqueness is
     the second line of defence against inflated React re-render counts.
     """
@@ -189,11 +180,15 @@ def track_advertisement_impression(
         ad_id = UUID(advertisement_id)
     except ValueError:
         from fastapi import HTTPException, status
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Advertisement not found")
+
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Advertisement not found"
+        )
 
     advertisement = _live_ad_for_tracking(db, ad_id)
     if advertisement is None:
         from fastapi import HTTPException, status
+
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="Advertisement is not currently live",
@@ -223,11 +218,15 @@ def track_advertisement_click(
         ad_id = UUID(advertisement_id)
     except ValueError:
         from fastapi import HTTPException, status
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Advertisement not found")
+
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Advertisement not found"
+        )
 
     advertisement = _live_ad_for_tracking(db, ad_id)
     if advertisement is None:
         from fastapi import HTTPException, status
+
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="Advertisement is not currently live",
@@ -240,6 +239,7 @@ def track_advertisement_click(
         payload=payload,
     )
 
+
 @router.get(
     "/slot/{placement}",
     response_model=PublicAdvertisementSlotResponse,
@@ -251,7 +251,7 @@ def active_advertisement_slot(
 ):
     """Return the winning live ad for one storefront placement.
 
-    If no campaign is live, advertisement=null. The frontend can then render
+    If no campaign is live, advertisement=null. The Frontend can then render
     the existing Xerin template/fallback card without any special error state.
     """
     now = datetime.now(timezone.utc)
@@ -319,9 +319,7 @@ def active_advertisement_slots(
         {
             "placement": placement,
             "advertisement": (
-                _public_ad(winners[placement])
-                if placement in winners
-                else None
+                _public_ad(winners[placement]) if placement in winners else None
             ),
         }
         for placement in requested
