@@ -155,8 +155,6 @@ BACKEND/tests/
 BACKEND/backend.zip
 update.py
 
-
-
 # Python virtual environment
 BACKEND/.venv/
 
