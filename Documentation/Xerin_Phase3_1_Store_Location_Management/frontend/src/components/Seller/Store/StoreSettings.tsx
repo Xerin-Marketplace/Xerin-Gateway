@@ -25,6 +25,14 @@ import {
 } from "@/hooks/useStore";
 import { authStorage } from "@/lib/auth/storage";
 import type { CreateStorePayload, Store } from "@/types/api/store";
+import {
+  STORE_COUNTRIES,
+  getGlobalCities,
+  getGlobalStates,
+  getTanzaniaDistricts,
+  getTanzaniaRegions,
+  getTanzaniaWards,
+} from "@/lib/locations/storeLocations";
 
 type ViewMode = "list" | "create" | "edit";
 
@@ -97,6 +105,11 @@ export default function SellerStoreSettings() {
   const [mode, setMode] = useState<ViewMode>("list");
   const [selectedStoreId, setSelectedStoreId] = useState<string | null>(null);
   const [form, setForm] = useState<StoreFormState>(EMPTY_FORM);
+  const [regionOptions, setRegionOptions] = useState<string[]>([]);
+  const [districtOptions, setDistrictOptions] = useState<string[]>([]);
+  const [wardOptions, setWardOptions] = useState<string[]>([]);
+  const [locationLoading, setLocationLoading] = useState(false);
+  const [locationError, setLocationError] = useState<string | null>(null);
 
   const selectedStore = useMemo(
     () => stores.find((store) => String(store.id) === selectedStoreId) ?? null,
@@ -106,6 +119,82 @@ export default function SellerStoreSettings() {
   useEffect(() => {
     if (mode === "edit" && selectedStore) setForm(formFromStore(selectedStore));
   }, [mode, selectedStore]);
+
+  useEffect(() => {
+    let cancelled = false;
+    async function loadRegions() {
+      if (mode === "list" || !form.country) return;
+      setLocationLoading(true);
+      setLocationError(null);
+      try {
+        const values = predictedScope(form.country) === "local"
+          ? await getTanzaniaRegions()
+          : await getGlobalStates(form.country);
+        if (!cancelled) setRegionOptions(values);
+      } catch {
+        if (!cancelled) {
+          setRegionOptions([]);
+          setLocationError("Location suggestions are temporarily unavailable. You can still type the location manually.");
+        }
+      } finally {
+        if (!cancelled) setLocationLoading(false);
+      }
+    }
+    loadRegions();
+    return () => { cancelled = true; };
+  }, [mode, form.country]);
+
+  useEffect(() => {
+    let cancelled = false;
+    async function loadDistricts() {
+      if (mode === "list" || !form.country || !form.region) {
+        setDistrictOptions([]);
+        return;
+      }
+      setLocationLoading(true);
+      setLocationError(null);
+      try {
+        const values = predictedScope(form.country) === "local"
+          ? await getTanzaniaDistricts(form.region)
+          : await getGlobalCities(form.country, form.region);
+        if (!cancelled) setDistrictOptions(values);
+      } catch {
+        if (!cancelled) {
+          setDistrictOptions([]);
+          setLocationError("Location suggestions are temporarily unavailable. You can still type the location manually.");
+        }
+      } finally {
+        if (!cancelled) setLocationLoading(false);
+      }
+    }
+    loadDistricts();
+    return () => { cancelled = true; };
+  }, [mode, form.country, form.region]);
+
+  useEffect(() => {
+    let cancelled = false;
+    async function loadWards() {
+      if (mode === "list" || predictedScope(form.country) !== "local" || !form.district) {
+        setWardOptions([]);
+        return;
+      }
+      setLocationLoading(true);
+      setLocationError(null);
+      try {
+        const values = await getTanzaniaWards(form.district);
+        if (!cancelled) setWardOptions(values);
+      } catch {
+        if (!cancelled) {
+          setWardOptions([]);
+          setLocationError("Ward suggestions are temporarily unavailable. You can still type the ward manually.");
+        }
+      } finally {
+        if (!cancelled) setLocationLoading(false);
+      }
+    }
+    loadWards();
+    return () => { cancelled = true; };
+  }, [mode, form.country, form.district]);
 
   if (!token || !isSeller) {
     router.replace("/signin?redirect=/seller/store");
@@ -328,14 +417,66 @@ export default function SellerStoreSettings() {
             <ScopeBadge scope={scope} />
           </div>
           <div className="grid gap-4 md:grid-cols-2">
-            <Field label="Country" required value={form.country} onChange={(value) => setForm({ ...form, country: value })} placeholder="Tanzania" />
-            <Field label="Region / State" value={form.region} onChange={(value) => setForm({ ...form, region: value })} />
-            <Field label="District / City" value={form.district} onChange={(value) => setForm({ ...form, district: value })} />
-            <Field label="Ward" value={form.ward} onChange={(value) => setForm({ ...form, ward: value })} />
+            <SelectField
+              label="Country"
+              required
+              value={form.country}
+              options={STORE_COUNTRIES.map((country) => ({ value: country.value, label: country.label }))}
+              onChange={(value) => {
+                setForm({ ...form, country: value, region: "", district: "", ward: "" });
+                setRegionOptions([]);
+                setDistrictOptions([]);
+                setWardOptions([]);
+              }}
+            />
+            <LocationCombobox
+              id="store-region"
+              label={scope === "local" ? "Region" : "State / Province / Emirate"}
+              value={form.region}
+              options={regionOptions}
+              loading={locationLoading}
+              placeholder={scope === "local" ? "Select or type a region" : "Select or type a state / province"}
+              onChange={(value) => {
+                setForm({ ...form, region: value, district: "", ward: "" });
+                setDistrictOptions([]);
+                setWardOptions([]);
+              }}
+            />
+            <LocationCombobox
+              id="store-district"
+              label={scope === "local" ? "District / Municipality" : "City"}
+              value={form.district}
+              options={districtOptions}
+              loading={locationLoading}
+              disabled={!form.region}
+              placeholder={scope === "local" ? "Select or type a district" : "Select or type a city"}
+              onChange={(value) => {
+                setForm({ ...form, district: value, ward: "" });
+                setWardOptions([]);
+              }}
+            />
+            <LocationCombobox
+              id="store-ward"
+              label={scope === "local" ? "Ward" : "Area / Neighborhood"}
+              value={form.ward}
+              options={scope === "local" ? wardOptions : []}
+              loading={scope === "local" && locationLoading}
+              disabled={scope === "local" && !form.district}
+              placeholder={scope === "local" ? "Select or type a ward" : "Type area / neighborhood"}
+              onChange={(value) => setForm({ ...form, ward: value })}
+            />
             <div className="md:col-span-2">
-              <Field label="Street / physical address" value={form.street} onChange={(value) => setForm({ ...form, street: value })} />
+              <Field label="Street / physical address" value={form.street} onChange={(value) => setForm({ ...form, street: value })} placeholder="Building, road, block, shop number..." />
             </div>
           </div>
+          {locationError && (
+            <p className="mt-3 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs text-amber-800 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-200">
+              {locationError}
+            </p>
+          )}
+          <p className="mt-3 text-xs text-[#64748b]">
+            Start typing to search the dropdown. If a location is not listed, you can type it manually and continue.
+          </p>
         </Section>
 
         {mode === "edit" && selectedStore && (
@@ -472,6 +613,46 @@ function Section({ icon: Icon, title, description, children }: { icon: typeof St
       </div>
       {children}
     </div>
+  );
+}
+
+function SelectField({ label, value, options, onChange, required }: { label: string; value: string; options: Array<{ value: string; label: string }>; onChange: (value: string) => void; required?: boolean }) {
+  return (
+    <label className="block text-sm font-semibold">
+      {label}{required && <span className="text-red-500"> *</span>}
+      <select
+        value={value}
+        required={required}
+        onChange={(event) => onChange(event.target.value)}
+        className="mt-2 w-full rounded-xl border border-[#e2e8f0] bg-[#f8fafc] px-4 py-3 font-normal outline-none focus:border-[#f7941d] dark:border-white/10 dark:bg-[#111827]"
+      >
+        <option value="">Select {label.toLowerCase()}</option>
+        {options.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+      </select>
+    </label>
+  );
+}
+
+function LocationCombobox({ id, label, value, options, onChange, placeholder, disabled, loading }: { id: string; label: string; value: string; options: string[]; onChange: (value: string) => void; placeholder?: string; disabled?: boolean; loading?: boolean }) {
+  const values = value && !options.includes(value) ? [value, ...options] : options;
+  return (
+    <label className="block text-sm font-semibold">
+      {label}
+      <div className="relative mt-2">
+        <input
+          list={`${id}-options`}
+          value={value}
+          disabled={disabled}
+          placeholder={loading ? "Loading locations..." : placeholder}
+          onChange={(event) => onChange(event.target.value)}
+          className="w-full rounded-xl border border-[#e2e8f0] bg-[#f8fafc] px-4 py-3 pr-10 font-normal outline-none focus:border-[#f7941d] disabled:cursor-not-allowed disabled:opacity-60 dark:border-white/10 dark:bg-white/5"
+        />
+        {loading && <Loader2 size={16} className="absolute right-3 top-3.5 animate-spin text-[#f7941d]" />}
+      </div>
+      <datalist id={`${id}-options`}>
+        {values.map((option) => <option key={option} value={option} />)}
+      </datalist>
+    </label>
   );
 }
 
