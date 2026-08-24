@@ -153,6 +153,7 @@ errors/*
 Frontend  
 BACKEND/tests/
 BACKEND/backend.zip
+update.py
 
 
 
