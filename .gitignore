@@ -143,14 +143,14 @@ xerin_before_phase1_task3_20260730.sql/*
 
 # Or ignore this specific backup
 xerin_before_phase1_task3_20260730.sql
-XERIM/Frontend/xerin-marketplace/node_modules/
-XERIM/Frontend/xerin-marketplace/node_modules/*
-Frontend/xerin-marketplace/node_modules/
+XERIM/#Frontend/xerin-marketplace/node_modules/
+XERIM/#Frontend/xerin-marketplace/node_modules/*
+#Frontend/xerin-marketplace/node_modules/
 azampay_path
 azampay_path/*
 errors
 errors/*
-Frontend  
+#Frontend  
 BACKEND/tests/
 BACKEND/backend.zip
 
@@ -169,7 +169,7 @@ __pycache__/
 # Environment variables
 .env
 .env.* 
-Frontend/xerin-marketplace/
+#Frontend/xerin-marketplace/
 BACKEND/tests/
 BACKEND/backend.zip
 azampay_patch
@@ -178,13 +178,3 @@ BACKEND/backend.zip
 -r
 tabase.sql
 pytest.ini
-
-# Backend generated/runtime files
-BACKEND/scripts/
-BACKEND/alembic/
-BACKEND/uploads/
-BACKEND/api/services/
-BACKEND/api/middleware/
-BACKEND/api/Backup/
-BACKEND/api/routers/shipping/
-BACKEND/api/logistics/

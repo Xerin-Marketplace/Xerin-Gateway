@@ -391,7 +391,7 @@ This is separate from the driver saying they picked it up.
 
 Task 7 — Seller fulfillment view
 
-Backend responses needed by the future Frontend:
+Backend responses needed by the future #Frontend:
 
 Order
 Package
@@ -458,7 +458,7 @@ TZS 8,200
 
 Task 5 — Multi-seller pricing display
 
-The Frontend doesn't need to expose complicated mathematics, but backend returns a transparent quote.
+The #Frontend doesn't need to expose complicated mathematics, but backend returns a transparent quote.
 
 Task 6 — Checkout
 

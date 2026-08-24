@@ -565,7 +565,7 @@ def initiate_payment(
         if isinstance(data.method, PaymentMethod)
         else PaymentMethod(data.method)
     )
-    # data.provider remains the MNO/network chosen by the Frontend. Gateway
+    # data.provider remains the MNO/network chosen by the #Frontend. Gateway
     # routing is server controlled so a caller cannot bypass the configured
     # provider or accidentally send one attempt to two gateways.
     provider = (

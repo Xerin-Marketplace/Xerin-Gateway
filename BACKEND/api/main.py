@@ -101,7 +101,7 @@ if settings.trusted_hosts:
             "api.xerinmarketplace.com",
             "169.58.54.110",
             "169.58.54.110:8080",
-            "https://Frontend-new-five-puce.vercel.app",
+            "https://#Frontend-new-five-puce.vercel.app",
         ],
     )
 

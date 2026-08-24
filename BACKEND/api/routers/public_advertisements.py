@@ -170,7 +170,7 @@ def track_advertisement_impression(
 ):
     """Count a real storefront impression once per browser session.
 
-    The Frontend only calls this after at least 50% of the advertisement has
+    The #Frontend only calls this after at least 50% of the advertisement has
     remained visible for a short period. Server-side event_key uniqueness is
     the second line of defence against inflated React re-render counts.
     """
@@ -251,7 +251,7 @@ def active_advertisement_slot(
 ):
     """Return the winning live ad for one storefront placement.
 
-    If no campaign is live, advertisement=null. The Frontend can then render
+    If no campaign is live, advertisement=null. The #Frontend can then render
     the existing Xerin template/fallback card without any special error state.
     """
     now = datetime.now(timezone.utc)

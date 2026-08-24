@@ -295,24 +295,63 @@ def _assign_role(db: Session, user_id, role_name: str) -> None:
         db.add(UserRole(user_id=user_id, role_id=role.id))
 
 
+def _registration_conflicts(
+    db: Session,
+    *,
+    email: str,
+    phone: str,
+) -> tuple[User | None, list[str]]:
+    email_user = db.query(User).filter(User.email == email).first()
+    phone_user = db.query(User).filter(User.phone == phone).first()
+
+    # Same user owns both identifiers
+    if email_user and phone_user and email_user.id == phone_user.id:
+        return email_user, []
+
+    conflicts: list[str] = []
+    if email_user:
+        conflicts.append("email")
+    if phone_user:
+        conflicts.append("phone")
+
+    return None, conflicts
+
+
 @router.post("/register", response_model=RegistrationResponse)
 def register(data: RegisterRequest, db: Session = Depends(get_db)):
     email = data.email.strip().lower()
     phone = (data.phone or "").strip()
+
     if not phone:
         raise HTTPException(status_code=422, detail="Phone number is required")
 
-    existing_user = (
-        db.query(User).filter((User.email == email) | (User.phone == phone)).first()
+    existing_user, conflicts = _registration_conflicts(
+        db,
+        email=email,
+        phone=phone,
     )
 
     resumed_registration = False
 
+    if conflicts and existing_user is None:
+        if len(conflicts) == 2:
+            detail = "An account with this email and phone number already exists. Please sign in."
+        elif conflicts[0] == "email":
+            detail = "An account with this email already exists. Please sign in."
+        else:
+            detail = "An account with this phone number already exists. Please sign in."
+
+        raise HTTPException(status_code=409, detail=detail)
+
     if existing_user:
-        same_identity = existing_user.email == email and existing_user.phone == phone
         still_pending = (
             not existing_user.is_verified
             and existing_user.status == UserStatus.pending_verification
+        )
+
+        same_identity = (
+            existing_user.email == email
+            and (existing_user.phone or "").strip() == phone
         )
 
         if not (same_identity and still_pending):
@@ -321,9 +360,6 @@ def register(data: RegisterRequest, db: Session = Depends(get_db)):
                 detail="An account with this email or phone already exists. Please sign in.",
             )
 
-        # The account was already committed during an earlier registration
-        # attempt but has not completed OTP verification. Resume instead of
-        # rejecting the user as a duplicate.
         user = existing_user
         user.first_name = data.first_name.strip()
         user.last_name = data.last_name.strip()
@@ -423,14 +459,29 @@ def register_seller(data: SellerRegisterRequest, db: Session = Depends(get_db)):
             status_code=400, detail="One or more business categories are invalid"
         )
 
-    existing_user = (
-        db.query(User).filter((User.email == email) | (User.phone == phone)).first()
+    existing_user, conflicts = _registration_conflicts(
+        db,
+        email=email,
+        phone=phone,
     )
 
     resumed_registration = False
 
+    if conflicts and existing_user is None:
+        if len(conflicts) == 2:
+            detail = "An account with this email and phone number already exists. Please sign in."
+        elif conflicts[0] == "email":
+            detail = "An account with this email already exists. Please sign in."
+        else:
+            detail = "An account with this phone number already exists. Please sign in."
+
+        raise HTTPException(status_code=409, detail=detail)
+
     if existing_user:
-        same_identity = existing_user.email == email and existing_user.phone == phone
+        same_identity = (
+            existing_user.email == email
+            and (existing_user.phone or "").strip() == phone
+        )
         still_pending = (
             not existing_user.is_verified
             and existing_user.status == UserStatus.pending_verification
@@ -449,7 +500,6 @@ def register_seller(data: SellerRegisterRequest, db: Session = Depends(get_db)):
                 detail="This pending account is not a seller registration. Please sign in or use another account.",
             )
 
-        # Safe retry after a committed-but-apparently-failed first request.
         user = existing_user
         resumed_registration = True
     else:
@@ -469,7 +519,6 @@ def register_seller(data: SellerRegisterRequest, db: Session = Depends(get_db)):
         seller = Seller(
             user_id=user.id,
             business_name=data.business_name,
-            # The account email/phone are valid business contact values too.
             contact_email=data.contact_email or email,
             contact_phone=data.contact_phone or phone,
             agreement_accepted=True,
@@ -965,7 +1014,7 @@ def resend_verification(
         logger.exception("send_email failed for %s: %s", user.email, exc)
 
     if not sms_sent and not email_sent:
-        # Do not tell the Frontend that the OTP was sent when no delivery
+        # Do not tell the #Frontend that the OTP was sent when no delivery
         # channel actually accepted the message.
         raise HTTPException(
             status_code=503,

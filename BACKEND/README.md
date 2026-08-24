@@ -31,7 +31,7 @@ J3W2q5srfbxd
 
 b53aL4j0#
 
-cd /var/Frontend
+cd /var/#Frontend
 
 git pull
 npm install
@@ -47,9 +47,11 @@ if [ -d public ]; then
     cp -a public .next/standalone/
 fi
 
-sudo systemctl restart xerin-Frontend
+sudo systemctl restart xerin-#Frontend
 
 psql -h localhost -U xerin -d xerin
+
+zip -r backend.zip . -x ".git/*" ".venv/*"
 
 
 

@@ -215,12 +215,12 @@ Admin Service
 2. Seller logs in
    POST /auth/login
 
-3. Frontend checks profile
+3. #Frontend checks profile
    GET /users/me
    account_type = seller
    seller_status = pending
 
-4. Frontend shows KYC upload page
+4. #Frontend shows KYC upload page
 
 5. Seller uploads:
    POST /sellers/kyc-documents

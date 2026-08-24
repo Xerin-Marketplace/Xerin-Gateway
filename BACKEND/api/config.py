@@ -39,7 +39,7 @@ class Settings(BaseSettings):
     REFRESH_TOKEN_EXPIRE_DAYS: int = Field(default=7, ge=1)
 
     # Browser and proxy security
-    CORS_ORIGINS: str = "http://localhost:3000,http://127.0.0.1:3000, http://169.58.54.110:8081, https://Frontend-new-five-puce.vercel.app, https://xerinmarketplace.com"
+    CORS_ORIGINS: str = "http://localhost:3000,http://127.0.0.1:3000, http://169.58.54.110:8081, https://#Frontend-new-five-puce.vercel.app, https://xerinmarketplace.com"
     TRUSTED_HOSTS: str = (
         "localhost,127.0.0.1, http://169.58.54.110:8081 https://xerinmarketplace.com/"
     )
