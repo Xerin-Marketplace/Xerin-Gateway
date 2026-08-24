@@ -219,6 +219,9 @@ def checkout_delivery_config(
     return {
         "default_country": "Tanzania",
         "local_delivery_allowed": True,
+        # Phase 2-6 route engine interprets this as the marketplace-level
+        # cross-border master switch. When enabled, the destination itself may
+        # still be Tanzania (for example UAE store -> Tanzania customer).
         "international_delivery_allowed": bool(
             settings_row and settings_row.international_delivery_allowed
         ),
