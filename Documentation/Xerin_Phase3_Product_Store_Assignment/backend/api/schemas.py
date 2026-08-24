@@ -944,6 +944,7 @@ class BrandResponse(BaseModel):
 
 
 class ProductCreate(BaseModel):
+    store_id: UUID
     category_id: UUID
     brand_id: Optional[UUID] = None
     sku: str
@@ -965,6 +966,7 @@ class ProductCreate(BaseModel):
 
 
 class ProductUpdate(BaseModel):
+    store_id: Optional[UUID] = None
     category_id: Optional[UUID] = None
     brand_id: Optional[UUID] = None
     sku: Optional[str] = None
@@ -1003,6 +1005,7 @@ class ProductUpdate(BaseModel):
 class ProductResponse(BaseModel):
     id: UUID
     seller_id: UUID
+    store_id: UUID
     category_id: UUID
     brand_id: Optional[UUID]
     sku: str

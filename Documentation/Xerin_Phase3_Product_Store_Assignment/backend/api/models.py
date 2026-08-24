@@ -537,6 +537,7 @@ class Product(Base):
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     seller_id = Column(UUID(as_uuid=True), ForeignKey("sellers.id"), nullable=False)
+    store_id = Column(UUID(as_uuid=True), ForeignKey("stores.id", ondelete="RESTRICT"), nullable=False, index=True)
     category_id = Column(
         UUID(as_uuid=True), ForeignKey("categories.id"), nullable=False
     )
@@ -577,6 +578,7 @@ class Product(Base):
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
 
     seller = relationship("Seller")
+    store = relationship("Store", back_populates="products")
     category = relationship("Category")
     brand = relationship("Brand")
     images = relationship(
@@ -3402,6 +3404,8 @@ class Store(Base):
         cascade="all, delete-orphan",
         order_by="StoreGalleryImage.display_order",
     )
+
+    products = relationship("Product", back_populates="store")
 
     opening_hours = relationship(
         "StoreOpeningHour",

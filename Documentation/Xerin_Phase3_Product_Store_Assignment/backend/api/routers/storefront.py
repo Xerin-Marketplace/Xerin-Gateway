@@ -111,7 +111,7 @@ def public_store_products(
 ):
     store = _public_store(db, slug)
     query = db.query(Product).options(selectinload(Product.images)).filter(
-        Product.seller_id == store.seller_id,
+        Product.store_id == store.id,
         Product.status == ProductStatus.approved,
         Product.is_active.is_(True),
     )
@@ -125,7 +125,7 @@ def public_store_categories(slug: str, db: Session = Depends(get_db)):
     rows = (
         db.query(Category.id, Category.name, Category.slug, func.count(Product.id).label("product_count"))
         .join(Product, Product.category_id == Category.id)
-        .filter(Product.seller_id == store.seller_id, Product.status == ProductStatus.approved, Product.is_active.is_(True))
+        .filter(Product.store_id == store.id, Product.status == ProductStatus.approved, Product.is_active.is_(True))
         .group_by(Category.id, Category.name, Category.slug)
         .order_by(Category.name.asc()).all()
     )
