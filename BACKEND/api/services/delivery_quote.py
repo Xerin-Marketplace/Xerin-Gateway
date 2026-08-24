@@ -14,8 +14,7 @@ from api.services.eligible_logistics import (
     EligibleLogisticsError,
     _cart_seller_pickups,
     _customer_address,
-    _company_covers_location,
-    _eligible_services_for_destination,
+    _company_supports_route,
     LocationFacts,
 )
 
@@ -86,38 +85,23 @@ def calculate_delivery_distance_quote(
         latitude=address.latitude,
         longitude=address.longitude,
     )
-    services = _eligible_services_for_destination(
-        company,
-        destination,
-        delivery_mode=delivery_mode,
-    )
-    if not services:
-        raise DeliveryQuoteError(
-            "Selected logistics company does not serve the customer destination.",
-            code="logistics_destination_not_covered",
-            status_code=409,
-        )
-
+    route_types = []
     for seller_row in sellers:
-        pickup = seller_row["pickup"]
-        origin = LocationFacts(
-            country=pickup.country,
-            region=pickup.region,
-            city=pickup.city,
-            district=pickup.district,
-            ward=pickup.ward,
-            postal_code=pickup.postal_code,
-            latitude=pickup.latitude,
-            longitude=pickup.longitude,
-        )
-        if not _company_covers_location(company, origin):
+        origin = seller_row["origin"]
+        supported, route_type = _company_supports_route(company, origin, destination)
+        route_types.append(route_type)
+        if not supported:
             raise DeliveryQuoteError(
-                "Selected logistics company cannot serve every seller pickup location.",
-                code="logistics_pickup_not_covered",
+                "Selected logistics company cannot serve this store-to-customer route.",
+                code="logistics_origin_destination_not_supported",
                 status_code=409,
                 extra={
                     "seller_id": str(seller_row["seller_id"]),
-                    "pickup_location_id": str(pickup.id),
+                    "store_id": str(seller_row["store_id"]),
+                    "store_name": seller_row["store_name"],
+                    "origin_country": origin.country,
+                    "destination_country": destination.country,
+                    "route_type": route_type,
                 },
             )
 
@@ -126,6 +110,7 @@ def calculate_delivery_distance_quote(
             sellers,
             destination_latitude=Decimal(address.latitude),
             destination_longitude=Decimal(address.longitude),
+            destination_country=address.country,
         )
     except DeliveryDistanceError as exc:
         raise DeliveryQuoteError(
@@ -141,7 +126,7 @@ def calculate_delivery_distance_quote(
             status_code=409,
         )
 
-    seller_by_id = {row["seller_id"]: row for row in sellers}
+    origin_by_store = {row["store_id"]: row for row in sellers}
     distances = [route.distance_km for route in routes]
     average = sum(distances, Decimal("0")) / Decimal(len(distances))
 
@@ -151,13 +136,19 @@ def calculate_delivery_distance_quote(
         "logistics_company_name": company.name,
         "delivery_mode": delivery_mode,
         "seller_count": len(routes),
+        "route_types": sorted(set(route_types)),
         "distance_provider": routes[0].provider,
         "sellers": [
             {
                 "seller_id": route.seller_id,
-                "seller_name": seller_by_id[route.seller_id]["seller_name"],
+                "seller_name": origin_by_store[route.store_id]["seller_name"],
+                "store_id": route.store_id,
+                "store_name": route.origin_label,
+                "origin_country": route.origin_country,
+                "origin_region": route.origin_region,
+                "route_type": route.route_type,
                 "pickup_location_id": route.pickup_location_id,
-                "pickup_label": seller_by_id[route.seller_id]["pickup"].label,
+                "pickup_label": route.origin_label,
                 "distance_meters": route.distance_meters,
                 "distance_km": route.distance_km,
                 "duration_seconds": route.duration_seconds,
@@ -170,7 +161,7 @@ def calculate_delivery_distance_quote(
         "min_distance_km": min(distances),
         "average_distance_km": average.quantize(Decimal("0.001")),
         "note": (
-            "Road-route distances only. No delivery price or multi-seller pricing "
+            "Google road-route distances are calculated from each product store origin. No delivery price or multi-seller pricing "
             "strategy has been applied yet."
         ),
     }

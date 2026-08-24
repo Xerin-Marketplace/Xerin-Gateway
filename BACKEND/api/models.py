@@ -1200,6 +1200,10 @@ class ShippingZone(Base):
     covers_entire_country = Column(
         Boolean, nullable=False, default=False, server_default="false"
     )
+    # Precise route capabilities for this country zone.
+    supports_domestic_delivery = Column(Boolean, nullable=False, default=True, server_default="true", index=True)
+    supports_cross_border_inbound = Column(Boolean, nullable=False, default=False, server_default="false", index=True)
+    supports_cross_border_outbound = Column(Boolean, nullable=False, default=False, server_default="false", index=True)
     is_active = Column(Boolean, nullable=False, default=True, server_default="true")
     created_at = Column(
         DateTime(timezone=True), server_default=func.now(), nullable=False

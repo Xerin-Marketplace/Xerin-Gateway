@@ -29,6 +29,12 @@ class DeliveryDistanceError(Exception):
 @dataclass(frozen=True)
 class SellerRouteDistance:
     seller_id: UUID
+    store_id: UUID
+    origin_reference_id: UUID
+    origin_label: str
+    origin_country: str
+    origin_region: str
+    route_type: str
     pickup_location_id: UUID
     distance_meters: int
     distance_km: Decimal
@@ -42,22 +48,30 @@ def calculate_seller_routes(
     *,
     destination_latitude: Decimal,
     destination_longitude: Decimal,
+    destination_country: str | None = None,
 ) -> list[SellerRouteDistance]:
-    """Calculate actual road distance from each seller pickup to customer.
+    """Calculate Google road distance from each cart store origin to customer.
 
-    Each seller is calculated independently because Phase 2 Task 5 will apply
-    configurable multi-seller strategies such as FARTHEST_SELLER.
+    The Phase 3 resolved `row["origin"]` is authoritative. This is essential for
+    sellers with stores in different countries. A seller default pickup may
+    already have been used by Phase 3 only as a compatibility fallback.
     """
     client = GoogleMapLocationClient()
     routes: list[SellerRouteDistance] = []
 
     for row in sellers:
-        pickup = row["pickup"]
+        origin = row["origin"]
+        if origin.latitude is None or origin.longitude is None:
+            raise DeliveryDistanceError(
+                "Store shipping origin does not contain GPS coordinates.",
+                code="store_origin_gps_required",
+                status_code=409,
+            )
 
         try:
             route = client.compute_route_distance(
-                origin_latitude=pickup.latitude,
-                origin_longitude=pickup.longitude,
+                origin_latitude=origin.latitude,
+                origin_longitude=origin.longitude,
                 destination_latitude=destination_latitude,
                 destination_longitude=destination_longitude,
             )
@@ -69,15 +83,26 @@ def calculate_seller_routes(
             ) from exc
         except MapProviderError as exc:
             raise DeliveryDistanceError(
-                str(exc),
-                code="route_provider_error",
-                status_code=502,
+                str(exc), code="route_provider_error", status_code=502
             ) from exc
 
+        same_country = (origin.country or "").strip().casefold() == (
+            destination_country or ""
+        ).strip().casefold()
+        pickup = row.get("pickup")
+        origin_reference_id = row["store_id"]
         routes.append(
             SellerRouteDistance(
                 seller_id=row["seller_id"],
-                pickup_location_id=pickup.id,
+                store_id=row["store_id"],
+                origin_reference_id=origin_reference_id,
+                origin_label=row["store_name"],
+                origin_country=origin.country,
+                origin_region=origin.region,
+                route_type="domestic" if same_country else "cross_border",
+                # Kept for API/order snapshot compatibility. For store-based
+                # routes it identifies the store when no pickup exists.
+                pickup_location_id=pickup.id if pickup is not None else row["store_id"],
                 distance_meters=int(route["distance_meters"]),
                 distance_km=Decimal(str(route["distance_km"])),
                 duration_seconds=int(route["duration_seconds"]),
@@ -85,5 +110,5 @@ def calculate_seller_routes(
                 provider=str(route["provider"]),
             )
         )
-
     return routes
+

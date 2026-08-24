@@ -11,7 +11,11 @@ from api.services.delivery_quote import (
     DeliveryQuoteError,
     calculate_delivery_distance_quote,
 )
-from api.services.eligible_logistics import LocationFacts, _zone_matches_location
+from api.services.eligible_logistics import (
+    LocationFacts,
+    _zone_matches_location,
+    _zone_supports_capability,
+)
 from api.services.fx_service import FxRateUnavailableError, convert_amount_to_tzs
 
 
@@ -262,6 +266,14 @@ def calculate_multi_seller_delivery_pricing(
         ):
             continue
 
+        route_types = set(distance_quote.get("route_types") or [])
+        if "cross_border" in route_types:
+            if not _zone_supports_capability(rate.zone, "supports_cross_border_inbound"):
+                continue
+        elif "domestic" in route_types:
+            if not _zone_supports_capability(rate.zone, "supports_domestic_delivery"):
+                continue
+
         method = rate.method
         try:
             amount, breakdown = _calculate_amount(
@@ -296,6 +308,10 @@ def calculate_multi_seller_delivery_pricing(
                 {
                     "seller_id": route["seller_id"],
                     "seller_name": route["seller_name"],
+                    "store_id": route.get("store_id"),
+                    "store_name": route.get("store_name"),
+                    "origin_country": route.get("origin_country"),
+                    "route_type": route.get("route_type"),
                     "pickup_location_id": route["pickup_location_id"],
                     "pickup_label": route["pickup_label"],
                     "distance_km": _distance(Decimal(route["distance_km"])),

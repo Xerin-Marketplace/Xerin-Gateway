@@ -2716,6 +2716,9 @@ class ShippingZoneCreate(BaseModel):
     postal_codes: list[str] = Field(default_factory=list)
     coverage_geojson: Optional[dict[str, Any]] = None
     covers_entire_country: bool = False
+    supports_domestic_delivery: bool = True
+    supports_cross_border_inbound: bool = False
+    supports_cross_border_outbound: bool = False
     is_active: bool = True
 
     @field_validator("regions", "cities", "districts", "wards", "postal_codes")
@@ -2753,6 +2756,8 @@ class ShippingZoneCreate(BaseModel):
             "MultiPolygon",
         }:
             raise ValueError("coverage_geojson must be a Polygon or MultiPolygon")
+        if not any((self.supports_domestic_delivery, self.supports_cross_border_inbound, self.supports_cross_border_outbound)):
+            raise ValueError("Enable at least one route capability: domestic, cross-border inbound, or cross-border outbound")
         return self
 
 
@@ -2768,6 +2773,9 @@ class ShippingZoneUpdate(BaseModel):
     postal_codes: Optional[list[str]] = None
     coverage_geojson: Optional[dict[str, Any]] = None
     covers_entire_country: Optional[bool] = None
+    supports_domestic_delivery: Optional[bool] = None
+    supports_cross_border_inbound: Optional[bool] = None
+    supports_cross_border_outbound: Optional[bool] = None
     is_active: Optional[bool] = None
 
     @field_validator("regions", "cities", "districts", "wards", "postal_codes")
@@ -2904,6 +2912,8 @@ class EligibleLogisticsSelectionRequest(BaseModel):
 class EligibleSellerPickupCoverage(BaseModel):
     seller_id: UUID
     seller_name: str
+    store_id: Optional[UUID] = None
+    store_name: Optional[str] = None
     pickup_location_id: UUID
     pickup_label: str
     country: str
@@ -2934,6 +2944,7 @@ class EligibleLogisticsCompanyOption(BaseModel):
     supports_webhooks: bool
     seller_count: int
     covered_seller_count: int
+    route_types: list[str] = Field(default_factory=list)
     services: list[EligibleLogisticsServiceSummary] = Field(default_factory=list)
 
 
@@ -2949,6 +2960,7 @@ class IneligibleLogisticsCompanyReason(BaseModel):
 class PaginatedEligibleLogisticsCompanyResponse(BaseModel):
     address_id: UUID
     delivery_mode: Literal["local", "international"]
+    destination_country: str
     seller_count: int
     total: int
     page: int
@@ -2968,6 +2980,11 @@ class DeliveryDistanceQuoteRequest(BaseModel):
 class SellerRouteDistanceResponse(BaseModel):
     seller_id: UUID
     seller_name: str
+    store_id: UUID
+    store_name: str
+    origin_country: str
+    origin_region: str
+    route_type: str
     pickup_location_id: UUID
     pickup_label: str
     distance_meters: int
@@ -2983,6 +3000,7 @@ class DeliveryDistanceQuoteResponse(BaseModel):
     logistics_company_name: str
     delivery_mode: Literal["local", "international"]
     seller_count: int
+    route_types: list[str] = Field(default_factory=list)
     distance_provider: str
     sellers: list[SellerRouteDistanceResponse] = Field(default_factory=list)
     max_distance_km: Decimal
@@ -3001,6 +3019,10 @@ class MultiSellerDeliveryPricingRequest(BaseModel):
 class MultiSellerPricingSellerRoute(BaseModel):
     seller_id: UUID
     seller_name: str
+    store_id: Optional[UUID] = None
+    store_name: Optional[str] = None
+    origin_country: Optional[str] = None
+    route_type: Optional[str] = None
     pickup_location_id: UUID
     pickup_label: str
     distance_km: Decimal

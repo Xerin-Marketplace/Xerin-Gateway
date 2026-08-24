@@ -14,6 +14,7 @@ from api.models import (
     Cart,
     CartItem,
     LogisticsCompany,
+    Product,
     ProductStatus,
     SellerPickupLocation,
     ShippingMethod,
@@ -174,19 +175,9 @@ def _customer_address(
             extra={"address_id": str(address.id)},
         )
 
-    local = _address_is_tanzania(address)
-    if delivery_mode == "local" and not local:
-        raise EligibleLogisticsError(
-            "Local delivery requires a Tanzania delivery address.",
-            code="local_delivery_address_required",
-            status_code=422,
-        )
-    if delivery_mode == "international" and local:
-        raise EligibleLogisticsError(
-            "International delivery requires a non-Tanzania delivery address.",
-            code="international_delivery_address_required",
-            status_code=422,
-        )
+    # Phase 3: eligibility is based on origin -> destination, not on whether
+    # the destination happens to be Tanzania. `delivery_mode` remains in the
+    # request for backwards compatibility with checkout/order schemas.
     return address
 
 
@@ -195,91 +186,115 @@ def _cart_seller_pickups(
     *,
     user_id: UUID,
 ) -> list[dict]:
+    """Resolve one shipping origin per store represented in the cart.
+
+    Phase 3 makes Product.store_id the authoritative commercial origin.  Store
+    coordinates/location are preferred because one seller may own stores in
+    different countries.  A seller default pickup is retained only as a
+    backwards-compatible fallback when the store itself has no usable GPS.
+    """
     cart = (
         db.query(Cart)
         .options(
             selectinload(Cart.items)
-            .selectinload(CartItem.product),
+            .selectinload(CartItem.product)
+            .joinedload(Product.store),
+            selectinload(Cart.items)
+            .selectinload(CartItem.product)
+            .joinedload(Product.seller),
         )
         .filter(Cart.user_id == user_id)
         .first()
     )
     if cart is None or not cart.items:
-        raise EligibleLogisticsError(
-            "Cart is empty.",
-            code="cart_empty",
-            status_code=400,
-        )
+        raise EligibleLogisticsError("Cart is empty.", code="cart_empty", status_code=400)
 
-    seller_map: dict[UUID, object] = {}
+    products = []
     for item in cart.items:
         product = item.product
-        if (
-            product is None
-            or not product.is_active
-            or product.status != ProductStatus.approved
-        ):
+        if product is None or not product.is_active or product.status != ProductStatus.approved:
             continue
-        seller_map[product.seller_id] = product.seller
+        products.append(product)
 
-    if not seller_map:
+    if not products:
         raise EligibleLogisticsError(
             "Cart does not contain any shippable products.",
             code="cart_has_no_shippable_products",
             status_code=409,
         )
 
-    seller_ids = list(seller_map.keys())
-    pickups = (
+    seller_ids = list({product.seller_id for product in products})
+    default_pickups = (
         db.query(SellerPickupLocation)
         .filter(
             SellerPickupLocation.seller_id.in_(seller_ids),
             SellerPickupLocation.is_active.is_(True),
             SellerPickupLocation.is_default.is_(True),
         )
-        .order_by(SellerPickupLocation.created_at.desc())
         .all()
     )
-    pickup_by_seller = {row.seller_id: row for row in pickups}
+    pickup_by_seller = {row.seller_id: row for row in default_pickups}
 
-    missing = [
-        {
-            "seller_id": str(seller_id),
-            "seller_name": getattr(seller_map[seller_id], "business_name", str(seller_id)),
-        }
-        for seller_id in seller_ids
-        if seller_id not in pickup_by_seller
-    ]
-    if missing:
-        raise EligibleLogisticsError(
-            "One or more sellers do not have an active default pickup location.",
-            code="seller_pickup_location_required",
-            status_code=409,
-            extra={"sellers": missing},
-        )
+    store_map: dict[UUID, object] = {}
+    for product in products:
+        if product.store is None:
+            raise EligibleLogisticsError(
+                "A cart product is not assigned to a store.",
+                code="product_store_required",
+                status_code=409,
+                extra={"product_id": str(product.id)},
+            )
+        store_map[product.store_id] = product
 
     result = []
-    for seller_id in seller_ids:
-        seller = seller_map[seller_id]
-        pickup = pickup_by_seller[seller_id]
-        if pickup.latitude is None or pickup.longitude is None:
-            raise EligibleLogisticsError(
-                "One or more seller pickup locations do not contain GPS coordinates.",
-                code="seller_pickup_gps_required",
-                status_code=409,
-                extra={
-                    "seller_id": str(seller_id),
-                    "pickup_location_id": str(pickup.id),
-                },
-            )
+    for store_id, product in store_map.items():
+        store = product.store
+        fallback = pickup_by_seller.get(product.seller_id)
 
-        result.append(
-            {
-                "seller_id": seller_id,
-                "seller_name": seller.business_name,
-                "pickup": pickup,
-            }
-        )
+        country = (store.country or "").strip()
+        region = (store.region or "").strip()
+        city = (store.district or store.region or "").strip()
+        district = (store.district or "").strip() or None
+        ward = (store.ward or "").strip() or None
+        latitude = store.latitude
+        longitude = store.longitude
+        source = "store"
+
+        if not country or latitude is None or longitude is None:
+            if fallback is None:
+                raise EligibleLogisticsError(
+                    "The product store needs a country and GPS coordinates before logistics can be calculated.",
+                    code="store_shipping_origin_required",
+                    status_code=409,
+                    extra={"store_id": str(store.id), "store_name": store.store_name},
+                )
+            country = country or fallback.country
+            region = region or fallback.region
+            city = city or fallback.city
+            district = district or fallback.district
+            ward = ward or fallback.ward
+            latitude = latitude if latitude is not None else fallback.latitude
+            longitude = longitude if longitude is not None else fallback.longitude
+            source = "store_with_seller_pickup_fallback"
+
+        result.append({
+            "seller_id": product.seller_id,
+            "seller_name": product.seller.business_name,
+            "store_id": store.id,
+            "store_name": store.store_name,
+            "origin_source": source,
+            "pickup": fallback,
+            "origin": LocationFacts(
+                country=country,
+                region=region,
+                city=city,
+                district=district,
+                ward=ward,
+                postal_code=getattr(fallback, "postal_code", None) if fallback else None,
+                latitude=Decimal(str(latitude)),
+                longitude=Decimal(str(longitude)),
+            ),
+        })
 
     return result
 
@@ -302,17 +317,8 @@ def _company_methods_with_rates(
         .filter(LogisticsCompany.status == LogisticsCompanyStatus.active)
     )
 
-    # Company itself must support the requested delivery scope.
-    if delivery_mode == "local":
-        query = query.filter(
-            LogisticsCompany.scope.in_([LogisticsScope.local, LogisticsScope.both])
-        )
-    else:
-        query = query.filter(
-            LogisticsCompany.scope.in_(
-                [LogisticsScope.international, LogisticsScope.both]
-            )
-        )
+    # Phase 3 does not pre-filter by legacy local/international company scope.
+    # Exact route capability is checked per origin/destination country zone.
 
     if search:
         term = f"%{search.strip()}%"
@@ -331,6 +337,57 @@ def _company_methods_with_rates(
         )
 
     return query.order_by(LogisticsCompany.name.asc()).all()
+
+
+def _zone_supports_capability(zone: ShippingZone, capability: str) -> bool:
+    return bool(getattr(zone, capability, False))
+
+
+def _company_covers_location_capability(
+    company: LogisticsCompany,
+    location: LocationFacts,
+    *,
+    capability: str,
+) -> bool:
+    for method in company.services:
+        if not method.is_active:
+            continue
+        for rate in method.rates:
+            zone = rate.zone
+            if not rate.is_active or zone is None:
+                continue
+            if zone.logistics_company_id not in (None, company.id):
+                continue
+            if not _zone_supports_capability(zone, capability):
+                continue
+            if _zone_matches_location(zone, location):
+                return True
+    return False
+
+
+def _company_supports_route(
+    company: LogisticsCompany,
+    origin: LocationFacts,
+    destination: LocationFacts,
+) -> tuple[bool, str]:
+    same_country = _norm(origin.country) == _norm(destination.country)
+
+    if same_country:
+        origin_ok = _company_covers_location_capability(
+            company, origin, capability="supports_domestic_delivery"
+        )
+        destination_ok = _company_covers_location_capability(
+            company, destination, capability="supports_domestic_delivery"
+        )
+        return origin_ok and destination_ok, "domestic"
+
+    outbound_ok = _company_covers_location_capability(
+        company, origin, capability="supports_cross_border_outbound"
+    )
+    inbound_ok = _company_covers_location_capability(
+        company, destination, capability="supports_cross_border_inbound"
+    )
+    return outbound_ok and inbound_ok, "cross_border"
 
 
 def _company_covers_location(
@@ -413,146 +470,87 @@ def find_eligible_logistics_companies(
     supports_cod: bool | None = None,
     supports_tracking: bool | None = None,
 ) -> dict:
-    """Return logistics companies capable of serving the entire current cart.
-
-    Eligibility requires:
-    1. customer's delivery address is explicitly map-confirmed;
-    2. every shippable seller in the cart has an active default pickup point;
-    3. logistics company is active and supports the requested local/international scope;
-    4. company has destination service coverage;
-    5. the same company has zone coverage for every seller pickup origin.
-
-    Task 3 intentionally does not calculate prices or distances. Those are Phase 2
-    Tasks 4/5. This task answers only: "Who can serve this complete order?"
-    """
+    """Return companies capable of every store-origin -> customer-destination leg."""
     address = _customer_address(
-        db,
-        user_id=user_id,
-        address_id=address_id,
-        delivery_mode=delivery_mode,
+        db, user_id=user_id, address_id=address_id, delivery_mode=delivery_mode
     )
-    sellers = _cart_seller_pickups(db, user_id=user_id)
-
+    origins = _cart_seller_pickups(db, user_id=user_id)
     destination = LocationFacts(
-        country=address.country,
-        region=address.region,
-        city=address.city,
-        district=address.district,
-        ward=address.ward,
-        postal_code=address.postal_code,
-        latitude=address.latitude,
-        longitude=address.longitude,
+        country=address.country, region=address.region, city=address.city,
+        district=address.district, ward=address.ward, postal_code=address.postal_code,
+        latitude=address.latitude, longitude=address.longitude,
     )
 
     companies = _company_methods_with_rates(
-        db,
-        delivery_mode=delivery_mode,
-        search=search,
-        supports_cod=supports_cod,
-        supports_tracking=supports_tracking,
+        db, delivery_mode=delivery_mode, search=search,
+        supports_cod=supports_cod, supports_tracking=supports_tracking,
     )
 
-    eligible = []
-    excluded = []
+    eligible, excluded = [], []
     for company in companies:
-        destination_services = _eligible_services_for_destination(
-            company,
-            destination,
-            delivery_mode=delivery_mode,
-        )
-        if not destination_services:
-            excluded.append({
-                "logistics_company_id": company.id,
-                "name": company.name,
-                "code": company.code,
-                "reason_codes": ["destination_not_covered"],
-                "reasons": [
-                    f"No active {delivery_mode} service and rate covers the delivery address in {address.city}, {address.region}."
-                ],
-                "uncovered_sellers": [],
-            })
-            continue
-
-        covered = 0
-        uncovered_sellers = []
-        for seller_row in sellers:
-            pickup = seller_row["pickup"]
-            origin = LocationFacts(
-                country=pickup.country,
-                region=pickup.region,
-                city=pickup.city,
-                district=pickup.district,
-                ward=pickup.ward,
-                postal_code=pickup.postal_code,
-                latitude=pickup.latitude,
-                longitude=pickup.longitude,
-            )
-
-            # Origin coverage is intentionally scope-neutral. An international
-            # carrier may use a local/both Tanzania pickup zone and an
-            # international destination zone for the same end-to-end shipment.
-            if _company_covers_location(company, origin):
-                covered += 1
-            else:
-                uncovered_sellers.append(
-                    f'{seller_row["seller_name"]} ({pickup.city}, {pickup.region})'
+        uncovered, route_types = [], []
+        for row in origins:
+            ok, route_type = _company_supports_route(company, row["origin"], destination)
+            route_types.append(route_type)
+            if not ok:
+                uncovered.append(
+                    f'{row["store_name"]} ({row["origin"].country}, {row["origin"].region}) → '
+                    f'{destination.country}, {destination.region}'
                 )
 
-        if uncovered_sellers:
+        if uncovered:
             excluded.append({
-                "logistics_company_id": company.id,
-                "name": company.name,
-                "code": company.code,
-                "reason_codes": ["seller_pickup_not_covered"],
+                "logistics_company_id": company.id, "name": company.name, "code": company.code,
+                "reason_codes": ["origin_destination_route_not_supported"],
                 "reasons": [
-                    "The company has no active zone/rate covering every seller pickup origin."
+                    "The company does not have the required domestic or cross-border country capabilities for every store-to-customer route."
                 ],
-                "uncovered_sellers": uncovered_sellers,
+                "uncovered_sellers": uncovered,
             })
             continue
 
-        eligible.append(
-            {
-                "logistics_company_id": company.id,
-                "name": company.name,
-                "code": company.code,
-                "scope": company.scope,
-                "supports_cod": bool(company.supports_cod),
-                "supports_tracking": bool(company.supports_tracking),
-                "supports_webhooks": bool(company.supports_webhooks),
-                "seller_count": len(sellers),
-                "covered_seller_count": covered,
-                "services": destination_services,
-            }
-        )
+        # Services are presented from active methods that have at least one rate.
+        services = []
+        for method in company.services:
+            if not method.is_active or not any(rate.is_active for rate in method.rates):
+                continue
+            services.append({
+                "method_id": method.id, "method_name": method.name,
+                "service_code": method.service_code, "scope": method.scope,
+                "min_delivery_days": method.min_delivery_days,
+                "max_delivery_days": method.max_delivery_days,
+                "supports_cod": bool(method.supports_cod and company.supports_cod),
+                "supports_tracking": bool(method.supports_tracking and company.supports_tracking),
+            })
+        if not services:
+            continue
 
-    total = len(eligible)
-    total_pages = ceil(total / page_size) if total else 0
-    start = (page - 1) * page_size
-    page_rows = eligible[start : start + page_size]
+        eligible.append({
+            "logistics_company_id": company.id, "name": company.name, "code": company.code,
+            "scope": company.scope, "supports_cod": bool(company.supports_cod),
+            "supports_tracking": bool(company.supports_tracking),
+            "supports_webhooks": bool(company.supports_webhooks),
+            "seller_count": len(origins), "covered_seller_count": len(origins),
+            "route_types": sorted(set(route_types)),
+            "services": sorted(services, key=lambda row: row["method_name"].casefold()),
+        })
 
+    total=len(eligible); total_pages=ceil(total/page_size) if total else 0
+    page_rows=eligible[(page-1)*page_size:page*page_size]
     return {
-        "address_id": address.id,
-        "delivery_mode": delivery_mode,
-        "seller_count": len(sellers),
-        "total": total,
-        "page": page,
-        "page_size": page_size,
-        "total_pages": total_pages,
-        "sellers": [
-            {
-                "seller_id": row["seller_id"],
-                "seller_name": row["seller_name"],
-                "pickup_location_id": row["pickup"].id,
-                "pickup_label": row["pickup"].label,
-                "country": row["pickup"].country,
-                "region": row["pickup"].region,
-                "city": row["pickup"].city,
-                "latitude": Decimal(row["pickup"].latitude),
-                "longitude": Decimal(row["pickup"].longitude),
-            }
-            for row in sellers
-        ],
-        "results": page_rows,
-        "excluded_companies": excluded,
+        "address_id": address.id, "delivery_mode": delivery_mode,
+        "destination_country": destination.country,
+        "seller_count": len(origins), "total": total, "page": page,
+        "page_size": page_size, "total_pages": total_pages,
+        "sellers": [{
+            "seller_id": row["seller_id"], "seller_name": row["seller_name"],
+            "store_id": row["store_id"], "store_name": row["store_name"],
+            "pickup_location_id": row["pickup"].id if row["pickup"] else row["store_id"],
+            "pickup_label": row["pickup"].label if row["pickup"] else row["store_name"],
+            "country": row["origin"].country, "region": row["origin"].region,
+            "city": row["origin"].city, "latitude": row["origin"].latitude,
+            "longitude": row["origin"].longitude,
+        } for row in origins],
+        "results": page_rows, "excluded_companies": excluded,
     }
+
