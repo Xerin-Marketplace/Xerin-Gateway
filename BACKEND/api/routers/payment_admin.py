@@ -13,6 +13,7 @@ from api.enums import PermissionCode, PayoutStatus, RefundStatus
 from api.models import (
     AuditLog,
     CommissionRule,
+    FinanceSettings,
     Order,
     OrderItemCommission,
     Payment,
@@ -27,6 +28,7 @@ from api.models import (
     PaymentStatus,
     PaymentTransaction,
     PayoutRequest,
+    Product,
     Refund,
     Seller,
     User,
@@ -39,6 +41,7 @@ from api.schemas import (
     PaymentCurrencyUpdate,
     PaymentDisputeUpdate,
     PaymentFxRateCreate,
+    PaymentFxRateUpdate,
     PaymentProviderCreate,
     PaymentProviderUpdate,
     PaymentReconciliationUpdate,
@@ -283,30 +286,116 @@ def update_reconciliation(record_id:UUID,data:PaymentReconciliationUpdate,db:Ses
     db.commit();return {"id":str(x.id),"status":x.status}
 
 
-# Currency / FX CRUD. No exchange rate is hardcoded.
+# Currency / FX CRUD. TZS is the protected marketplace settlement/base currency.
+SETTLEMENT_CURRENCY = "TZS"
+
+
+def _currency_payload(x: PaymentCurrency) -> dict:
+    return {
+        "id": str(x.id),
+        "code": x.code,
+        "name": x.name,
+        "symbol": x.symbol,
+        "is_base": x.is_base,
+        "is_active": x.is_active,
+        "decimal_places": x.decimal_places,
+        "created_at": x.created_at,
+    }
+
+
+def _fx_payload(x: PaymentFxRate) -> dict:
+    return {
+        "id": str(x.id),
+        "base_currency": x.base_currency,
+        "quote_currency": x.quote_currency,
+        "rate": float(x.rate),
+        "source": x.source,
+        "effective_at": x.effective_at,
+        "is_active": x.is_active,
+    }
+
+
 @router.get("/currencies")
 def currencies(page:int=Query(1,ge=1),page_size:int=Query(20,ge=1,le=100),search:str|None=None,db:Session=Depends(get_db),_:User=Depends(require_permission(PermissionCode.currencies_read.value))):
     q=db.query(PaymentCurrency)
     if search:
         p=f"%{search.strip()}%";q=q.filter(or_(PaymentCurrency.code.ilike(p),PaymentCurrency.name.ilike(p)))
     total,rows=_page(q.order_by(PaymentCurrency.is_base.desc(),PaymentCurrency.code.asc()),page,page_size)
-    return {"total":total,"page":page,"page_size":page_size,"total_pages":_pages(total,page_size),"results":[{"id":str(x.id),"code":x.code,"name":x.name,"symbol":x.symbol,"is_base":x.is_base,"is_active":x.is_active,"decimal_places":x.decimal_places,"created_at":x.created_at} for x in rows]}
+    return {"total":total,"page":page,"page_size":page_size,"total_pages":_pages(total,page_size),"results":[_currency_payload(x) for x in rows]}
+
 
 @router.post("/currencies",status_code=201)
 def create_currency(data:PaymentCurrencyCreate,db:Session=Depends(get_db),_:User=Depends(require_permission(PermissionCode.currencies_manage.value))):
     code=data.code.upper().strip()
-    if db.query(PaymentCurrency).filter(PaymentCurrency.code==code).first():raise HTTPException(409,"Currency already exists")
-    if data.is_base:db.query(PaymentCurrency).update({PaymentCurrency.is_base:False})
-    x=PaymentCurrency(**data.model_dump(exclude={"code"}),code=code);db.add(x);db.commit();db.refresh(x);return {"id":str(x.id),"code":x.code,"name":x.name,"symbol":x.symbol,"is_base":x.is_base,"is_active":x.is_active}
+    if db.query(PaymentCurrency).filter(PaymentCurrency.code==code).first():
+        raise HTTPException(409,"Currency already exists")
+    if data.is_base and code != SETTLEMENT_CURRENCY:
+        raise HTTPException(422,"TZS is the only marketplace base and settlement currency")
+    values=data.model_dump(exclude={"code","is_base"})
+    if code == SETTLEMENT_CURRENCY:
+        values["is_active"] = True
+    x=PaymentCurrency(**values,code=code,is_base=(code==SETTLEMENT_CURRENCY))
+    db.add(x);db.commit();db.refresh(x)
+    return _currency_payload(x)
+
 
 @router.patch("/currencies/{currency_id}")
 def update_currency(currency_id:UUID,data:PaymentCurrencyUpdate,db:Session=Depends(get_db),_:User=Depends(require_permission(PermissionCode.currencies_manage.value))):
     x=db.query(PaymentCurrency).filter(PaymentCurrency.id==currency_id).first()
     if not x:raise HTTPException(404,"Currency not found")
     values=data.model_dump(exclude_unset=True)
-    if values.get("is_base"):db.query(PaymentCurrency).filter(PaymentCurrency.id!=currency_id).update({PaymentCurrency.is_base:False})
+    if values.get("is_base") and x.code != SETTLEMENT_CURRENCY:
+        raise HTTPException(422,"TZS is the only marketplace base and settlement currency")
+    if x.code == SETTLEMENT_CURRENCY:
+        if values.get("is_base") is False:
+            raise HTTPException(422,"TZS cannot be removed as the marketplace base currency")
+        if values.get("is_active") is False:
+            raise HTTPException(422,"TZS cannot be deactivated while marketplace settlement is TZS")
+        values["is_base"] = True
+        values["is_active"] = True
+    else:
+        values.pop("is_base", None)
     for k,v in values.items():setattr(x,k,v)
-    db.commit();return {"id":str(x.id),"code":x.code,"name":x.name,"symbol":x.symbol,"is_base":x.is_base,"is_active":x.is_active}
+    db.commit();db.refresh(x)
+    return _currency_payload(x)
+
+
+@router.delete("/currencies/{currency_id}")
+def delete_currency(
+    currency_id: UUID,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_permission(PermissionCode.currencies_manage.value)),
+):
+    x = db.query(PaymentCurrency).filter(PaymentCurrency.id == currency_id).first()
+    if not x:
+        raise HTTPException(404, "Currency not found")
+    if x.code == SETTLEMENT_CURRENCY or x.is_base:
+        raise HTTPException(422, "TZS is the protected marketplace settlement currency and cannot be deleted")
+    if x.is_active:
+        raise HTTPException(409, "Deactivate the currency before deleting it")
+
+    code = x.code
+    references = {
+        "products": db.query(Product).filter(Product.currency == code).count(),
+        "orders": db.query(Order).filter(Order.currency == code).count(),
+        "payments": db.query(Payment).filter(Payment.currency == code).count(),
+        "payouts": db.query(PayoutRequest).filter(PayoutRequest.currency == code).count(),
+        "refunds": db.query(Refund).filter(Refund.currency == code).count(),
+        "countries": db.query(PaymentCountry).filter(PaymentCountry.currency_code == code).count(),
+        "fx_rates": db.query(PaymentFxRate).filter(
+            or_(PaymentFxRate.base_currency == code, PaymentFxRate.quote_currency == code)
+        ).count(),
+        "finance_settings": db.query(FinanceSettings).filter(FinanceSettings.settlement_currency == code).count(),
+    }
+    in_use = {name: count for name, count in references.items() if count}
+    if in_use:
+        details = ", ".join(f"{name}={count}" for name, count in in_use.items())
+        raise HTTPException(409, f"Currency {code} is already in use and cannot be deleted ({details}). Keep it inactive instead.")
+
+    db.delete(x)
+    db.commit()
+    return {"message": f"Currency {code} deleted successfully"}
+
 
 @router.get("/fx-rates")
 def fx_rates(page:int=Query(1,ge=1),page_size:int=Query(20,ge=1,le=100),search:str|None=None,db:Session=Depends(get_db),_:User=Depends(require_permission(PermissionCode.currencies_read.value))):
@@ -314,21 +403,68 @@ def fx_rates(page:int=Query(1,ge=1),page_size:int=Query(20,ge=1,le=100),search:s
     if search:
         p=f"%{search.strip()}%";q=q.filter(or_(PaymentFxRate.base_currency.ilike(p),PaymentFxRate.quote_currency.ilike(p),PaymentFxRate.source.ilike(p)))
     total,rows=_page(q.order_by(PaymentFxRate.effective_at.desc()),page,page_size)
-    return {"total":total,"page":page,"page_size":page_size,"total_pages":_pages(total,page_size),"results":[{"id":str(x.id),"base_currency":x.base_currency,"quote_currency":x.quote_currency,"rate":float(x.rate),"source":x.source,"effective_at":x.effective_at,"is_active":x.is_active} for x in rows]}
+    return {"total":total,"page":page,"page_size":page_size,"total_pages":_pages(total,page_size),"results":[_fx_payload(x) for x in rows]}
+
 
 @router.post("/fx-rates",status_code=201)
 def create_fx(data:PaymentFxRateCreate,db:Session=Depends(get_db),_:User=Depends(require_permission(PermissionCode.currencies_manage.value))):
     base=data.base_currency.upper().strip();quote=data.quote_currency.upper().strip()
     if base==quote:raise HTTPException(422,"Base and quote currencies must differ")
+    if quote != SETTLEMENT_CURRENCY or base == SETTLEMENT_CURRENCY:
+        raise HTTPException(422,"FX rates must be configured as LISTING_CURRENCY/TZS, for example USD/TZS")
     for code in (base,quote):
-        if not db.query(PaymentCurrency).filter(PaymentCurrency.code==code,PaymentCurrency.is_active.is_(True)).first():raise HTTPException(422,f"Active currency {code} does not exist")
+        if not db.query(PaymentCurrency).filter(PaymentCurrency.code==code,PaymentCurrency.is_active.is_(True)).first():
+            raise HTTPException(422,f"Active currency {code} does not exist")
     if data.is_active:
         db.query(PaymentFxRate).filter(
             PaymentFxRate.base_currency == base,
             PaymentFxRate.quote_currency == quote,
             PaymentFxRate.is_active.is_(True),
         ).update({PaymentFxRate.is_active: False}, synchronize_session=False)
-    x=PaymentFxRate(base_currency=base,quote_currency=quote,rate=data.rate,source=data.source,effective_at=data.effective_at or datetime.now(timezone.utc),is_active=data.is_active);db.add(x);db.commit();db.refresh(x);return {"id":str(x.id),"base_currency":x.base_currency,"quote_currency":x.quote_currency,"rate":float(x.rate),"source":x.source,"effective_at":x.effective_at,"is_active":x.is_active}
+    x=PaymentFxRate(base_currency=base,quote_currency=quote,rate=data.rate,source=(data.source or "Admin configured").strip(),effective_at=data.effective_at or datetime.now(timezone.utc),is_active=data.is_active)
+    db.add(x);db.commit();db.refresh(x)
+    return _fx_payload(x)
+
+
+@router.patch("/fx-rates/{fx_rate_id}")
+def update_fx_rate(fx_rate_id:UUID,data:PaymentFxRateUpdate,db:Session=Depends(get_db),_:User=Depends(require_permission(PermissionCode.currencies_manage.value))):
+    x=db.query(PaymentFxRate).filter(PaymentFxRate.id==fx_rate_id).first()
+    if not x:raise HTTPException(404,"FX rate not found")
+    values=data.model_dump(exclude_unset=True)
+    if values.get("is_active") is True:
+        if not db.query(PaymentCurrency).filter(
+            PaymentCurrency.code == x.base_currency,
+            PaymentCurrency.is_active.is_(True),
+        ).first():
+            raise HTTPException(422, f"Active currency {x.base_currency} does not exist")
+        base_currency=x.base_currency
+        quote_currency=x.quote_currency
+        db.query(PaymentFxRate).filter(
+            PaymentFxRate.id != x.id,
+            PaymentFxRate.base_currency == base_currency,
+            PaymentFxRate.quote_currency == quote_currency,
+            PaymentFxRate.is_active.is_(True),
+        ).update({PaymentFxRate.is_active:False},synchronize_session=False)
+    for k,v in values.items():setattr(x,k,v)
+    db.commit();db.refresh(x)
+    return _fx_payload(x)
+
+
+@router.delete("/fx-rates/{fx_rate_id}")
+def delete_fx_rate(
+    fx_rate_id: UUID,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_permission(PermissionCode.currencies_manage.value)),
+):
+    x = db.query(PaymentFxRate).filter(PaymentFxRate.id == fx_rate_id).first()
+    if not x:
+        raise HTTPException(404, "FX rate not found")
+    if x.is_active:
+        raise HTTPException(409, "Deactivate the FX rate before deleting it")
+    pair = f"{x.base_currency}/{x.quote_currency}"
+    db.delete(x)
+    db.commit()
+    return {"message": f"Historical FX rate {pair} deleted successfully"}
 
 
 @router.get("/payment-countries")

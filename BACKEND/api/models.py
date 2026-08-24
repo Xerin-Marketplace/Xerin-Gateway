@@ -2829,6 +2829,19 @@ class PaymentProviderConfig(Base):
 class PaymentCurrency(Base):
     __tablename__ = "payment_currencies"
 
+    __table_args__ = (
+        CheckConstraint(
+            "(NOT is_base) OR code = 'TZS'",
+            name="ck_payment_currency_base_is_tzs",
+        ),
+        Index(
+            "uq_payment_currencies_single_base",
+            "is_base",
+            unique=True,
+            postgresql_where=text("is_base = true"),
+        ),
+    )
+
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     code = Column(String(10), nullable=False, unique=True, index=True)
     name = Column(String(80), nullable=False)

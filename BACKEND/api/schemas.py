@@ -4990,6 +4990,12 @@ class PaymentFxRateCreate(BaseModel):
     is_active: bool = True
 
 
+class PaymentFxRateUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    source: str | None = Field(default=None, max_length=120)
+    is_active: bool | None = None
+
+
 class PaymentCountryCreate(BaseModel):
     code: str = Field(min_length=2, max_length=3)
     name: str

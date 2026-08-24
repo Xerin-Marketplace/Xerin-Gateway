@@ -15,6 +15,7 @@ from api.models import (
     Brand,
     Category,
     Product,
+    PaymentCurrency,
     ProductImage,
     ProductOption,
     ProductOptionValue,
@@ -61,6 +62,21 @@ from api.services.product_image_service import (
 )
 
 router = APIRouter(prefix="/products", tags=["Products"])
+
+
+def _require_active_listing_currency(db: Session, code: str) -> PaymentCurrency:
+    normalized = (code or "TZS").strip().upper()
+    currency = (
+        db.query(PaymentCurrency)
+        .filter(PaymentCurrency.code == normalized, PaymentCurrency.is_active.is_(True))
+        .first()
+    )
+    if currency is None:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Currency {normalized} is not enabled for product listings",
+        )
+    return currency
 
 
 def _commit(db: Session, *, conflict_detail: str = "Database conflict") -> None:
@@ -274,6 +290,8 @@ def create_product(
     if db.query(Product).filter(Product.slug == data.slug).first():
         raise HTTPException(status_code=409, detail="Product slug already exists")
 
+    listing_currency = _require_active_listing_currency(db, data.currency)
+
     product = Product(
         seller_id=seller.id,
         store_id=store.id,
@@ -287,7 +305,7 @@ def create_product(
         seller_sale_price=data.sale_price,
         price=data.price,  # replaced below by pricing engine
         sale_price=data.sale_price,
-        currency=data.currency,
+        currency=listing_currency.code,
         weight=data.weight,
         status=ProductStatus.draft,
         is_active=True,
@@ -391,6 +409,31 @@ def submit_product_for_review(
     return product
 
 
+@router.get("/listing-currencies")
+def get_listing_currencies(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permission(PermissionCode.seller_products_read.value)),
+):
+    """Currencies the administrator currently allows sellers to use for product listings."""
+    rows = (
+        db.query(PaymentCurrency)
+        .filter(PaymentCurrency.is_active.is_(True))
+        .order_by(PaymentCurrency.is_base.desc(), PaymentCurrency.code.asc())
+        .all()
+    )
+    return [
+        {
+            "id": str(row.id),
+            "code": row.code,
+            "name": row.name,
+            "symbol": row.symbol,
+            "decimal_places": row.decimal_places,
+            "is_base": row.is_base,
+        }
+        for row in rows
+    ]
+
+
 @router.get("/{product_id}", response_model=ProductResponse)
 def get_product(product_id: UUID, db: Session = Depends(get_db)):
     product = db.query(Product).filter(Product.id == product_id, Product.is_active.is_(True), Product.status == ProductStatus.approved).first()
@@ -423,6 +466,8 @@ def update_product(
         raise HTTPException(status_code=409, detail="SKU already exists")
     if "slug" in update_data and db.query(Product).filter(Product.slug == update_data["slug"], Product.id != product.id).first():
         raise HTTPException(status_code=409, detail="Slug already exists")
+    if "currency" in update_data:
+        update_data["currency"] = _require_active_listing_currency(db, update_data["currency"]).code
 
     for key, value in update_data.items():
         setattr(product, key, value)

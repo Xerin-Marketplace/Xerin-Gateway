@@ -143,9 +143,9 @@ xerin_before_phase1_task3_20260730.sql/*
 
 # Or ignore this specific backup
 xerin_before_phase1_task3_20260730.sql
-XERIM/#Frontend/xerin-marketplace/node_modules/
-XERIM/#Frontend/xerin-marketplace/node_modules/*
-#Frontend/xerin-marketplace/node_modules/
+XERIM/Frontend/xerin-marketplace/node_modules/
+XERIM/Frontend/xerin-marketplace/node_modules/*
+Frontend/xerin-marketplace/node_modules/
 azampay_path
 azampay_path/*
 errors
