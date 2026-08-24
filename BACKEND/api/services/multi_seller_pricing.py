@@ -12,6 +12,7 @@ from api.services.delivery_quote import (
     calculate_delivery_distance_quote,
 )
 from api.services.eligible_logistics import LocationFacts, _zone_matches_location
+from api.services.fx_service import FxRateUnavailableError, convert_amount_to_tzs
 
 
 MONEY = Decimal("0.01")
@@ -278,6 +279,17 @@ def calculate_multi_seller_delivery_pricing(
                 continue
             raise
 
+        try:
+            amount = convert_amount_to_tzs(db, amount, rate.currency)
+            for key in ("base_amount", "amount_per_km", "raw_distance_amount", "minimum_fee", "maximum_fee"):
+                value = breakdown.get(key)
+                if value is not None:
+                    breakdown[key] = convert_amount_to_tzs(db, value, rate.currency)
+        except FxRateUnavailableError:
+            # A logistics rate without an active TZS conversion cannot be used
+            # in a TZS-settled checkout.
+            continue
+
         seller_rows = []
         for route in distance_quote["sellers"]:
             seller_rows.append(
@@ -305,7 +317,7 @@ def calculate_multi_seller_delivery_pricing(
                 "logistics_company_name": company.name,
                 "strategy": strategy,
                 "rate_type": rate.rate_type,
-                "currency": rate.currency,
+                "currency": "TZS",
                 "seller_count": len(distance_quote["sellers"]),
                 "billable_distance_km": billable_distance,
                 "billable_seller_id": billable_seller_id,

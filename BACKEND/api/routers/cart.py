@@ -22,6 +22,7 @@ from api.models import (
     PromotionUsage,
     User,
 )
+from api.services.fx_service import FxRateUnavailableError, convert_amount_to_tzs
 from api.schemas import (
     ApplyCartPromotionRequest,
     ApplyCouponRequest,
@@ -83,7 +84,7 @@ def _inventory_query(db: Session, product_id: UUID, variant_id: UUID | None):
     )
 
 
-def _resolve_price(product: Product, variant: ProductVariant | None) -> Decimal:
+def _resolve_listing_price(product: Product, variant: ProductVariant | None) -> Decimal:
     if variant is not None:
         if variant.sale_price is not None:
             return Decimal(variant.sale_price)
@@ -92,6 +93,29 @@ def _resolve_price(product: Product, variant: ProductVariant | None) -> Decimal:
     if product.sale_price is not None:
         return Decimal(product.sale_price)
     return Decimal(product.price)
+
+
+def _resolve_price(
+    db: Session,
+    product: Product,
+    variant: ProductVariant | None,
+) -> Decimal:
+    """Return the cart/checkout unit price in canonical TZS.
+
+    Product.price / variant.price remain listing-currency amounts. Cart money is
+    always normalised to the marketplace settlement currency before arithmetic.
+    """
+    listing_price = _resolve_listing_price(product, variant)
+    try:
+        return convert_amount_to_tzs(db, listing_price, product.currency)
+    except FxRateUnavailableError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"{product.name} cannot be added to the cart because its "
+                f"{(product.currency or 'TZS').upper()}/TZS exchange rate is unavailable"
+            ),
+        ) from exc
 
 
 def _subtotal(cart: Cart) -> Decimal:
@@ -482,7 +506,7 @@ def add_cart_item(
         if requested_quantity > inventory.available_quantity:
             raise HTTPException(status_code=409, detail="Insufficient stock")
 
-        unit_price = _resolve_price(product, variant)
+        unit_price = _resolve_price(db, product, variant)
         if existing:
             existing.quantity = requested_quantity
             existing.unit_price = unit_price
@@ -549,7 +573,7 @@ def update_cart_item(
             raise HTTPException(status_code=409, detail="Insufficient stock")
 
         item.quantity = data.quantity
-        item.unit_price = _resolve_price(item.product, item.variant)
+        item.unit_price = _resolve_price(db, item.product, item.variant)
         db.flush()
         db.expire(cart, ["items"])
         payload = _cart_payload(db, cart, user_id=current_user.id)
@@ -887,7 +911,7 @@ def validate_cart(
                     f"{product.name}: only {inventory.available_quantity} item(s) are currently available"
                 )
 
-            latest_price = _resolve_price(product, item.variant)
+            latest_price = _resolve_price(db, product, item.variant)
             if Decimal(item.unit_price) != latest_price:
                 item.unit_price = latest_price
                 messages.append(
@@ -1005,7 +1029,7 @@ def merge_guest_cart(
                 )
                 continue
 
-            latest_price = _resolve_price(product, variant)
+            latest_price = _resolve_price(db, product, variant)
             if existing:
                 existing.quantity = new_quantity
                 existing.unit_price = latest_price

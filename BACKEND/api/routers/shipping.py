@@ -14,6 +14,7 @@ from api.models import (
     ShippingMethod, ShippingRate, ShippingZone, User,
 )
 from api.permissions import require_permission
+from api.services.fx_service import FxRateUnavailableError, convert_amount_to_tzs
 from api.services.checkout_delivery_quote import (
     CheckoutDeliveryQuoteError,
     create_checkout_delivery_quote,
@@ -536,22 +537,43 @@ def quote_shipping(
         ):
             continue
 
+        try:
+            free_shipping_threshold_tzs = (
+                convert_amount_to_tzs(
+                    db,
+                    Decimal(rate.free_shipping_threshold),
+                    rate.currency,
+                )
+                if rate.free_shipping_threshold is not None
+                else None
+            )
+        except FxRateUnavailableError:
+            # Do not quote a rate whose currency currently has no TZS conversion.
+            continue
+
         if (
-            rate.free_shipping_threshold is not None
-            and cart_subtotal >= Decimal(rate.free_shipping_threshold)
+            free_shipping_threshold_tzs is not None
+            and cart_subtotal >= free_shipping_threshold_tzs
         ):
-            original_amount = Decimal("0.00")
+            original_amount_source = Decimal("0.00")
         elif rate.rate_type == ShippingRateType.free:
-            original_amount = Decimal("0.00")
+            original_amount_source = Decimal("0.00")
         elif rate.rate_type == ShippingRateType.weight_based:
-            original_amount = (
+            original_amount_source = (
                 Decimal(rate.base_amount)
                 + Decimal(rate.amount_per_kg) * cart_weight_kg
             )
         else:
-            original_amount = Decimal(rate.base_amount)
+            original_amount_source = Decimal(rate.base_amount)
 
-        original_amount = original_amount.quantize(Decimal("0.01"))
+        try:
+            original_amount = convert_amount_to_tzs(
+                db,
+                original_amount_source,
+                rate.currency,
+            )
+        except FxRateUnavailableError:
+            continue
         promotion_discount = (
             original_amount if free_shipping_promotion else Decimal("0.00")
         )
@@ -594,7 +616,7 @@ def quote_shipping(
                 original_amount=original_amount,
                 shipping_discount_amount=promotion_discount,
                 amount=final_amount,
-                currency=rate.currency,
+                currency="TZS",
                 min_delivery_days=method.min_delivery_days,
                 max_delivery_days=method.max_delivery_days,
                 free_shipping_applied=bool(free_shipping_promotion),

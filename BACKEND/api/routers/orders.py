@@ -58,6 +58,7 @@ from api.schemas import (
     PaginatedOrderResponse,
 )
 from api.enums import InventoryReservationStatus, ShipmentStatus
+from api.services.fx_service import FxRateUnavailableError, convert_amount_to_tzs
 from api.services.inventory_reservations import create_reservation, release_order_reservations
 from api.services.escrow_service import order_escrow_summary, release_order_escrow
 from api.services.customer_shipment_tracking import (
@@ -472,22 +473,48 @@ def _calculate_shipping(
             detail="Shipment weight exceeds the selected rate maximum",
         )
 
+    try:
+        free_shipping_threshold_tzs = (
+            convert_amount_to_tzs(
+                db,
+                Decimal(rate.free_shipping_threshold),
+                rate.currency,
+            )
+            if rate.free_shipping_threshold is not None
+            else None
+        )
+    except FxRateUnavailableError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Shipping rate {rate.id} cannot be converted to TZS: {exc}",
+        ) from exc
+
     if (
-        rate.free_shipping_threshold is not None
-        and subtotal >= Decimal(rate.free_shipping_threshold)
+        free_shipping_threshold_tzs is not None
+        and subtotal >= free_shipping_threshold_tzs
     ):
-        original_amount = Decimal("0.00")
+        original_amount_source = Decimal("0.00")
     elif rate.rate_type.value == "free":
-        original_amount = Decimal("0.00")
+        original_amount_source = Decimal("0.00")
     elif rate.rate_type.value == "weight_based":
-        original_amount = (
+        original_amount_source = (
             Decimal(rate.base_amount)
             + Decimal(rate.amount_per_kg) * weight_kg
         )
     else:
-        original_amount = Decimal(rate.base_amount)
+        original_amount_source = Decimal(rate.base_amount)
 
-    original_amount = original_amount.quantize(Decimal("0.01"))
+    try:
+        original_amount = convert_amount_to_tzs(
+            db,
+            original_amount_source,
+            rate.currency,
+        )
+    except FxRateUnavailableError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Shipping rate {rate.id} cannot be converted to TZS: {exc}",
+        ) from exc
     shipping_discount = (
         original_amount if free_shipping else Decimal("0.00")
     )
@@ -840,7 +867,7 @@ def create_order(
                     detail=f"Insufficient stock for {product.name}",
                 )
 
-            current_price = (
+            listing_price = (
                 Decimal(cart_item.variant.sale_price)
                 if (
                     cart_item.variant is not None
@@ -857,6 +884,20 @@ def create_order(
                     else product.price
                 )
             )
+            try:
+                current_price = convert_amount_to_tzs(
+                    db,
+                    listing_price,
+                    product.currency,
+                )
+            except FxRateUnavailableError as exc:
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        f"{product.name} cannot be checked out because its "
+                        f"{(product.currency or 'TZS').upper()}/TZS exchange rate is unavailable"
+                    ),
+                ) from exc
 
             # If the cart price changed after Phase 3 validation, checkout must
             # stop instead of silently creating an order with a different total.
@@ -991,7 +1032,17 @@ def create_order(
                 )
 
             logistics_company = shipping_rate.method.logistics_company
-            original_shipping_amount = Decimal(delivery_quote.delivery_amount)
+            try:
+                original_shipping_amount = convert_amount_to_tzs(
+                    db,
+                    Decimal(delivery_quote.delivery_amount),
+                    delivery_quote.currency,
+                )
+            except FxRateUnavailableError as exc:
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"Frozen delivery quote cannot be converted to TZS: {exc}",
+                ) from exc
             shipping_discount_amount = (
                 original_shipping_amount
                 if free_shipping
@@ -1059,7 +1110,7 @@ def create_order(
             estimated_delivery_from=delivery_from,
             estimated_delivery_to=delivery_to,
             status=OrderStatus.pending,
-            currency=shipping_rate.currency or "TZS",
+            currency="TZS",
             subtotal=subtotal,
             coupon_discount_amount=coupon_discount,
             promotion_discount_amount=promotion_discount,
