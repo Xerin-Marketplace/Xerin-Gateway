@@ -150,7 +150,7 @@ azampay_path
 azampay_path/*
 errors
 errors/*
-#Frontend  
+Frontend  
 BACKEND/tests/
 BACKEND/backend.zip
 
@@ -169,7 +169,7 @@ __pycache__/
 # Environment variables
 .env
 .env.* 
-#Frontend/xerin-marketplace/
+Frontend/xerin-marketplace/
 BACKEND/tests/
 BACKEND/backend.zip
 azampay_patch
