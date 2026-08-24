@@ -96,6 +96,7 @@ def current_cart_snapshot(
                 "product_id": str(item.product_id),
                 "variant_id": str(item.variant_id) if item.variant_id else None,
                 "seller_id": str(product.seller_id),
+                "store_id": str(product.store_id) if product.store_id else None,
                 "quantity": int(item.quantity),
                 "unit_price": format(unit_price, "f"),
             }
@@ -185,12 +186,24 @@ def create_checkout_delivery_quote(
         checkout_total_before_discounts=total_before_discounts,
         cart_fingerprint=cart_fingerprint,
         pricing_breakdown={
-            key: (
-                format(value, "f")
-                if isinstance(value, Decimal)
-                else value
-            )
-            for key, value in selected["pricing_breakdown"].items()
+            **{
+                key: (
+                    format(value, "f")
+                    if isinstance(value, Decimal)
+                    else value
+                )
+                for key, value in selected["pricing_breakdown"].items()
+            },
+            "route_types": sorted({
+                str(row.get("route_type"))
+                for row in selected["sellers"]
+                if row.get("route_type")
+            }),
+            "store_count": len({
+                str(row.get("store_id"))
+                for row in selected["sellers"]
+                if row.get("store_id")
+            }),
         },
         seller_routes_snapshot=[
             {
