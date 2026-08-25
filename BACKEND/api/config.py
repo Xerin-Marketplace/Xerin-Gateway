@@ -66,7 +66,9 @@ class Settings(BaseSettings):
 
     # Inventory reservations / unpaid checkout lifecycle
     INVENTORY_RESERVATION_MINUTES: int = Field(default=30, ge=5, le=1440)
-    PAYMENT_ORDER_TIMEOUT_MINUTES: int = Field(default=5, ge=1, le=1440)
+    # A single MNO attempt may become retryable before the order itself expires.
+    PAYMENT_ATTEMPT_RETRY_AFTER_SECONDS: int = Field(default=90, ge=30, le=900)
+    PAYMENT_ORDER_TIMEOUT_MINUTES: int = Field(default=15, ge=1, le=1440)
     CHECKOUT_DELIVERY_QUOTE_TTL_MINUTES: int = 15
     SELLER_SETTLEMENT_DAYS: int = Field(default=7, ge=0, le=90)
     MINIMUM_PAYOUT_AMOUNT: Decimal = Field(default=Decimal("1000.00"), ge=0)

@@ -1647,6 +1647,71 @@ def _apply_payment_callback(
     return payment
 
 
+def _expire_stale_payment_attempt(payment: Payment, db: Session) -> Payment:
+    """Make one stale MNO attempt retryable without cancelling its order.
+
+    This is deliberately an Xerin attempt timeout, not a claim that ZenoPay
+    reported FAILED. A later authenticated COMPLETED reconciliation may still
+    recover this payment while the order remains pending.
+    """
+    if payment.status not in {PaymentStatus.pending, PaymentStatus.processing}:
+        return payment
+
+    created_at = payment.created_at
+    if created_at is None:
+        return payment
+    if created_at.tzinfo is None:
+        created_at = created_at.replace(tzinfo=timezone.utc)
+
+    age_seconds = (datetime.now(timezone.utc) - created_at).total_seconds()
+    retry_after = settings.PAYMENT_ATTEMPT_RETRY_AFTER_SECONDS
+    if age_seconds < retry_after:
+        return payment
+
+    order = (
+        db.query(Order)
+        .filter(Order.id == payment.order_id)
+        .with_for_update()
+        .first()
+    )
+    if not order or order.status != OrderStatus.pending:
+        return payment
+
+    timeout_key = f"attempt-timeout:{payment.id}"
+    if not _callback_already_processed(db, timeout_key):
+        _record_transaction(
+            db,
+            payment,
+            "attempt_timeout",
+            PaymentStatus.failed.value,
+            payment.amount,
+            {
+                "reason": "payment_attempt_confirmation_timeout",
+                "retry_after_seconds": retry_after,
+                "message": (
+                    "The payment provider still reports this attempt as pending. "
+                    "The order remains active and a new payment attempt may be started."
+                ),
+            },
+            idempotency_key=timeout_key,
+        )
+        payment.status = PaymentStatus.failed
+        payment.failure_reason = (
+            "Payment confirmation took too long. If the payment did not complete "
+            "on your phone, you can retry payment on this same order."
+        )
+        db.add(
+            OrderStatusHistory(
+                order_id=order.id,
+                status=OrderStatus.pending.value,
+                notes="Payment attempt timed out; order preserved for payment retry",
+            )
+        )
+        _commit(db, conflict_detail="Duplicate payment-attempt timeout")
+        db.refresh(payment)
+    return payment
+
+
 def _verify_and_apply_zenopay_status(payment: Payment, db: Session) -> Payment:
     """Fetch authoritative ZenoPay state before changing Xerin payment state."""
     if (payment.provider or "").lower() != "zenopay":
@@ -1747,7 +1812,13 @@ def _verify_and_apply_zenopay_status(payment: Payment, db: Session) -> Payment:
             "provider_response": result.raw,
         },
     )
-    return _apply_payment_callback("zenopay", callback, db)
+    verified = _apply_payment_callback("zenopay", callback, db)
+    # ZenoPay can continue to expose PENDING after the handset/MNO has already
+    # ended the USSD attempt. After a bounded grace period, make only this
+    # attempt retryable. The parent order remains pending until its own deadline.
+    if result.status in {GatewayPaymentStatus.PENDING, GatewayPaymentStatus.UNKNOWN}:
+        verified = _expire_stale_payment_attempt(verified, db)
+    return verified
 
 
 
