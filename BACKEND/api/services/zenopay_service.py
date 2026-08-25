@@ -135,15 +135,48 @@ class ZenoPayClient:
                    "amount": self._amount_tzs(amount), "webhook_url": callback_url,
                    "metadata": dict(metadata or {})}
         data = self._request("POST", settings.ZENOPAY_MNO_PAYMENT_PATH, json=payload)
-        result_code = str(data.get("resultcode") or data.get("result_code") or "")
-        accepted = result_code in {"", "000"} and data.get("success", True) is not False
+        result_code = str(data.get("resultcode") or data.get("result_code") or "").strip()
         status = self.normalize_status(data.get("payment_status") or data.get("status"))
+        message = str(data.get("message") or "").strip()
+        message_key = message.casefold()
+
+        # ZenoPay mobile-money initiation is asynchronous. Some accepted requests
+        # are described as "request in progress / callback shortly" before the
+        # provider exposes a final payment status. A USSD push can therefore be
+        # sent even though the first API response is not a final SUCCESS.
+        #
+        # Treat only explicit rejection/failure signals as rejected. A known
+        # pending/completed status or an in-progress/callback message is an
+        # accepted initiation and must remain PROCESSING in Xerin.
+        explicitly_rejected = (
+            data.get("success") is False
+            or status in {GatewayPaymentStatus.FAILED, GatewayPaymentStatus.CANCELLED}
+        )
+        async_accepted_message = any(
+            phrase in message_key
+            for phrase in (
+                "in progress",
+                "callback shortly",
+                "request accepted",
+                "request received",
+                "processing",
+                "initiated",
+            )
+        )
+        accepted = (
+            not explicitly_rejected
+            and (
+                result_code in {"", "000"}
+                or status in {GatewayPaymentStatus.PENDING, GatewayPaymentStatus.COMPLETED}
+                or async_accepted_message
+            )
+        )
         if accepted and status is GatewayPaymentStatus.UNKNOWN:
             status = GatewayPaymentStatus.PENDING
         reference = data.get("reference") or data.get("transaction_id") or data.get("transactionId")
         return GatewayInitiationResult(self.provider, accepted, order_id,
                                        str(reference) if reference is not None else None,
-                                       status, str(data.get("message")) if data.get("message") is not None else None,
+                                       status, message or None,
                                        data)
 
     def check_status(self, external_order_id: str) -> GatewayStatusResult:

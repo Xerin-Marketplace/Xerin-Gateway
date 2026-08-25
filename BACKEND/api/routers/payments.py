@@ -1524,7 +1524,19 @@ def _apply_payment_callback(
         incoming_status in SUCCESS_STATUSES
         or incoming_status == PaymentStatus.completed.value
     ):
-        if payment.status not in {PaymentStatus.pending, PaymentStatus.processing}:
+        verified_status_reconciliation = bool(
+            normalized_provider == "zenopay"
+            and (data.payload or {}).get("verified_by_status_api") is True
+        )
+        allowed_success_sources = {PaymentStatus.pending, PaymentStatus.processing}
+        if verified_status_reconciliation:
+            # ZenoPay status API is authoritative. This also repairs an attempt
+            # that was prematurely marked failed/cancelled by an ambiguous
+            # asynchronous initiation response, provided the order itself is
+            # still pending and has not expired.
+            allowed_success_sources |= {PaymentStatus.failed, PaymentStatus.cancelled}
+
+        if payment.status not in allowed_success_sources:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail=f"Cannot complete a payment in {payment.status.value} status",
