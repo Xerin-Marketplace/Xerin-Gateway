@@ -305,6 +305,12 @@ def _finalise_online_payment(
     payment: Payment,
     provider_name: str,
 ) -> None:
+    # Payment and Order are already SELECT ... FOR UPDATE before this function
+    # is called. `finalized_at` is the explicit once-only marker for all
+    # successful-payment side effects below.
+    if payment.finalized_at is not None:
+        return
+
     _deduct_reserved_inventory(db, order)
     _create_shipments_for_order(db, order)
 
@@ -330,6 +336,7 @@ def _finalise_online_payment(
     credit_order_delivery_entitlement(db, order=order)
 
     order.status = OrderStatus.paid
+    payment.finalized_at = datetime.now(timezone.utc)
     db.add(
         OrderStatusHistory(
             order_id=order.id,
@@ -1487,6 +1494,7 @@ def _apply_payment_callback(
         if (
             payment.provider_transaction_id == data.transaction_id
             and incoming_status in SUCCESS_STATUSES | {PaymentStatus.completed.value}
+            and payment.finalized_at is not None
         ):
             return payment
         raise HTTPException(
@@ -2097,7 +2105,7 @@ def order_payment_state(
             failed
             and order.status == OrderStatus.pending
             and latest.method in {PaymentMethod.mobile_money, PaymentMethod.card}
-            and (latest.provider or "").lower() == "azampay"
+            and (latest.provider or "").lower() in {"azampay", "zenopay"}
         ),
         "terminal": bool(completed or refunded or timed_out),
         "poll_after_seconds": 4 if active else None,

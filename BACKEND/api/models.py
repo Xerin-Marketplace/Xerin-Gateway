@@ -2572,6 +2572,10 @@ class Payment(Base):
     failure_reason = Column(Text, nullable=True)
 
     paid_at = Column(DateTime(timezone=True), nullable=True)
+    # Set in the same transaction that commits inventory, shipments,
+    # commissions, escrow and logistics entitlement. A replay can therefore
+    # detect that successful payment finalization already happened.
+    finalized_at = Column(DateTime(timezone=True), nullable=True, index=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
 

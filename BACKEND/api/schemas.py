@@ -2049,6 +2049,7 @@ class PaymentResponse(BaseModel):
     provider_response: Optional[Dict[str, Any]] = None
     failure_reason: Optional[str] = None
     paid_at: Optional[datetime]
+    finalized_at: Optional[datetime] = None
     transactions: list[PaymentTransactionResponse]
     created_at: datetime
     updated_at: Optional[datetime]
