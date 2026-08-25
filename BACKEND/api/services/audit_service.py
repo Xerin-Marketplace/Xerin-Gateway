@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 from typing import Any
 from uuid import UUID
 
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from api.enums import AuditSeverity, SecurityEventType
@@ -48,6 +49,10 @@ def create_audit_log(
     user_agent: str | None = None,
     severity: AuditSeverity = AuditSeverity.info,
 ) -> AuditLog:
+    existing = db.query(AuditLog).filter(AuditLog.request_id == request_id).first()
+    if existing:
+        return existing
+
     record = AuditLog(
         actor_user_id=actor_user_id,
         action=action,
@@ -64,8 +69,17 @@ def create_audit_log(
         request_id=request_id,
         severity=severity,
     )
+
     db.add(record)
-    db.flush()
+    try:
+        db.flush()
+    except IntegrityError:
+        db.rollback()
+        existing = db.query(AuditLog).filter(AuditLog.request_id == request_id).first()
+        if existing:
+            return existing
+        raise
+
     return record
 
 
