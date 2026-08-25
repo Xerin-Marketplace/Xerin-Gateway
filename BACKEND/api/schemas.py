@@ -728,6 +728,18 @@ class StoreUpdate(BaseModel):
     seo_description: str | None = Field(default=None, max_length=500)
 
 
+    @model_validator(mode="after")
+    def validate_store_coordinates(self):
+        fields_set = self.model_fields_set
+        latitude_supplied = "latitude" in fields_set
+        longitude_supplied = "longitude" in fields_set
+        if latitude_supplied != longitude_supplied:
+            raise ValueError("latitude and longitude must be supplied together")
+        if latitude_supplied and ((self.latitude is None) != (self.longitude is None)):
+            raise ValueError("latitude and longitude must both contain values when updating a store shipping origin")
+        return self
+
+
 class StoreResponse(BaseModel):
     id: UUID
     seller_id: UUID

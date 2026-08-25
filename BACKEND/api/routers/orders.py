@@ -5,6 +5,7 @@ from decimal import Decimal
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi.responses import StreamingResponse
 from sqlalchemy import String, cast, or_
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session, selectinload
@@ -78,6 +79,7 @@ from api.services.checkout_delivery_quote import (
     get_usable_checkout_delivery_quote,
 )
 from api.services.order_workflow import build_order_workflow, reconcile_order_workflow
+from api.services.order_invoice import build_order_invoice_pdf
 
 router = APIRouter(prefix="/orders", tags=["Orders"])
 
@@ -1659,6 +1661,50 @@ def approve_order_receipt(
     db.refresh(order)
     return order_escrow_summary(db, order)
 
+
+
+
+@router.get("/{order_id}/invoice.pdf")
+def download_customer_invoice(
+    order_id: UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    order = (
+        db.query(Order)
+        .options(
+            selectinload(Order.items).selectinload(OrderItem.store),
+            selectinload(Order.payments),
+            selectinload(Order.shipping_address),
+            selectinload(Order.user),
+        )
+        .filter(Order.id == order_id)
+        .first()
+    )
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+    if order.user_id != current_user.id and not _is_privileged_order_operator(db, current_user):
+        raise HTTPException(status_code=403, detail="Not authorized to download this invoice")
+
+    logistics_company = None
+    if order.logistics_company_id:
+        logistics_company = (
+            db.query(LogisticsCompany)
+            .filter(LogisticsCompany.id == order.logistics_company_id)
+            .first()
+        )
+
+    pdf = build_order_invoice_pdf(order, logistics_company=logistics_company)
+    created = order.created_at.strftime("%Y%m%d")
+    filename = f"Xerin-Invoice-{created}-{str(order.id)[:8].upper()}.pdf"
+    return StreamingResponse(
+        iter([pdf]),
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Cache-Control": "private, no-store",
+        },
+    )
 
 @router.get("/{order_id}", response_model=OrderResponse)
 def get_order(
