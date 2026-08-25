@@ -1591,7 +1591,7 @@ def _apply_payment_callback(
             if raw_failure_reason
             and str(raw_failure_reason).strip().upper()
             not in {"FAILED", "FAILURE", "ERROR"}
-            else "Payment was declined or could not be completed by the payment provider."
+            else "Payment was declined/Failed,Check your Account Balance or could not be completed by the payment provider."
         )
         order = (
             db.query(Order)
