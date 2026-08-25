@@ -1475,11 +1475,15 @@ def _apply_payment_callback(
             detail="Provider transaction ID is already linked to another payment",
         )
 
-    incoming_status = (
-        data.status.value
-        if isinstance(data.status, PaymentStatus)
-        else str(data.status).lower()
-    )
+    # `PaymentCallbackRequest.status` is declared with the schema-layer
+    # PaymentStatus enum, while this router imports the ORM/model PaymentStatus
+    # enum. They have the same values but are different Python classes, so
+    # `isinstance(data.status, PaymentStatus)` is false for a perfectly valid
+    # schema enum. Converting that enum with str() produces
+    # "PaymentStatus.failed", which previously missed the FAILED branch and
+    # incorrectly fell through to PROCESSING.
+    raw_status = getattr(data.status, "value", data.status)
+    incoming_status = str(raw_status).strip().lower()
     callback_key = _callback_idempotency_key(
         normalized_provider,
         payment.id,
@@ -1581,11 +1585,12 @@ def _apply_payment_callback(
         payment.status = PaymentStatus.failed
         payment.provider_transaction_id = data.transaction_id
         payment.provider_response = callback_payload
-        raw_failure_reason = _zenopay_failure_reason(callback_payload)
+        raw_failure_reason = callback_payload.get("reason")
         payment.failure_reason = (
             raw_failure_reason
             if raw_failure_reason
-            and raw_failure_reason.strip().upper() not in {"FAILED", "FAILURE", "ERROR"}
+            and str(raw_failure_reason).strip().upper()
+            not in {"FAILED", "FAILURE", "ERROR"}
             else "Payment was declined or could not be completed by the payment provider."
         )
         order = (
@@ -1626,8 +1631,8 @@ def _apply_payment_callback(
                 )
             )
     else:
-        # Do not let a stale provider PENDING snapshot reopen a terminal
-        # payment attempt. Retry creates a new Payment row under the same order.
+        # A stale provider PENDING snapshot must never reopen a terminal payment
+        # attempt. Customer retry creates a NEW Payment row under the SAME order.
         if payment.status not in {
             PaymentStatus.failed,
             PaymentStatus.cancelled,
