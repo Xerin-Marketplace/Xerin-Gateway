@@ -58,6 +58,7 @@ from api.schemas import (
     PaginatedOrderResponse,
 )
 from api.enums import InventoryReservationStatus, ShipmentStatus
+from api.services.eligible_logistics import EligibleLogisticsError, detect_cart_delivery_mode
 from api.services.fx_service import FxRateUnavailableError, convert_amount_to_tzs
 from api.services.inventory_reservations import create_reservation, release_order_reservations
 from api.services.escrow_service import order_escrow_summary, release_order_escrow
@@ -136,35 +137,39 @@ def _validate_delivery_mode(
     db: Session,
     address: Address,
     delivery_mode: str,
+    *,
+    user_id: UUID,
 ) -> MarketplaceSettings | None:
     settings_row = (
         db.query(MarketplaceSettings)
         .filter(MarketplaceSettings.singleton_key == 1)
         .first()
     )
+    try:
+        detected = detect_cart_delivery_mode(
+            db, user_id=user_id, address_id=address.id
+        )
+    except EligibleLogisticsError as exc:
+        detail = {"code": exc.code, "message": exc.message}
+        detail.update(exc.extra)
+        raise HTTPException(status_code=exc.status_code, detail=detail) from exc
 
-    local_address = _is_tanzania(address.country)
-
-    if delivery_mode == "local" and not local_address:
+    if delivery_mode != detected["delivery_mode"]:
         raise HTTPException(
-            status_code=422,
-            detail="Local delivery requires a Tanzania delivery address",
+            status_code=409,
+            detail={
+                "code": "delivery_mode_mismatch",
+                "message": f"Delivery mode is automatically {detected['delivery_mode']} for the selected address and cart stores.",
+            },
         )
 
-    if delivery_mode == "international" and local_address:
-        raise HTTPException(
-            status_code=422,
-            detail="International delivery requires a non-Tanzania delivery address",
-        )
-
-    if delivery_mode == "international" and not (
+    if detected["delivery_mode"] == "international" and not (
         settings_row and settings_row.international_delivery_allowed
     ):
         raise HTTPException(
             status_code=409,
             detail="International delivery is not enabled for the marketplace",
         )
-
     return settings_row
 
 
@@ -824,7 +829,7 @@ def create_order(
                 detail="Shipping address not found",
             )
 
-        _validate_delivery_mode(db, address, data.delivery_mode)
+        _validate_delivery_mode(db, address, data.delivery_mode, user_id=current_user.id)
 
         subtotal = Decimal("0.00")
         prepared_items: list[dict] = []

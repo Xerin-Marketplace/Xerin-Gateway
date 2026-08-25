@@ -29,9 +29,12 @@ from api.services.delivery_quote import (
 )
 from api.services.eligible_logistics import (
     EligibleLogisticsError,
+    detect_cart_delivery_mode,
     find_eligible_logistics_companies,
 )
 from api.schemas import (
+    DetectDeliveryModeRequest,
+    DetectDeliveryModeResponse,
     EligibleLogisticsSelectionRequest,
     CheckoutDeliveryQuoteCreateRequest,
     CheckoutDeliveryQuoteResponse,
@@ -234,6 +237,35 @@ def checkout_delivery_config(
     }
 
 
+@router.post("/detect-delivery-mode", response_model=DetectDeliveryModeResponse)
+def detect_checkout_delivery_mode(
+    data: DetectDeliveryModeRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    try:
+        result = detect_cart_delivery_mode(
+            db, user_id=current_user.id, address_id=data.address_id
+        )
+    except EligibleLogisticsError as exc:
+        detail = {"code": exc.code, "message": exc.message}
+        detail.update(exc.extra)
+        raise HTTPException(status_code=exc.status_code, detail=detail) from exc
+
+    settings_row = _checkout_settings(db)
+    allowed = bool(settings_row and settings_row.international_delivery_allowed)
+    result["international_delivery_allowed"] = allowed
+    if result["delivery_mode"] == "international" and not allowed:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "cross_border_delivery_disabled",
+                "message": "This cart requires cross-border delivery, but cross-border delivery is disabled by marketplace settings.",
+            },
+        )
+    return result
+
+
 @router.post(
     "/checkout-delivery-quote",
     response_model=CheckoutDeliveryQuoteResponse,
@@ -395,21 +427,25 @@ def quote_shipping(
         raise HTTPException(404, "Address not found")
 
     settings_row = _checkout_settings(db)
-    address_is_local = _is_tanzania(address.country)
+    try:
+        detected = detect_cart_delivery_mode(
+            db, user_id=current_user.id, address_id=address.id
+        )
+    except EligibleLogisticsError as exc:
+        detail = {"code": exc.code, "message": exc.message}
+        detail.update(exc.extra)
+        raise HTTPException(status_code=exc.status_code, detail=detail) from exc
 
-    if data.delivery_mode == "local" and not address_is_local:
+    if data.delivery_mode != detected["delivery_mode"]:
         raise HTTPException(
-            status_code=422,
-            detail="Local delivery requires a Tanzania delivery address",
+            status_code=409,
+            detail={
+                "code": "delivery_mode_mismatch",
+                "message": f"Delivery mode is determined automatically as {detected['delivery_mode']} for this cart and destination.",
+            },
         )
 
-    if data.delivery_mode == "international" and address_is_local:
-        raise HTTPException(
-            status_code=422,
-            detail="International delivery requires a non-Tanzania delivery address",
-        )
-
-    if data.delivery_mode == "international" and not (
+    if detected["delivery_mode"] == "international" and not (
         settings_row and settings_row.international_delivery_allowed
     ):
         raise HTTPException(

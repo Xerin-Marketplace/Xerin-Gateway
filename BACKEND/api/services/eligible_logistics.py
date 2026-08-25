@@ -183,12 +183,12 @@ def _cart_seller_pickups(
     *,
     user_id: UUID,
 ) -> list[dict]:
-    """Resolve one shipping origin per store represented in the cart.
+    """Resolve one authoritative shipping origin per Store in the cart.
 
-    Phase 3 makes Product.store_id the authoritative commercial origin.  Store
-    coordinates/location are preferred because one seller may own stores in
-    different countries.  A seller default pickup is retained only as a
-    backwards-compatible fallback when the store itself has no usable GPS.
+    Phase 8 removes the seller-default-pickup fallback. A seller may own stores
+    in different countries, therefore logistics distance must start from the
+    actual Product.store_id location. Every shippable store must have its own
+    country + latitude + longitude.
     """
     cart = (
         db.query(Cart)
@@ -220,18 +220,6 @@ def _cart_seller_pickups(
             status_code=409,
         )
 
-    seller_ids = list({product.seller_id for product in products})
-    default_pickups = (
-        db.query(SellerPickupLocation)
-        .filter(
-            SellerPickupLocation.seller_id.in_(seller_ids),
-            SellerPickupLocation.is_active.is_(True),
-            SellerPickupLocation.is_default.is_(True),
-        )
-        .all()
-    )
-    pickup_by_seller = {row.seller_id: row for row in default_pickups}
-
     store_map: dict[UUID, object] = {}
     for product in products:
         if product.store is None:
@@ -246,54 +234,149 @@ def _cart_seller_pickups(
     result = []
     for store_id, product in store_map.items():
         store = product.store
-        fallback = pickup_by_seller.get(product.seller_id)
-
         country = (store.country or "").strip()
         region = (store.region or "").strip()
         city = (store.district or store.region or "").strip()
         district = (store.district or "").strip() or None
         ward = (store.ward or "").strip() or None
-        latitude = store.latitude
-        longitude = store.longitude
-        source = "store"
 
-        if not country or latitude is None or longitude is None:
-            if fallback is None:
-                raise EligibleLogisticsError(
-                    "The product store needs a country and GPS coordinates before logistics can be calculated.",
-                    code="store_shipping_origin_required",
-                    status_code=409,
-                    extra={"store_id": str(store.id), "store_name": store.store_name},
-                )
-            country = country or fallback.country
-            region = region or fallback.region
-            city = city or fallback.city
-            district = district or fallback.district
-            ward = ward or fallback.ward
-            latitude = latitude if latitude is not None else fallback.latitude
-            longitude = longitude if longitude is not None else fallback.longitude
-            source = "store_with_seller_pickup_fallback"
+        if not country or store.latitude is None or store.longitude is None:
+            raise EligibleLogisticsError(
+                "The product store must confirm its own shipping-origin map pin before delivery can be calculated.",
+                code="store_shipping_origin_required",
+                status_code=409,
+                extra={
+                    "store_id": str(store.id),
+                    "store_name": store.store_name,
+                    "store_country": country or None,
+                    "missing": [
+                        field
+                        for field, missing in (
+                            ("country", not country),
+                            ("latitude", store.latitude is None),
+                            ("longitude", store.longitude is None),
+                        )
+                        if missing
+                    ],
+                },
+            )
 
         result.append({
             "seller_id": product.seller_id,
             "seller_name": product.seller.business_name,
             "store_id": store.id,
             "store_name": store.store_name,
-            "origin_source": source,
-            "pickup": fallback,
+            "origin_source": "store",
+            "pickup": None,
             "origin": LocationFacts(
                 country=country,
                 region=region,
                 city=city,
                 district=district,
                 ward=ward,
-                postal_code=getattr(fallback, "postal_code", None) if fallback else None,
-                latitude=Decimal(str(latitude)),
-                longitude=Decimal(str(longitude)),
+                postal_code=None,
+                latitude=Decimal(str(store.latitude)),
+                longitude=Decimal(str(store.longitude)),
             ),
         })
 
     return result
+
+
+def detect_cart_delivery_mode(
+    db: Session,
+    *,
+    user_id: UUID,
+    address_id: UUID,
+) -> dict:
+    """Detect domestic/local vs cross-border from cart Store countries.
+
+    This intentionally needs only store country for classification; exact GPS
+    is validated later when a logistics quote is requested.
+    """
+    address = (
+        db.query(Address)
+        .filter(Address.id == address_id, Address.user_id == user_id)
+        .first()
+    )
+    if address is None:
+        raise EligibleLogisticsError(
+            "Delivery address not found.",
+            code="delivery_address_not_found",
+            status_code=404,
+        )
+
+    cart = (
+        db.query(Cart)
+        .options(
+            selectinload(Cart.items)
+            .selectinload(CartItem.product)
+            .joinedload(Product.store)
+        )
+        .filter(Cart.user_id == user_id)
+        .first()
+    )
+    if cart is None or not cart.items:
+        raise EligibleLogisticsError("Cart is empty.", code="cart_empty", status_code=400)
+
+    destination_country = (address.country or "").strip()
+    if not destination_country:
+        raise EligibleLogisticsError(
+            "Delivery address country is required.",
+            code="delivery_country_required",
+            status_code=409,
+        )
+
+    origins: dict[UUID, dict] = {}
+    for item in cart.items:
+        product = item.product
+        if product is None or not product.is_active or product.status != ProductStatus.approved:
+            continue
+        store = product.store
+        if store is None:
+            raise EligibleLogisticsError(
+                "A cart product is not assigned to a store.",
+                code="product_store_required",
+                status_code=409,
+                extra={"product_id": str(product.id)},
+            )
+        origin_country = (store.country or "").strip()
+        if not origin_country:
+            raise EligibleLogisticsError(
+                "A product store does not have a country configured.",
+                code="store_country_required",
+                status_code=409,
+                extra={"store_id": str(store.id), "store_name": store.store_name},
+            )
+        route_type = (
+            "domestic"
+            if country_key(origin_country) == country_key(destination_country)
+            else "cross_border"
+        )
+        origins[store.id] = {
+            "store_id": store.id,
+            "store_name": store.store_name,
+            "origin_country": origin_country,
+            "destination_country": destination_country,
+            "route_type": route_type,
+        }
+
+    if not origins:
+        raise EligibleLogisticsError(
+            "Cart does not contain any shippable products.",
+            code="cart_has_no_shippable_products",
+            status_code=409,
+        )
+
+    route_types = sorted({row["route_type"] for row in origins.values()})
+    detected_mode = "international" if "cross_border" in route_types else "local"
+    return {
+        "address_id": address.id,
+        "destination_country": destination_country,
+        "delivery_mode": detected_mode,
+        "route_types": route_types,
+        "origins": list(origins.values()),
+    }
 
 
 def _company_methods_with_rates(

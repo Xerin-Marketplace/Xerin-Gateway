@@ -683,8 +683,8 @@ class StoreCreate(BaseModel):
     district: str | None = Field(default=None, max_length=100)
     ward: str | None = Field(default=None, max_length=100)
     street: str | None = None
-    latitude: float | None = Field(default=None, ge=-90, le=90)
-    longitude: float | None = Field(default=None, ge=-180, le=180)
+    latitude: float = Field(ge=-90, le=90)
+    longitude: float = Field(ge=-180, le=180)
 
 
 class StoreUpdate(BaseModel):
@@ -2925,6 +2925,48 @@ class ShippingCheckoutConfig(BaseModel):
     international_delivery_allowed: bool = False
     cod_allowed: bool = False
     configured: bool = False
+
+
+class DetectDeliveryModeRequest(BaseModel):
+    address_id: UUID
+
+
+class DetectedStoreRoute(BaseModel):
+    store_id: UUID
+    store_name: str
+    origin_country: str
+    destination_country: str
+    route_type: Literal["domestic", "cross_border"]
+
+
+class DetectDeliveryModeResponse(BaseModel):
+    address_id: UUID
+    destination_country: str
+    delivery_mode: Literal["local", "international"]
+    route_types: list[str] = Field(default_factory=list)
+    origins: list[DetectedStoreRoute] = Field(default_factory=list)
+    international_delivery_allowed: bool = True
+
+
+class DetectDeliveryModeRequest(BaseModel):
+    address_id: UUID
+
+
+class DetectedStoreRoute(BaseModel):
+    store_id: UUID
+    store_name: str
+    origin_country: str
+    destination_country: str
+    route_type: Literal["domestic", "cross_border"]
+
+
+class DetectDeliveryModeResponse(BaseModel):
+    address_id: UUID
+    destination_country: str
+    delivery_mode: Literal["local", "international"]
+    route_types: list[str] = Field(default_factory=list)
+    origins: list[DetectedStoreRoute] = Field(default_factory=list)
+    international_delivery_allowed: bool = True
 
 
 class EligibleLogisticsSelectionRequest(BaseModel):
