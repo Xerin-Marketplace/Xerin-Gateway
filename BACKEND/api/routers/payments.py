@@ -1715,6 +1715,14 @@ def _verify_and_apply_zenopay_status(payment: Payment, db: Session) -> Payment:
             "verified_by_status_api": True,
             "external_order_id": result.external_order_id,
             "provider_status": result.raw_status,
+            "reason": (
+                result.raw_status
+                if result.status in {
+                    GatewayPaymentStatus.FAILED,
+                    GatewayPaymentStatus.CANCELLED,
+                }
+                else None
+            ),
             "channel": result.channel,
             "msisdn": result.msisdn,
             "provider_response": result.raw,

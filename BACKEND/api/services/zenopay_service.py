@@ -170,6 +170,77 @@ class ZenoPayClient:
 
         return GatewayPaymentStatus.UNKNOWN
 
+    @classmethod
+    def classify_status_payload(cls, payload: Any) -> tuple[GatewayPaymentStatus, str | None]:
+        """Classify a ZenoPay order-status payload using all status-like fields.
+
+        ZenoPay/MNO responses can expose a generic payment_status such as PENDING
+        while a nested reason/message already contains the terminal MNO outcome
+        (for example INSUFFICIENT FUNDS). Terminal negative signals therefore
+        outrank pending signals.
+        """
+        candidates: list[tuple[str, str]] = []
+        status_like_keys = {
+            "payment_status",
+            "status",
+            "state",
+            "reason",
+            "message",
+            "status_message",
+            "status_description",
+            "description",
+            "error",
+            "error_message",
+            "response_message",
+            "failure_reason",
+            "response_description",
+        }
+
+        def walk(value: Any, path: str = "", depth: int = 0) -> None:
+            if depth > 5:
+                return
+            if isinstance(value, dict):
+                for key, child in value.items():
+                    child_path = f"{path}.{key}" if path else str(key)
+                    key_norm = str(key).strip().lower()
+                    if (
+                        key_norm in status_like_keys
+                        or "status" in key_norm
+                        or "reason" in key_norm
+                        or "error" in key_norm
+                        or "message" in key_norm
+                        or "description" in key_norm
+                    ):
+                        if isinstance(child, (str, int, float, bool)):
+                            text = str(child).strip()
+                            if text:
+                                candidates.append((child_path, text))
+                    walk(child, child_path, depth + 1)
+            elif isinstance(value, list):
+                for index, child in enumerate(value[:20]):
+                    walk(child, f"{path}[{index}]", depth + 1)
+
+        walk(payload)
+
+        classified: list[tuple[GatewayPaymentStatus, str, str]] = []
+        for path, text in candidates:
+            state = cls.normalize_status(text)
+            if state is not GatewayPaymentStatus.UNKNOWN:
+                classified.append((state, path, text))
+
+        # Terminal negative results must outrank stale PENDING values.
+        for wanted in (
+            GatewayPaymentStatus.CANCELLED,
+            GatewayPaymentStatus.FAILED,
+            GatewayPaymentStatus.COMPLETED,
+            GatewayPaymentStatus.PENDING,
+        ):
+            for state, _path, text in classified:
+                if state is wanted:
+                    return state, text[:500]
+
+        return GatewayPaymentStatus.UNKNOWN, None
+
     @staticmethod
     def _amount_tzs(value: Decimal) -> int:
         amount = Decimal(value)
@@ -268,13 +339,21 @@ class ZenoPayClient:
             or order.get("description")
             or data.get("message")
         )
-        normalized_status = self.normalize_status(raw_status)
+
+        # Evaluate the entire returned order row because some MNO failures are
+        # nested under reason/message fields while payment_status still says
+        # PENDING. Negative terminal states outrank stale pending values.
+        normalized_status, detected_reason = self.classify_status_payload(order)
+        if normalized_status is GatewayPaymentStatus.UNKNOWN:
+            normalized_status = self.normalize_status(raw_status)
         if normalized_status is GatewayPaymentStatus.UNKNOWN and raw_message:
             normalized_status = self.normalize_status(raw_message)
 
         reference = order.get("reference")
         raw_status_text = str(raw_status) if raw_status is not None else None
-        if raw_message and (
+        if detected_reason and detected_reason != raw_status_text:
+            raw_status_text = f"{raw_status_text or 'UNKNOWN'}: {detected_reason}"
+        elif raw_message and (
             not raw_status_text
             or self.normalize_status(raw_status_text) is GatewayPaymentStatus.UNKNOWN
         ):
