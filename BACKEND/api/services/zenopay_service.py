@@ -316,52 +316,74 @@ class ZenoPayClient:
                                        data)
 
     def check_status(self, external_order_id: str) -> GatewayStatusResult:
+        """Fetch ZenoPay's authoritative payment status.
+
+        Official ZenoPay order-status values are:
+        - PENDING
+        - COMPLETED
+        - FAILED
+
+        The request is authenticated server-to-server with Xerin's private
+        ZENOPAY_API_KEY by `_request`.
+        """
         order_id = str(external_order_id).strip()
         if not order_id:
             raise ValueError("ZenoPay order_id is required")
-        data = self._request("GET", settings.ZENOPAY_ORDER_STATUS_PATH, params={"order_id": order_id})
+
+        data = self._request(
+            "GET",
+            settings.ZENOPAY_ORDER_STATUS_PATH,
+            params={"order_id": order_id},
+        )
+
         if str(data.get("resultcode") or "") not in {"", "000"}:
-            raise ZenoPayAPIError(str(data.get("message") or "ZenoPay order-status request failed"), payload=data)
+            raise ZenoPayAPIError(
+                str(data.get("message") or "ZenoPay order-status request failed"),
+                payload=data,
+            )
+
         rows = data.get("data")
         if not isinstance(rows, list) or not rows or not isinstance(rows[0], dict):
-            raise ZenoPayAPIError("ZenoPay order-status response did not contain an order", payload=data)
+            raise ZenoPayAPIError(
+                "ZenoPay order-status response did not contain an order",
+                payload=data,
+            )
+
         order = rows[0]
+
         amount: Decimal | None = None
         if order.get("amount") is not None:
             try:
                 amount = Decimal(str(order["amount"]))
             except InvalidOperation:
                 amount = None
-        raw_status = order.get("payment_status") or order.get("status")
-        raw_message = (
-            order.get("message")
-            or order.get("status_message")
-            or order.get("description")
-            or data.get("message")
-        )
 
-        # Evaluate the entire returned order row because some MNO failures are
-        # nested under reason/message fields while payment_status still says
-        # PENDING. Negative terminal states outrank stale pending values.
-        normalized_status, detected_reason = self.classify_status_payload(order)
-        if normalized_status is GatewayPaymentStatus.UNKNOWN:
+        raw_status = str(order.get("payment_status") or "").strip().upper()
+
+        if raw_status == "COMPLETED":
+            normalized_status = GatewayPaymentStatus.COMPLETED
+        elif raw_status == "FAILED":
+            normalized_status = GatewayPaymentStatus.FAILED
+        elif raw_status == "PENDING":
+            normalized_status = GatewayPaymentStatus.PENDING
+        else:
+            # Be conservative for undocumented states. Do not guess success.
             normalized_status = self.normalize_status(raw_status)
-        if normalized_status is GatewayPaymentStatus.UNKNOWN and raw_message:
-            normalized_status = self.normalize_status(raw_message)
 
         reference = order.get("reference")
-        raw_status_text = str(raw_status) if raw_status is not None else None
-        if detected_reason and detected_reason != raw_status_text:
-            raw_status_text = f"{raw_status_text or 'UNKNOWN'}: {detected_reason}"
-        elif raw_message and (
-            not raw_status_text
-            or self.normalize_status(raw_status_text) is GatewayPaymentStatus.UNKNOWN
-        ):
-            raw_status_text = f"{raw_status_text or 'UNKNOWN'}: {raw_message}"
+        provider_reference = (
+            order.get("transid")
+            or reference
+        )
 
-        return GatewayStatusResult(self.provider, str(order.get("order_id") or order_id),
-                                   str(reference) if reference is not None else None,
-                                   normalized_status, amount,
-                                   str(order["channel"]) if order.get("channel") is not None else None,
-                                   str(order["msisdn"]) if order.get("msisdn") is not None else None,
-                                   raw_status_text, data)
+        return GatewayStatusResult(
+            self.provider,
+            str(order.get("order_id") or order_id),
+            str(provider_reference) if provider_reference is not None else None,
+            normalized_status,
+            amount,
+            str(order["channel"]) if order.get("channel") is not None else None,
+            str(order["msisdn"]) if order.get("msisdn") is not None else None,
+            raw_status or None,
+            data,
+        )

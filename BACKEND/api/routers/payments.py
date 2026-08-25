@@ -1732,24 +1732,6 @@ def _verify_and_apply_zenopay_status(payment: Payment, db: Session) -> Payment:
 
 
 
-def _verify_zenopay_webhook_api_key(received_api_key: str | None) -> None:
-    """Authenticate the ZenoPay webhook using the API key documented by ZenoPay."""
-    configured = (settings.ZENOPAY_API_KEY or "").strip()
-    if not configured:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="ZenoPay API key is not configured",
-        )
-    if not received_api_key or not hmac.compare_digest(
-        received_api_key.strip(),
-        configured,
-    ):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid ZenoPay webhook API key",
-        )
-
-
 def _zenopay_failure_reason(payload: dict) -> str | None:
     """Extract a customer-safe MNO/provider failure description.
 
@@ -1793,19 +1775,19 @@ def _zenopay_failure_reason(payload: dict) -> str | None:
 @router.post("/zenopay/webhook", status_code=status.HTTP_200_OK)
 def zenopay_webhook(
     payload: ZenoPayWebhookRequest,
-    x_api_key: str | None = Header(default=None, alias="X-API-KEY"),
     db: Session = Depends(get_db),
 ):
-    """Receive an authenticated ZenoPay notification.
+    """Receive a ZenoPay payment notification.
 
-    ZenoPay documents X-API-KEY authentication for webhook delivery. Terminal
-    FAILED/CANCELLED notifications may therefore immediately close the payment
-    attempt so the customer can retry. A COMPLETED notification is still NOT
-    enough to move money/order state: success always goes through an
-    authoritative server-to-server status verification first.
+    The callback body is treated only as a wake-up signal. Xerin does not trust
+    it to move financial/order state directly. Instead, it immediately asks
+    ZenoPay's authenticated order-status endpoint and applies that verified
+    result.
+
+    This avoids depending on an undocumented inbound X-API-KEY header while
+    preserving strong payment integrity: only ZenoPay's server-to-server status
+    API can finalize success or failure.
     """
-    _verify_zenopay_webhook_api_key(x_api_key)
-
     try:
         payment_id = UUID(payload.order_id)
     except (TypeError, ValueError) as exc:
@@ -1813,73 +1795,35 @@ def zenopay_webhook(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="Invalid ZenoPay order_id",
         ) from exc
+
     payment = (
-        db.query(Payment).filter(Payment.id == payment_id).with_for_update().first()
+        db.query(Payment)
+        .filter(Payment.id == payment_id)
+        .with_for_update()
+        .first()
     )
     if not payment:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Payment referenced by ZenoPay was not found",
         )
-    webhook_payload = payload.model_dump(exclude_none=True)
-    incoming = ZenoPayClient.normalize_status(payload.payment_status)
-    transaction_id = (
-        (payload.reference or "").strip()
-        or payment.provider_transaction_id
-        or str(payment.id)
-    )
 
-    # Authenticated negative outcomes are safe to apply immediately. This is
-    # especially important for MNO insufficient-funds/declined flows where the
-    # order-status endpoint can lag behind the webhook.
-    if incoming in {
-        GatewayPaymentStatus.FAILED,
-        GatewayPaymentStatus.CANCELLED,
-    }:
-        mapped = (
-            PaymentStatus.failed
-            if incoming == GatewayPaymentStatus.FAILED
-            else PaymentStatus.cancelled
+    if (payment.provider or "").strip().lower() != "zenopay":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="ZenoPay webhook references a non-ZenoPay payment",
         )
-        reason = _zenopay_failure_reason(webhook_payload)
-        callback_payload = {
-            **webhook_payload,
-            "authenticated_by": "X-API-KEY",
-            "source": "zenopay_webhook",
-            "failure_reason": reason,
-        }
-        callback = PaymentCallbackRequest(
-            payment_id=payment.id,
-            provider="zenopay",
-            transaction_id=transaction_id,
-            status=mapped,
-            payload=callback_payload,
-        )
-        updated = _apply_payment_callback("zenopay", callback, db)
-        if reason and updated.status in {
-            PaymentStatus.failed,
-            PaymentStatus.cancelled,
-        }:
-            # _apply_payment_callback uses payload["reason"]; preserve the
-            # provider/MNO message even when ZenoPay calls it `message`.
-            updated.failure_reason = reason
-            db.commit()
-            db.refresh(updated)
-        return {
-            "received": True,
-            "payment_id": str(updated.id),
-            "status": updated.status.value,
-        }
 
-    # Success remains high-trust: verify with ZenoPay's order-status API before
-    # finalizing inventory, commissions, escrow, logistics or the paid order.
+    # The webhook is deliberately NOT applied directly. Verify the same payment
+    # against ZenoPay using our private API key first.
     verified = _verify_and_apply_zenopay_status(payment, db)
+
     return {
         "received": True,
+        "verified": True,
         "payment_id": str(verified.id),
         "status": verified.status.value,
     }
-
 
 @router.post("/{payment_id}/verify-status", response_model=PaymentResponse)
 def verify_payment_status(
@@ -2228,7 +2172,8 @@ def order_payment_state(
             message = "Payment is pending confirmation."
     elif failed:
         message = latest.failure_reason or (
-            "Payment was not completed. You can retry against the same order."
+            "Payment failed or was cancelled by the payment provider. "
+            "You can retry against the same active order."
         )
     elif refunded:
         message = "This payment has been refunded."
