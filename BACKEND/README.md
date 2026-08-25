@@ -53,6 +53,10 @@ psql -h localhost -U xerin -d xerin
 
 zip -r backend.zip . -x ".git/*" ".venv/*"
 
+systemctl status xerin-unpaid-order-expiry.timer --no-pager
+
+
+
 
 
 
