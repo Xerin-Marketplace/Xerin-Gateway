@@ -94,15 +94,80 @@ class ZenoPayClient:
 
     @staticmethod
     def normalize_status(value: Any) -> GatewayPaymentStatus:
-        normalized = str(value or "").strip().upper().replace("-", "_").replace(" ", "_")
+        raw = str(value or "").strip()
+        normalized = re.sub(r"[^A-Z0-9]+", "_", raw.upper()).strip("_")
+        words = set(filter(None, normalized.split("_")))
+
+        # Exact / positive terminal states first.
         if normalized in {"COMPLETED", "SUCCESS", "SUCCESSFUL", "PAID"}:
             return GatewayPaymentStatus.COMPLETED
-        if normalized in {"FAILED", "FAILURE", "REJECTED", "DECLINED", "EXPIRED"}:
-            return GatewayPaymentStatus.FAILED
-        if normalized in {"CANCELLED", "CANCELED"}:
+
+        # Provider cancellation is distinct from payment failure.
+        if normalized in {"CANCELLED", "CANCELED"} or words.intersection(
+            {"CANCELLED", "CANCELED"}
+        ):
             return GatewayPaymentStatus.CANCELLED
-        if normalized in {"PENDING", "PROCESSING", "INITIATED", "CREATED", "QUEUED"}:
+
+        # ZenoPay/MNO responses are not always a single canonical status token.
+        # Examples can include:
+        #   UNPAID
+        #   FAILED - INSUFFICIENT FUNDS
+        #   INSUFFICIENT BALANCE
+        #   TRANSACTION DECLINED
+        # These are terminal results and must never remain PROCESSING.
+        failure_tokens = {
+            "FAILED",
+            "FAILURE",
+            "REJECTED",
+            "DECLINED",
+            "EXPIRED",
+            "UNPAID",
+            "INSUFFICIENT",
+            "DENIED",
+            "ERROR",
+            "INVALID",
+        }
+        failure_phrases = (
+            "INSUFFICIENT FUNDS",
+            "INSUFFICIENT FUND",
+            "INSUFFICIENT BALANCE",
+            "NOT ENOUGH FUNDS",
+            "NOT ENOUGH BALANCE",
+            "TRANSACTION FAILED",
+            "PAYMENT FAILED",
+            "TRANSACTION DECLINED",
+            "PAYMENT DECLINED",
+            "PAYMENT REJECTED",
+        )
+        raw_upper = raw.upper()
+        if words.intersection(failure_tokens) or any(
+            phrase in raw_upper for phrase in failure_phrases
+        ):
+            return GatewayPaymentStatus.FAILED
+
+        # Only genuine non-terminal states remain pending.
+        pending_tokens = {
+            "PENDING",
+            "PROCESSING",
+            "INITIATED",
+            "CREATED",
+            "QUEUED",
+            "PROGRESS",
+            "WAITING",
+        }
+        pending_phrases = (
+            "IN PROGRESS",
+            "REQUEST IN PROGRESS",
+            "AWAITING PAYMENT",
+            "AWAITING CONFIRMATION",
+            "WAITING FOR CALLBACK",
+            "CALLBACK SHORTLY",
+        )
+        if words.intersection(pending_tokens) or any(
+            phrase in raw_upper for phrase in pending_phrases
+        ):
             return GatewayPaymentStatus.PENDING
+
         return GatewayPaymentStatus.UNKNOWN
 
     @staticmethod
@@ -197,10 +262,27 @@ class ZenoPayClient:
             except InvalidOperation:
                 amount = None
         raw_status = order.get("payment_status") or order.get("status")
+        raw_message = (
+            order.get("message")
+            or order.get("status_message")
+            or order.get("description")
+            or data.get("message")
+        )
+        normalized_status = self.normalize_status(raw_status)
+        if normalized_status is GatewayPaymentStatus.UNKNOWN and raw_message:
+            normalized_status = self.normalize_status(raw_message)
+
         reference = order.get("reference")
+        raw_status_text = str(raw_status) if raw_status is not None else None
+        if raw_message and (
+            not raw_status_text
+            or self.normalize_status(raw_status_text) is GatewayPaymentStatus.UNKNOWN
+        ):
+            raw_status_text = f"{raw_status_text or 'UNKNOWN'}: {raw_message}"
+
         return GatewayStatusResult(self.provider, str(order.get("order_id") or order_id),
                                    str(reference) if reference is not None else None,
-                                   self.normalize_status(raw_status), amount,
+                                   normalized_status, amount,
                                    str(order["channel"]) if order.get("channel") is not None else None,
                                    str(order["msisdn"]) if order.get("msisdn") is not None else None,
-                                   str(raw_status) if raw_status is not None else None, data)
+                                   raw_status_text, data)
