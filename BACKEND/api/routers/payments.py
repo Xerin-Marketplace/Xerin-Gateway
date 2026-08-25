@@ -1581,7 +1581,13 @@ def _apply_payment_callback(
         payment.status = PaymentStatus.failed
         payment.provider_transaction_id = data.transaction_id
         payment.provider_response = callback_payload
-        payment.failure_reason = callback_payload.get("reason")
+        raw_failure_reason = _zenopay_failure_reason(callback_payload)
+        payment.failure_reason = (
+            raw_failure_reason
+            if raw_failure_reason
+            and raw_failure_reason.strip().upper() not in {"FAILED", "FAILURE", "ERROR"}
+            else "Payment was declined or could not be completed by the payment provider."
+        )
         order = (
             db.query(Order)
             .filter(Order.id == payment.order_id)
@@ -1620,8 +1626,16 @@ def _apply_payment_callback(
                 )
             )
     else:
-        payment.status = PaymentStatus.processing
-        payment.provider_response = callback_payload
+        # Do not let a stale provider PENDING snapshot reopen a terminal
+        # payment attempt. Retry creates a new Payment row under the same order.
+        if payment.status not in {
+            PaymentStatus.failed,
+            PaymentStatus.cancelled,
+            PaymentStatus.completed,
+            PaymentStatus.refunded,
+        }:
+            payment.status = PaymentStatus.processing
+            payment.provider_response = callback_payload
 
     _commit(db, conflict_detail="Duplicate or conflicting payment callback")
     db.refresh(payment)
