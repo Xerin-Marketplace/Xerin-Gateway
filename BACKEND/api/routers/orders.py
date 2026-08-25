@@ -818,6 +818,52 @@ def create_order(
         if not cart or not cart.items:
             raise HTTPException(status_code=400, detail="Cart is empty")
 
+        # A failed/cancelled payment attempt deliberately keeps the original
+        # pending order and its stock reservation alive until payment_due_at.
+        # If the customer rebuilds the exact same cart during that window, do
+        # not create a competing order. Return the existing order so the
+        # frontend can take the customer back to its payment state/retry flow.
+        now = datetime.now(timezone.utc)
+        cart_signature = sorted(
+            (str(item.product_id), str(item.variant_id or ""), int(item.quantity))
+            for item in cart.items
+        )
+        active_pending_orders = (
+            db.query(Order)
+            .options(selectinload(Order.items))
+            .filter(
+                Order.user_id == current_user.id,
+                Order.status == OrderStatus.pending,
+                Order.payment_due_at.isnot(None),
+                Order.payment_due_at > now,
+            )
+            .order_by(Order.created_at.desc())
+            .all()
+        )
+        for pending_order in active_pending_orders:
+            order_signature = sorted(
+                (str(item.product_id), str(item.variant_id or ""), int(item.quantity))
+                for item in pending_order.items
+            )
+            if order_signature == cart_signature:
+                remaining_seconds = max(
+                    0, int((pending_order.payment_due_at - now).total_seconds())
+                )
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail={
+                        "code": "pending_order_exists",
+                        "message": (
+                            "You already have a pending order for these items. "
+                            "Continue that order before creating another one."
+                        ),
+                        "order_id": str(pending_order.id),
+                        "payment_due_at": pending_order.payment_due_at.isoformat(),
+                        "remaining_seconds": remaining_seconds,
+                        "redirect_to": f"/order-success/{pending_order.id}",
+                    },
+                )
+
         address = (
             db.query(Address)
             .filter(
