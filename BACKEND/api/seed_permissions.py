@@ -120,6 +120,8 @@ DEFAULT_ROLE_PERMISSIONS: dict[str, set[str]] = {
         PermissionCode.wallet_payout.value,
         PermissionCode.refunds_create.value,
         PermissionCode.analytics_seller_read.value,
+        PermissionCode.wishlist_read.value,
+        PermissionCode.wishlist_manage.value,
         # Legacy permissions currently used by store profile/media routes.
         PermissionCode.view_own_store.value,
         PermissionCode.update_own_store.value,
