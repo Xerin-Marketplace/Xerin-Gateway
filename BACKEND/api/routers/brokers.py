@@ -1052,7 +1052,7 @@ def admin_update_broker_payout(payout_id: uuid.UUID, data: BrokerPayoutAdminUpda
         db.rollback(); raise HTTPException(409, str(exc)) from exc
         
 @router.post("/admin/products/{product_id}/archive")
-def admin_archive_broker_product(product_id: uuid.UUID, db: Session = Depends(get_db), current_user: User = Depends(require_permission(PermissionCode.products_edit.value))):
+def admin_archive_broker_product(product_id: uuid.UUID, db: Session = Depends(get_db), current_user: User = Depends(require_permission(PermissionCode.manage_products.value))):
     product=db.query(Product).filter(Product.id==product_id,Product.listing_owner_type=="broker").first()
     if not product: raise HTTPException(status_code=404,detail="Broker product not found")
     if product.listing_expired_at: raise HTTPException(status_code=409,detail="Broker product is already archived")
