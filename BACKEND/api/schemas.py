@@ -106,18 +106,36 @@ def _clean_optional_text(value: str | None) -> str | None:
 
 
 def _normalise_phone(value: str | None) -> str | None:
+    """Normalize worldwide phone numbers to a stable international form.
+
+    New registrations are stored as +<country calling code><national number>.
+    Spaces, dashes and parentheses are accepted as input formatting. The
+    international 00 prefix is accepted and converted to +.
+    """
     if value is None:
         return None
-    value = value.strip().replace(" ", "").replace("-", "")
+
+    value = value.strip()
     if not value:
         return None
-    if value.startswith("+"):
-        digits = value[1:]
-    else:
-        digits = value
+
+    compact = (
+        value.replace(" ", "")
+        .replace("-", "")
+        .replace("(", "")
+        .replace(")", "")
+        .replace(".", "")
+    )
+
+    if compact.startswith("00"):
+        compact = "+" + compact[2:]
+
+    digits = compact[1:] if compact.startswith("+") else compact
     if not digits.isdigit() or not 7 <= len(digits) <= 15:
-        raise ValueError("Phone number must contain 7 to 15 digits")
-    return value
+        raise ValueError("Phone number must contain 7 to 15 digits including the country calling code")
+
+    # Canonical E.164-style representation used throughout Xerin.
+    return f"+{digits}"
 
 
 def _validate_password(value: str) -> str:

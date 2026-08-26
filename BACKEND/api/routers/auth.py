@@ -298,6 +298,20 @@ def _assign_role(db: Session, user_id, role_name: str) -> None:
         db.add(UserRole(user_id=user_id, role_id=role.id))
 
 
+def _phone_lookup_variants(phone: str) -> list[str]:
+    """Return canonical and legacy storage forms for conflict checks.
+
+    Older Xerin registrations stored numbers such as 2557... without a plus.
+    New registrations use +2557.... Checking both prevents the same number
+    from being registered twice during the international-phone migration.
+    """
+    cleaned = (phone or "").strip().replace(" ", "").replace("-", "")
+    if cleaned.startswith("00"):
+        cleaned = "+" + cleaned[2:]
+    digits = cleaned[1:] if cleaned.startswith("+") else cleaned
+    return list(dict.fromkeys([f"+{digits}", digits, f"00{digits}"])) if digits else []
+
+
 def _registration_conflicts(
     db: Session,
     *,
@@ -305,7 +319,7 @@ def _registration_conflicts(
     phone: str,
 ) -> tuple[User | None, list[str]]:
     email_user = db.query(User).filter(User.email == email).first()
-    phone_user = db.query(User).filter(User.phone == phone).first()
+    phone_user = db.query(User).filter(User.phone.in_(_phone_lookup_variants(phone))).first()
 
     # Same user owns both identifiers
     if email_user and phone_user and email_user.id == phone_user.id:
@@ -354,7 +368,7 @@ def register(data: RegisterRequest, db: Session = Depends(get_db)):
 
         same_identity = (
             existing_user.email == email
-            and (existing_user.phone or "").strip() == phone
+            and (existing_user.phone or "").strip() in _phone_lookup_variants(phone)
         )
 
         if not (same_identity and still_pending):
@@ -483,7 +497,7 @@ def register_seller(data: SellerRegisterRequest, db: Session = Depends(get_db)):
     if existing_user:
         same_identity = (
             existing_user.email == email
-            and (existing_user.phone or "").strip() == phone
+            and (existing_user.phone or "").strip() in _phone_lookup_variants(phone)
         )
         still_pending = (
             not existing_user.is_verified
@@ -695,7 +709,7 @@ def register_broker(data: BrokerRegisterRequest, db: Session = Depends(get_db)):
         raise HTTPException(status_code=409, detail="An account with this email or phone already exists. Please sign in.")
 
     if existing_user:
-        same_identity = existing_user.email == email and (existing_user.phone or "").strip() == phone
+        same_identity = existing_user.email == email and (existing_user.phone or "").strip() in _phone_lookup_variants(phone)
         still_pending = not existing_user.is_verified and existing_user.status == UserStatus.pending_verification
         broker = db.query(Broker).filter(Broker.user_id == existing_user.id).first()
         if not (same_identity and still_pending and broker is not None):
