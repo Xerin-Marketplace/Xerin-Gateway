@@ -100,11 +100,16 @@ def calculate_order_commissions(
             snapshot_rate = rate
 
         # Xerin commission remains based on the original marketplace line.
-        # Seller-funded promotions reduce the seller's own settlement amount.
+        # Seller-funded promotions and Broker rewards reduce the seller's own
+        # settlement amount. The Broker amount is an immutable B4 snapshot on
+        # the order item and must never be recalculated from the live offer.
+        broker_reward = _money(
+            Decimal(getattr(item, "broker_commission_amount", 0) or 0)
+        )
         seller_net = _money(
             max(
                 Decimal("0.00"),
-                gross - commission - seller_funded_discount,
+                gross - commission - seller_funded_discount - broker_reward,
             )
         )
 

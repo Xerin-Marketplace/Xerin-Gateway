@@ -17,6 +17,7 @@ from api.models import (
     ShipmentPickupProof,
 )
 from api.services.wallet_service import release_sale_credit_fraction
+from api.services.broker_finance_service import make_commission_available_for_hold
 
 MONEY = Decimal("0.01")
 
@@ -99,10 +100,11 @@ def create_order_escrow_holds(
 
         seller_amount = _money(record.seller_net_amount)
         commission_amount = _money(record.commission_amount)
+        broker_amount = _money(getattr(item, "broker_commission_amount", 0) or 0)
 
-        # Settlement obligation after seller-funded promotion. This equals
-        # seller amount + preserved Xerin commission.
-        gross_amount = _money(seller_amount + commission_amount)
+        # Settlement obligation after seller-funded promotion. Broker rewards
+        # remain inside the held obligation but are separated from seller/Xerin.
+        gross_amount = _money(seller_amount + commission_amount + broker_amount)
 
         hold = EscrowHold(
             payment_id=payment.id,
@@ -113,6 +115,7 @@ def create_order_escrow_holds(
             gross_amount=gross_amount,
             seller_amount=seller_amount,
             commission_amount=commission_amount,
+            broker_amount=broker_amount,
             refunded_amount=Decimal("0.00"),
             released_amount=Decimal("0.00"),
             status="held",
@@ -218,6 +221,10 @@ def release_escrow_hold_funds(
     else:
         hold.status = "held"
 
+    db.flush()
+    # Broker entitlement follows the same trusted settlement milestone as this
+    # order item. This only changes commission state; B6 owns wallet credit.
+    make_commission_available_for_hold(db, hold=hold)
     db.flush()
     return hold
 

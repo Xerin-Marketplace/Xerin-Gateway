@@ -6,6 +6,7 @@ from api.models import Refund, RefundItem, RefundEvent, Order, OrderItem, OrderI
 from api.services.wallet_service import debit_refund
 from api.services.escrow_service import record_escrow_refund
 from api.services.logistics_wallet_service import debit_order_delivery_entitlement
+from api.services.broker_finance_service import reverse_broker_commission
 MONEY=Decimal("0.01")
 def money(v): return Decimal(v).quantize(MONEY,rounding=ROUND_HALF_UP)
 
@@ -58,8 +59,26 @@ def complete_refund(db:Session,refund:Refund,*,user_id=None):
         commission=db.query(OrderItemCommission).filter(OrderItemCommission.order_item_id==item.id).first()
         ratio=Decimal(ri.quantity)/Decimal(item.quantity)
         commission_reversal=min(money(ri.refund_amount),money(Decimal(commission.commission_amount)*ratio)) if commission else Decimal("0")
-        seller_reversal=money(max(Decimal("0"),Decimal(ri.refund_amount)-commission_reversal))
+
+        # B5 Broker reward reversal is based on refunded quantity, using the
+        # immutable order-item snapshot rather than the seller's current offer.
+        broker_snapshot = money(Decimal(getattr(item, "broker_commission_amount", 0) or 0))
+        broker_reversal = money(broker_snapshot * ratio) if broker_snapshot > 0 else Decimal("0")
+        seller_reversal=money(
+            max(
+                Decimal("0"),
+                Decimal(ri.refund_amount)-commission_reversal-broker_reversal,
+            )
+        )
         record_escrow_refund(db,order_item_id=item.id,amount=ri.refund_amount,refund_id=refund.id,refund_item_id=ri.id,created_by_id=user_id)
+
+        if broker_reversal > 0:
+            reverse_broker_commission(
+                db,
+                order_item=item,
+                amount=broker_reversal,
+            )
+
         _,debt=debit_refund(db,seller_id=item.seller_id,amount=seller_reversal,currency=refund.currency,refund_id=refund.id,refund_item_id=ri.id,order_id=refund.order_id,order_item_id=item.id)
         ri.commission_reversal=commission_reversal;ri.seller_reversal=seller_reversal;ri.seller_debt_amount=debt;ri.processed_at=datetime.now(timezone.utc)
         refs=[(MarketplaceTransactionType.refund,money(ri.refund_amount),f"refund:{ri.id}"),(MarketplaceTransactionType.commission_reversal,commission_reversal,f"commission_reversal:{ri.id}")]

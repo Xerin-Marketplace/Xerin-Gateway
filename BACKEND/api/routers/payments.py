@@ -64,6 +64,10 @@ from api.services.inventory_reservations import (
 from api.services.commission_engine import calculate_order_commissions
 from api.services.escrow_service import create_order_escrow_holds
 from api.services.logistics_wallet_service import credit_order_delivery_entitlement
+from api.services.broker_finance_service import (
+    create_order_broker_commissions,
+    attach_commissions_to_escrow,
+)
 from api.services.unpaid_order_expiry import AUTO_CANCELLATION_REASON
 
 router = APIRouter(prefix="/payments", tags=["Payments"])
@@ -324,6 +328,10 @@ def _finalise_online_payment(
         settlement_eligible_at=release_after,
     )
 
+    # B5: create once-only Broker financial entitlements from the immutable B4
+    # order-item snapshots. They remain pending until the trusted escrow release.
+    create_order_broker_commissions(db, order=order)
+
     if escrow_enabled:
         create_order_escrow_holds(
             db,
@@ -332,6 +340,7 @@ def _finalise_online_payment(
             commission_records=commission_records,
             release_after=release_after,
         )
+        attach_commissions_to_escrow(db, order=order)
 
     credit_order_delivery_entitlement(db, order=order)
 

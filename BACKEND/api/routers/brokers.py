@@ -14,10 +14,12 @@ from decimal import Decimal
 from api.config import settings
 from api.deps import get_current_user, get_db
 from api.enums import PermissionCode
-from api.models import Broker, BrokerKYCDocument, BrokerStatus, BrokerStatusHistory, User, Product, ProductImage, ProductStatus, Inventory, Category, Brand, MarketplaceSettings, PaymentCurrency, BrokerOffer, BrokerOfferAcceptance, BrokerReferralLink
+from api.models import Broker, BrokerKYCDocument, BrokerStatus, BrokerStatusHistory, User, Product, ProductImage, ProductStatus, Inventory, Category, Brand, MarketplaceSettings, PaymentCurrency, BrokerOffer, BrokerOfferAcceptance, BrokerReferralLink, BrokerCommission, BrokerWallet, BrokerWalletTransaction, BrokerPayoutAccount, BrokerPayoutRequest
 from api.permissions import require_permission
 from api.services.product_image_service import MAX_PRODUCT_IMAGES, store_product_image, delete_product_image_files
 from api.services.broker_listing_expiry import expire_broker_listings
+from api.services.broker_finance_service import broker_commission_summary
+from api.services.broker_wallet_service import sync_all_broker_commissions, create_broker_payout, transition_broker_payout
 from api.schemas import (
     BrokerKYCResponse,
     BrokerKYCStatusResponse,
@@ -34,6 +36,20 @@ from api.schemas import (
     BrokerOfferAcceptanceResponse,
     BrokerOfferResponse,
     BrokerReferralLinkResponse,
+    BrokerCommissionResponse,
+    PaginatedBrokerCommissionResponse,
+    BrokerCommissionSummaryResponse,
+    BrokerWalletResponse,
+    BrokerWalletTransactionResponse,
+    PaginatedBrokerWalletTransactionResponse,
+    BrokerPayoutAccountCreate,
+    BrokerPayoutAccountUpdate,
+    BrokerPayoutAccountResponse,
+    BrokerPayoutAccountVerification,
+    BrokerPayoutRequestCreate,
+    BrokerPayoutRequestResponse,
+    PaginatedBrokerPayoutResponse,
+    BrokerPayoutAdminUpdate,
 )
 
 router = APIRouter(prefix="/brokers", tags=["Brokers"])
@@ -575,3 +591,213 @@ def get_referral_link(offer_id: uuid.UUID, db: Session = Depends(get_db), curren
     link=_ensure_referral_link(db,acceptance,offer,broker)
     db.commit(); db.refresh(link)
     return _referral_payload(link)
+
+
+def _broker_commission_payload(row: BrokerCommission) -> dict:
+    amount = Decimal(row.amount or 0)
+    reversed_amount = Decimal(row.reversed_amount or 0)
+    return {
+        "id": row.id,
+        "broker_id": row.broker_id,
+        "order_id": row.order_id,
+        "order_item_id": row.order_item_id,
+        "broker_offer_id": row.broker_offer_id,
+        "broker_attribution_id": row.broker_attribution_id,
+        "escrow_hold_id": row.escrow_hold_id,
+        "currency": row.currency,
+        "amount": amount,
+        "reversed_amount": reversed_amount,
+        "net_amount": max(Decimal("0.00"), amount - reversed_amount),
+        "status": row.status,
+        "available_at": row.available_at,
+        "reversed_at": row.reversed_at,
+        "reference": row.reference,
+        "created_at": row.created_at,
+    }
+
+
+@router.get("/commissions/summary", response_model=BrokerCommissionSummaryResponse)
+def commission_summary(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    broker = _require_approved_broker(db, current_user)
+    summary = broker_commission_summary(db, broker_id=broker.id)
+    currency = (
+        db.query(BrokerCommission.currency)
+        .filter(BrokerCommission.broker_id == broker.id)
+        .order_by(BrokerCommission.created_at.desc())
+        .limit(1)
+        .scalar()
+        or "TZS"
+    )
+    total = db.query(BrokerCommission).filter(BrokerCommission.broker_id == broker.id).count()
+    return {"currency": currency, "total_records": total, **summary}
+
+
+@router.get("/commissions", response_model=PaginatedBrokerCommissionResponse)
+def list_commissions(
+    status_filter: str | None = Query(default=None, alias="status"),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=20, ge=1, le=100),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    broker = _require_approved_broker(db, current_user)
+    q = db.query(BrokerCommission).filter(BrokerCommission.broker_id == broker.id)
+    if status_filter:
+        allowed = {"pending", "available", "partially_reversed", "reversed", "cancelled"}
+        if status_filter not in allowed:
+            raise HTTPException(status_code=422, detail="Invalid commission status")
+        q = q.filter(BrokerCommission.status == status_filter)
+    total = q.count()
+    rows = (
+        q.order_by(BrokerCommission.created_at.desc())
+        .offset((page - 1) * page_size)
+        .limit(page_size)
+        .all()
+    )
+    total_pages = (total + page_size - 1) // page_size if total else 0
+    return {
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+        "total_pages": total_pages,
+        "results": [_broker_commission_payload(row) for row in rows],
+    }
+
+
+# ---------------------------------------------------------------------------
+# B6 — Broker Wallet & Payouts
+# ---------------------------------------------------------------------------
+
+@router.get("/wallet", response_model=BrokerWalletResponse)
+def my_broker_wallet(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    broker = _require_approved_broker(db, current_user)
+    wallet = sync_all_broker_commissions(db, broker_id=broker.id)
+    db.commit(); db.refresh(wallet)
+    return wallet
+
+
+@router.get("/wallet/transactions", response_model=PaginatedBrokerWalletTransactionResponse)
+def my_broker_wallet_transactions(
+    page: int = Query(1, ge=1), page_size: int = Query(20, ge=1, le=100),
+    transaction_type: str | None = Query(None),
+    db: Session = Depends(get_db), current_user: User = Depends(get_current_user),
+):
+    broker = _require_approved_broker(db, current_user)
+    wallet = sync_all_broker_commissions(db, broker_id=broker.id)
+    db.commit()
+    q = db.query(BrokerWalletTransaction).filter(BrokerWalletTransaction.wallet_id == wallet.id)
+    if transaction_type:
+        q = q.filter(BrokerWalletTransaction.transaction_type == transaction_type)
+    total = q.count()
+    rows = q.order_by(BrokerWalletTransaction.created_at.desc()).offset((page-1)*page_size).limit(page_size).all()
+    return {"total": total, "page": page, "page_size": page_size, "total_pages": 0 if total == 0 else (total+page_size-1)//page_size, "results": rows}
+
+
+@router.get("/payout-accounts", response_model=list[BrokerPayoutAccountResponse])
+def my_broker_payout_accounts(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    broker = _require_approved_broker(db, current_user)
+    return db.query(BrokerPayoutAccount).filter(BrokerPayoutAccount.broker_id == broker.id).order_by(BrokerPayoutAccount.created_at.desc()).all()
+
+
+@router.post("/payout-accounts", response_model=BrokerPayoutAccountResponse, status_code=201)
+def create_broker_payout_account(data: BrokerPayoutAccountCreate, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    broker = _require_approved_broker(db, current_user)
+    if data.is_default:
+        db.query(BrokerPayoutAccount).filter(BrokerPayoutAccount.broker_id == broker.id).update({BrokerPayoutAccount.is_default: False})
+    account = BrokerPayoutAccount(broker_id=broker.id, **data.model_dump())
+    account.currency = account.currency.upper()
+    db.add(account); db.commit(); db.refresh(account)
+    return account
+
+
+@router.patch("/payout-accounts/{account_id}", response_model=BrokerPayoutAccountResponse)
+def update_broker_payout_account(account_id: uuid.UUID, data: BrokerPayoutAccountUpdate, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    broker = _require_approved_broker(db, current_user)
+    account = db.query(BrokerPayoutAccount).filter(BrokerPayoutAccount.id == account_id, BrokerPayoutAccount.broker_id == broker.id).first()
+    if account is None:
+        raise HTTPException(404, "Broker payout account not found")
+    changes = data.model_dump(exclude_unset=True)
+    sensitive = {"account_type", "provider", "account_name", "account_number", "currency"}
+    if sensitive.intersection(changes):
+        changes.update(verification_status="pending", verified_at=None, verification_note=None)
+    if changes.get("is_default"):
+        db.query(BrokerPayoutAccount).filter(BrokerPayoutAccount.broker_id == broker.id).update({BrokerPayoutAccount.is_default: False})
+    for key, value in changes.items():
+        setattr(account, key, value.upper() if key == "currency" and isinstance(value, str) else value)
+    db.commit(); db.refresh(account)
+    return account
+
+
+@router.post("/payouts", response_model=BrokerPayoutRequestResponse, status_code=201)
+def request_broker_payout(data: BrokerPayoutRequestCreate, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    broker = _require_approved_broker(db, current_user)
+    try:
+        payout = create_broker_payout(db, broker_id=broker.id, payout_account_id=data.payout_account_id, amount=data.amount, note=data.note)
+        db.commit(); db.refresh(payout)
+        return payout
+    except ValueError as exc:
+        db.rollback(); raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@router.get("/payouts", response_model=PaginatedBrokerPayoutResponse)
+def my_broker_payouts(page: int = Query(1, ge=1), page_size: int = Query(20, ge=1, le=100), db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    broker = _require_approved_broker(db, current_user)
+    q = db.query(BrokerPayoutRequest).filter(BrokerPayoutRequest.broker_id == broker.id)
+    total = q.count(); rows = q.order_by(BrokerPayoutRequest.requested_at.desc()).offset((page-1)*page_size).limit(page_size).all()
+    return {"total": total, "page": page, "page_size": page_size, "total_pages": 0 if total == 0 else (total+page_size-1)//page_size, "results": rows}
+
+
+@router.post("/payouts/{payout_id}/cancel", response_model=BrokerPayoutRequestResponse)
+def cancel_broker_payout(payout_id: uuid.UUID, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    broker = _require_approved_broker(db, current_user)
+    payout = db.query(BrokerPayoutRequest).filter(BrokerPayoutRequest.id == payout_id, BrokerPayoutRequest.broker_id == broker.id).with_for_update().first()
+    if payout is None:
+        raise HTTPException(404, "Broker payout request not found")
+    try:
+        transition_broker_payout(db, payout, "cancelled", user_id=current_user.id, note="Cancelled by Broker")
+        db.commit(); db.refresh(payout); return payout
+    except ValueError as exc:
+        db.rollback(); raise HTTPException(409, str(exc)) from exc
+
+
+@router.get("/admin/payout-accounts", response_model=list[BrokerPayoutAccountResponse])
+def admin_broker_payout_accounts(db: Session = Depends(get_db), current_user: User = Depends(require_permission(PermissionCode.payouts_approve.value))):
+    return db.query(BrokerPayoutAccount).order_by(BrokerPayoutAccount.created_at.desc()).limit(500).all()
+
+
+@router.patch("/admin/payout-accounts/{account_id}/verification", response_model=BrokerPayoutAccountResponse)
+def admin_verify_broker_payout_account(account_id: uuid.UUID, data: BrokerPayoutAccountVerification, db: Session = Depends(get_db), current_user: User = Depends(require_permission(PermissionCode.payouts_approve.value))):
+    account = db.query(BrokerPayoutAccount).filter(BrokerPayoutAccount.id == account_id).first()
+    if account is None:
+        raise HTTPException(404, "Broker payout account not found")
+    account.verification_status = data.status
+    account.verification_note = data.note
+    account.verified_at = datetime.now(timezone.utc) if data.status == "verified" else None
+    db.commit(); db.refresh(account); return account
+
+
+@router.get("/admin/payouts", response_model=PaginatedBrokerPayoutResponse)
+def admin_broker_payouts(
+    status_filter: str | None = Query(None, alias="status"), page: int = Query(1, ge=1), page_size: int = Query(20, ge=1, le=100),
+    db: Session = Depends(get_db), current_user: User = Depends(require_permission(PermissionCode.payouts_read.value)),
+):
+    q = db.query(BrokerPayoutRequest)
+    if status_filter:
+        q = q.filter(BrokerPayoutRequest.status == status_filter)
+    total=q.count(); rows=q.order_by(BrokerPayoutRequest.requested_at.desc()).offset((page-1)*page_size).limit(page_size).all()
+    return {"total": total, "page": page, "page_size": page_size, "total_pages": 0 if total == 0 else (total+page_size-1)//page_size, "results": rows}
+
+
+@router.patch("/admin/payouts/{payout_id}", response_model=BrokerPayoutRequestResponse)
+def admin_update_broker_payout(payout_id: uuid.UUID, data: BrokerPayoutAdminUpdate, db: Session = Depends(get_db), current_user: User = Depends(require_permission(PermissionCode.payouts_approve.value))):
+    payout = db.query(BrokerPayoutRequest).filter(BrokerPayoutRequest.id == payout_id).with_for_update().first()
+    if payout is None:
+        raise HTTPException(404, "Broker payout request not found")
+    try:
+        transition_broker_payout(db, payout, data.status, user_id=current_user.id, note=data.note, provider_reference=data.provider_reference)
+        db.commit(); db.refresh(payout); return payout
+    except ValueError as exc:
+        db.rollback(); raise HTTPException(409, str(exc)) from exc

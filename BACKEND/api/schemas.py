@@ -1296,6 +1296,44 @@ class BrokerReferralLinkResponse(BaseModel):
     share_path: str
     model_config = ORM_CONFIG
 
+class BrokerCommissionResponse(BaseModel):
+    id: UUID
+    broker_id: UUID
+    order_id: UUID
+    order_item_id: UUID
+    broker_offer_id: Optional[UUID] = None
+    broker_attribution_id: Optional[UUID] = None
+    escrow_hold_id: Optional[UUID] = None
+    currency: str
+    amount: Decimal
+    reversed_amount: Decimal
+    net_amount: Decimal = Decimal("0")
+    status: str
+    available_at: Optional[datetime] = None
+    reversed_at: Optional[datetime] = None
+    reference: str
+    created_at: datetime
+
+    model_config = ORM_CONFIG
+
+
+class PaginatedBrokerCommissionResponse(BaseModel):
+    total: int
+    page: int
+    page_size: int
+    total_pages: int
+    results: list[BrokerCommissionResponse]
+
+
+class BrokerCommissionSummaryResponse(BaseModel):
+    currency: str
+    pending_amount: Decimal
+    available_amount: Decimal
+    reversed_amount: Decimal
+    lifetime_commission: Decimal
+    total_records: int
+
+
 class AdminProductReviewDetailResponse(ProductResponse):
     seller_business_name: Optional[str] = None
     seller_contact_email: Optional[str] = None
@@ -6360,3 +6398,126 @@ class SellerFulfillmentDetailResponse(BaseModel):
     created_at: datetime
     updated_at: Optional[datetime]
     CustomerMapPinConfirmationResponse.model_rebuild()
+
+# Broker B6 Wallet & Payouts
+class BrokerWalletResponse(BaseModel):
+    model_config = ORM_CONFIG
+    id: UUID
+    broker_id: UUID
+    currency: str
+    pending_balance: Decimal
+    available_balance: Decimal
+    reserved_balance: Decimal
+    paid_out_balance: Decimal
+    reversed_balance: Decimal
+    debt_balance: Decimal
+    is_frozen: bool
+    created_at: datetime
+    updated_at: Optional[datetime] = None
+
+
+class BrokerWalletTransactionResponse(BaseModel):
+    model_config = ORM_CONFIG
+    id: UUID
+    wallet_id: UUID
+    broker_id: UUID
+    commission_id: Optional[UUID] = None
+    payout_request_id: Optional[UUID] = None
+    transaction_type: str
+    amount: Decimal
+    currency: str
+    reference: str
+    description: Optional[str] = None
+    created_at: datetime
+
+
+class PaginatedBrokerWalletTransactionResponse(BaseModel):
+    total: int
+    page: int
+    page_size: int
+    total_pages: int
+    results: list[BrokerWalletTransactionResponse]
+
+
+class BrokerPayoutAccountCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    account_type: Literal["mobile_money", "bank"]
+    provider: str = Field(min_length=2, max_length=100)
+    account_name: str = Field(min_length=2, max_length=150)
+    account_number: str = Field(min_length=3, max_length=120)
+    currency: str = Field(default="TZS", min_length=3, max_length=10)
+    is_default: bool = False
+
+
+class BrokerPayoutAccountUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    account_type: Optional[Literal["mobile_money", "bank"]] = None
+    provider: Optional[str] = Field(default=None, min_length=2, max_length=100)
+    account_name: Optional[str] = Field(default=None, min_length=2, max_length=150)
+    account_number: Optional[str] = Field(default=None, min_length=3, max_length=120)
+    currency: Optional[str] = Field(default=None, min_length=3, max_length=10)
+    is_default: Optional[bool] = None
+    is_active: Optional[bool] = None
+
+
+class BrokerPayoutAccountResponse(BaseModel):
+    model_config = ORM_CONFIG
+    id: UUID
+    broker_id: UUID
+    account_type: str
+    provider: str
+    account_name: str
+    account_number: str
+    currency: str
+    is_default: bool
+    is_active: bool
+    verification_status: str
+    verification_note: Optional[str] = None
+    verified_at: Optional[datetime] = None
+    created_at: datetime
+    updated_at: Optional[datetime] = None
+
+
+class BrokerPayoutAccountVerification(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    status: Literal["verified", "rejected"]
+    note: Optional[str] = Field(default=None, max_length=1000)
+
+
+class BrokerPayoutRequestCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    payout_account_id: UUID
+    amount: Decimal = Field(gt=0, max_digits=18, decimal_places=2)
+    note: Optional[str] = Field(default=None, max_length=1000)
+
+
+class BrokerPayoutRequestResponse(BaseModel):
+    model_config = ORM_CONFIG
+    id: UUID
+    wallet_id: UUID
+    broker_id: UUID
+    payout_account_id: UUID
+    amount: Decimal
+    currency: str
+    status: str
+    provider_reference: Optional[str] = None
+    broker_note: Optional[str] = None
+    admin_note: Optional[str] = None
+    requested_at: datetime
+    processed_at: Optional[datetime] = None
+    completed_at: Optional[datetime] = None
+
+
+class PaginatedBrokerPayoutResponse(BaseModel):
+    total: int
+    page: int
+    page_size: int
+    total_pages: int
+    results: list[BrokerPayoutRequestResponse]
+
+
+class BrokerPayoutAdminUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    status: Literal["approved", "processing", "completed", "failed", "rejected", "cancelled"]
+    provider_reference: Optional[str] = Field(default=None, max_length=180)
+    note: Optional[str] = Field(default=None, max_length=1000)

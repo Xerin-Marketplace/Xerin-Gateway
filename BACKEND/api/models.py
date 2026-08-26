@@ -353,6 +353,7 @@ class Broker(Base):
     user = relationship("User", back_populates="broker_profile")
     kyc_documents = relationship("BrokerKYCDocument", back_populates="broker", cascade="all, delete-orphan")
     status_history = relationship("BrokerStatusHistory", back_populates="broker", cascade="all, delete-orphan", order_by="BrokerStatusHistory.created_at")
+    commissions = relationship("BrokerCommission", back_populates="broker")
 
 
 class BrokerKYCDocument(Base):
@@ -786,6 +787,192 @@ class BrokerAttribution(Base):
         CheckConstraint("commission_type IN ('fixed','percentage')", name="ck_broker_attribution_commission_type"),
         CheckConstraint("commission_amount_per_unit >= 0", name="ck_broker_attribution_commission_nonnegative"),
     )
+
+
+class BrokerCommission(Base):
+    """Financial entitlement created from a B4 attributed order item.
+
+    B5 deliberately keeps this separate from the Broker wallet.  The commission
+    becomes ``available`` only when the matching escrow hold reaches its trusted
+    release event.  B6 will move available entitlements into the Broker wallet
+    ledger/payout flow.
+    """
+
+    __tablename__ = "broker_commissions"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    broker_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("brokers.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
+    order_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("orders.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
+    order_item_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("order_items.id", ondelete="RESTRICT"),
+        nullable=False,
+        unique=True,
+        index=True,
+    )
+    broker_offer_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("broker_offers.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    broker_attribution_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("broker_attributions.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    escrow_hold_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("escrow_holds.id", ondelete="SET NULL"),
+        nullable=True,
+        unique=True,
+        index=True,
+    )
+    currency = Column(String(10), nullable=False)
+    amount = Column(Numeric(18, 2), nullable=False)
+    reversed_amount = Column(
+        Numeric(18, 2), nullable=False, default=0, server_default="0"
+    )
+    status = Column(
+        String(30), nullable=False, default="pending", server_default="pending", index=True
+    )
+    available_at = Column(DateTime(timezone=True), nullable=True, index=True)
+    reversed_at = Column(DateTime(timezone=True), nullable=True)
+    reference = Column(String(180), nullable=False, unique=True, index=True)
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), nullable=True, onupdate=func.now())
+
+    broker = relationship("Broker", back_populates="commissions")
+    order = relationship("Order")
+    order_item = relationship("OrderItem")
+    offer = relationship("BrokerOffer")
+    attribution = relationship("BrokerAttribution")
+    escrow_hold = relationship("EscrowHold")
+
+    __table_args__ = (
+        CheckConstraint("amount >= 0", name="ck_broker_commission_amount_nonnegative"),
+        CheckConstraint(
+            "reversed_amount >= 0 AND reversed_amount <= amount",
+            name="ck_broker_commission_reversed_within_amount",
+        ),
+        CheckConstraint(
+            "status IN ('pending','available','partially_reversed','reversed','cancelled')",
+            name="ck_broker_commission_status",
+        ),
+    )
+
+
+class BrokerWallet(Base):
+    __tablename__ = "broker_wallets"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    broker_id = Column(UUID(as_uuid=True), ForeignKey("brokers.id", ondelete="CASCADE"), nullable=False, unique=True, index=True)
+    currency = Column(String(10), nullable=False, default="TZS", server_default="TZS")
+    pending_balance = Column(Numeric(18, 2), nullable=False, default=0, server_default="0")
+    available_balance = Column(Numeric(18, 2), nullable=False, default=0, server_default="0")
+    reserved_balance = Column(Numeric(18, 2), nullable=False, default=0, server_default="0")
+    paid_out_balance = Column(Numeric(18, 2), nullable=False, default=0, server_default="0")
+    reversed_balance = Column(Numeric(18, 2), nullable=False, default=0, server_default="0")
+    debt_balance = Column(Numeric(18, 2), nullable=False, default=0, server_default="0")
+    is_frozen = Column(Boolean, nullable=False, default=False, server_default="false", index=True)
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), nullable=True, onupdate=func.now())
+
+    __table_args__ = (
+        CheckConstraint(
+            "pending_balance >= 0 AND available_balance >= 0 AND reserved_balance >= 0 AND paid_out_balance >= 0 AND reversed_balance >= 0 AND debt_balance >= 0",
+            name="ck_broker_wallet_balances_nonnegative",
+        ),
+    )
+
+
+class BrokerWalletTransaction(Base):
+    __tablename__ = "broker_wallet_transactions"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    wallet_id = Column(UUID(as_uuid=True), ForeignKey("broker_wallets.id", ondelete="CASCADE"), nullable=False, index=True)
+    broker_id = Column(UUID(as_uuid=True), ForeignKey("brokers.id", ondelete="RESTRICT"), nullable=False, index=True)
+    commission_id = Column(UUID(as_uuid=True), ForeignKey("broker_commissions.id", ondelete="SET NULL"), nullable=True, index=True)
+    payout_request_id = Column(UUID(as_uuid=True), nullable=True, index=True)
+    transaction_type = Column(String(40), nullable=False, index=True)
+    amount = Column(Numeric(18, 2), nullable=False)
+    currency = Column(String(10), nullable=False)
+    reference = Column(String(180), nullable=False, unique=True, index=True)
+    description = Column(Text, nullable=True)
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+    __table_args__ = (
+        CheckConstraint("amount >= 0", name="ck_broker_wallet_transaction_amount_nonnegative"),
+    )
+
+
+class BrokerPayoutAccount(Base):
+    __tablename__ = "broker_payout_accounts"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    broker_id = Column(UUID(as_uuid=True), ForeignKey("brokers.id", ondelete="CASCADE"), nullable=False, index=True)
+    account_type = Column(String(30), nullable=False)
+    provider = Column(String(100), nullable=False)
+    account_name = Column(String(150), nullable=False)
+    account_number = Column(String(120), nullable=False)
+    currency = Column(String(10), nullable=False, default="TZS", server_default="TZS")
+    is_default = Column(Boolean, nullable=False, default=False, server_default="false")
+    is_active = Column(Boolean, nullable=False, default=True, server_default="true", index=True)
+    verification_status = Column(String(20), nullable=False, default="pending", server_default="pending", index=True)
+    verification_note = Column(Text, nullable=True)
+    verified_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), nullable=True, onupdate=func.now())
+
+    __table_args__ = (
+        CheckConstraint("account_type IN ('mobile_money','bank')", name="ck_broker_payout_account_type"),
+        CheckConstraint("verification_status IN ('pending','verified','rejected')", name="ck_broker_payout_account_verification"),
+    )
+
+
+class BrokerPayoutRequest(Base):
+    __tablename__ = "broker_payout_requests"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    wallet_id = Column(UUID(as_uuid=True), ForeignKey("broker_wallets.id", ondelete="RESTRICT"), nullable=False, index=True)
+    broker_id = Column(UUID(as_uuid=True), ForeignKey("brokers.id", ondelete="RESTRICT"), nullable=False, index=True)
+    payout_account_id = Column(UUID(as_uuid=True), ForeignKey("broker_payout_accounts.id", ondelete="RESTRICT"), nullable=False, index=True)
+    amount = Column(Numeric(18, 2), nullable=False)
+    currency = Column(String(10), nullable=False)
+    status = Column(String(30), nullable=False, default="pending", server_default="pending", index=True)
+    provider_reference = Column(String(180), nullable=True, unique=True)
+    broker_note = Column(Text, nullable=True)
+    admin_note = Column(Text, nullable=True)
+    requested_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    processed_at = Column(DateTime(timezone=True), nullable=True)
+    completed_at = Column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (
+        CheckConstraint("amount > 0", name="ck_broker_payout_amount_positive"),
+        CheckConstraint("status IN ('pending','approved','processing','completed','failed','rejected','cancelled')", name="ck_broker_payout_status"),
+    )
+
+
+class BrokerPayoutEvent(Base):
+    __tablename__ = "broker_payout_events"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    payout_request_id = Column(UUID(as_uuid=True), ForeignKey("broker_payout_requests.id", ondelete="CASCADE"), nullable=False, index=True)
+    status = Column(String(30), nullable=False)
+    note = Column(Text, nullable=True)
+    created_by_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
 
 
 class ProductImage(Base):
@@ -2971,6 +3158,9 @@ class EscrowHold(Base):
     commission_amount = Column(
         Numeric(18, 2), nullable=False, default=0, server_default="0"
     )
+    broker_amount = Column(
+        Numeric(18, 2), nullable=False, default=0, server_default="0"
+    )
     refunded_amount = Column(
         Numeric(18, 2), nullable=False, default=0, server_default="0"
     )
@@ -3009,10 +3199,13 @@ class EscrowHold(Base):
         CheckConstraint(
             "commission_amount >= 0", name="ck_escrow_commission_nonnegative"
         ),
+        CheckConstraint(
+            "broker_amount >= 0", name="ck_escrow_broker_nonnegative"
+        ),
         CheckConstraint("refunded_amount >= 0", name="ck_escrow_refunded_nonnegative"),
         CheckConstraint("released_amount >= 0", name="ck_escrow_released_nonnegative"),
         CheckConstraint(
-            "seller_amount + commission_amount <= gross_amount",
+            "seller_amount + commission_amount + broker_amount <= gross_amount",
             name="ck_escrow_allocations_within_gross",
         ),
         CheckConstraint(
