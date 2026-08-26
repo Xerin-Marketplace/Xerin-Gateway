@@ -194,7 +194,7 @@ class RefreshRequest(BaseModel):
     refresh_token: str
 
 
-OtpPurpose = Literal["generic", "register", "register_seller", "password_reset"]
+OtpPurpose = Literal["generic", "register", "register_seller", "register_broker", "password_reset"]
 
 
 class SendOTPRequest(BaseModel):
