@@ -2393,13 +2393,21 @@ def review_company_onboarding(
     if recipient:
         try:
             approved = data.decision == "approve"
+            rejected = data.decision == "rejected"
+            outcome = "approved" if approved else ("rejected" if rejected else "needs changes")
+            detail = (
+                "Your logistics company onboarding has been approved. You can now use the operational workspace."
+                if approved
+                else (
+                    f"Your logistics company onboarding was not approved.\n\nReason: {(data.note or '').strip()}"
+                    if rejected
+                    else f"Your onboarding needs changes before approval.\n\nReview note: {(data.note or '').strip()}"
+                )
+            )
             send_email(
                 to=recipient,
-                subject=f"Xerin Logistics onboarding {'approved' if approved else 'needs changes'} – {company.name}",
-                body=(f"Hello {company.contact_name or company.name},\n\n"
-                      + ("Your logistics company onboarding has been approved. You can now use the operational workspace."
-                         if approved else f"Your onboarding needs changes before approval.\n\nReview note: {(data.note or '').strip()}")
-                      + "\n\nSign in to Xerin Logistics to continue."),
+                subject=f"Xerin Logistics onboarding {outcome} – {company.name}",
+                body=f"Hello {company.contact_name or company.name},\n\n{detail}\n\nSign in to Xerin Logistics to review the decision.",
             )
         except Exception:
             pass
