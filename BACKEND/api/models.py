@@ -761,6 +761,48 @@ class BrokerReferralLink(Base):
     product = relationship("Product")
 
 
+class BrokerReferralClick(Base):
+    __tablename__ = "broker_referral_clicks"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    referral_link_id = Column(UUID(as_uuid=True), ForeignKey("broker_referral_links.id", ondelete="CASCADE"), nullable=False, index=True)
+    offer_id = Column(UUID(as_uuid=True), ForeignKey("broker_offers.id", ondelete="CASCADE"), nullable=False, index=True)
+    broker_id = Column(UUID(as_uuid=True), ForeignKey("brokers.id", ondelete="CASCADE"), nullable=False, index=True)
+    product_id = Column(UUID(as_uuid=True), ForeignKey("products.id", ondelete="CASCADE"), nullable=False, index=True)
+    visitor_key = Column(String(96), nullable=False, index=True)
+    source = Column(String(80), nullable=True)
+    ip_hash = Column(String(64), nullable=True, index=True)
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now(), index=True)
+
+    referral_link = relationship("BrokerReferralLink")
+    offer = relationship("BrokerOffer")
+    broker = relationship("Broker")
+    product = relationship("Product")
+
+
+class BrokerRiskEvent(Base):
+    __tablename__ = "broker_risk_events"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    broker_id = Column(UUID(as_uuid=True), ForeignKey("brokers.id", ondelete="CASCADE"), nullable=True, index=True)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
+    event_type = Column(String(60), nullable=False, index=True)
+    severity = Column(String(20), nullable=False, default="warning", server_default="warning", index=True)
+    status = Column(String(20), nullable=False, default="open", server_default="open", index=True)
+    ip_hash = Column(String(64), nullable=True, index=True)
+    resource_type = Column(String(60), nullable=True, index=True)
+    resource_id = Column(String(120), nullable=True, index=True)
+    details = Column(JSONB, nullable=True)
+    resolved_by_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    resolved_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now(), index=True)
+
+    __table_args__ = (
+        CheckConstraint("severity IN ('info','warning','high','critical')", name="ck_broker_risk_severity"),
+        CheckConstraint("status IN ('open','resolved')", name="ck_broker_risk_status"),
+    )
+
+
 class BrokerAttribution(Base):
     __tablename__ = "broker_attributions"
 
@@ -952,6 +994,7 @@ class BrokerPayoutRequest(Base):
     currency = Column(String(10), nullable=False)
     status = Column(String(30), nullable=False, default="pending", server_default="pending", index=True)
     provider_reference = Column(String(180), nullable=True, unique=True)
+    idempotency_key = Column(String(120), nullable=True, unique=True, index=True)
     broker_note = Column(Text, nullable=True)
     admin_note = Column(Text, nullable=True)
     requested_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())

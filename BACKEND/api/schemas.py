@@ -1284,6 +1284,61 @@ class BrokerOfferAcceptanceResponse(BaseModel):
 
 
 
+class BrokerReferralClickCreate(BaseModel):
+    product_id: UUID
+    visitor_key: str = Field(min_length=8, max_length=96)
+    source: Optional[str] = Field(default=None, max_length=80)
+
+
+class BrokerAnalyticsOverviewResponse(BaseModel):
+    currency: str = "TZS"
+    period_days: int
+    total_clicks: int = 0
+    unique_visitors: int = 0
+    attributed_customers: int = 0
+    attributed_orders: int = 0
+    successful_sales: int = 0
+    refunded_sales: int = 0
+    conversion_rate: Decimal = Decimal("0")
+    pending_earnings: Decimal = Decimal("0")
+    available_earnings: Decimal = Decimal("0")
+    lifetime_earnings: Decimal = Decimal("0")
+    wallet_available: Decimal = Decimal("0")
+    wallet_pending: Decimal = Decimal("0")
+    wallet_paid_out: Decimal = Decimal("0")
+    currently_promoting: int = 0
+    available_opportunities: int = 0
+    own_products_active: int = 0
+    own_products_expired: int = 0
+    own_products_draft: int = 0
+
+
+class BrokerCampaignAnalyticsItem(BaseModel):
+    offer_id: UUID
+    product_id: UUID
+    product_name: str
+    referral_code: Optional[str] = None
+    is_active: bool
+    accepted_at: datetime
+    clicks: int = 0
+    unique_visitors: int = 0
+    attributed_customers: int = 0
+    attributed_orders: int = 0
+    successful_sales: int = 0
+    conversion_rate: Decimal = Decimal("0")
+    gross_commission: Decimal = Decimal("0")
+    reversed_commission: Decimal = Decimal("0")
+    net_commission: Decimal = Decimal("0")
+
+
+class PaginatedBrokerCampaignAnalyticsResponse(BaseModel):
+    total: int
+    page: int
+    page_size: int
+    total_pages: int
+    results: list[BrokerCampaignAnalyticsItem]
+
+
 class BrokerReferralLinkResponse(BaseModel):
     id: UUID
     acceptance_id: UUID
@@ -6521,3 +6576,38 @@ class BrokerPayoutAdminUpdate(BaseModel):
     status: Literal["approved", "processing", "completed", "failed", "rejected", "cancelled"]
     provider_reference: Optional[str] = Field(default=None, max_length=180)
     note: Optional[str] = Field(default=None, max_length=1000)
+
+# B8 — Broker security / production hardening
+class BrokerRiskEventResponse(BaseModel):
+    model_config = ORM_CONFIG
+    id: UUID
+    broker_id: Optional[UUID] = None
+    user_id: Optional[UUID] = None
+    event_type: str
+    severity: str
+    status: str
+    resource_type: Optional[str] = None
+    resource_id: Optional[str] = None
+    details: Optional[dict] = None
+    resolved_by_id: Optional[UUID] = None
+    resolved_at: Optional[datetime] = None
+    created_at: datetime
+
+
+class PaginatedBrokerRiskEventResponse(BaseModel):
+    total: int
+    page: int
+    page_size: int
+    total_pages: int
+    results: list[BrokerRiskEventResponse]
+
+
+class BrokerRiskResolveRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    note: Optional[str] = Field(default=None, max_length=1000)
+
+
+class BrokerWalletFreezeRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    frozen: bool
+    reason: str = Field(min_length=3, max_length=1000)

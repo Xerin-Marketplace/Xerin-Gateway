@@ -28,6 +28,7 @@ from api.models import (
     BrokerAttribution,
 )
 from api.services.fx_service import FxRateUnavailableError, convert_amount_to_tzs
+from api.services.broker_risk_service import record_broker_risk
 from api.schemas import (
     ApplyCartPromotionRequest,
     ApplyCouponRequest,
@@ -138,7 +139,27 @@ def _lock_broker_attribution(db: Session, *, user: User, product: Product, refer
     if not broker:
         raise HTTPException(status_code=409, detail="Broker referral is unavailable")
     if broker.user_id == user.id:
+        record_broker_risk(
+            db, event_type="self_referral", severity="critical", broker_id=broker.id, user_id=user.id,
+            resource_type="product", resource_id=str(product.id),
+            details={"referral_link_id": str(link.id), "offer_id": str(offer.id)},
+        )
+        # No cart mutation has happened yet; persist the security evidence before rejecting.
+        db.commit()
         raise HTTPException(status_code=422, detail="A Broker cannot earn commission from their own purchase")
+
+    # Different accounts that reuse the Broker's email/phone are not auto-banned,
+    # but they are flagged for admin review. This avoids false positives for shared
+    # households while still surfacing likely multi-account self-referral abuse.
+    broker_user = db.query(User).filter(User.id == broker.user_id).first()
+    same_email = bool(broker_user and broker_user.email and user.email and broker_user.email.strip().lower() == user.email.strip().lower())
+    same_phone = bool(broker_user and broker_user.phone and user.phone and broker_user.phone.strip() == user.phone.strip())
+    if same_email or same_phone:
+        record_broker_risk(
+            db, event_type="related_account_referral", severity="high", broker_id=broker.id, user_id=user.id,
+            resource_type="product", resource_id=str(product.id),
+            details={"same_email": same_email, "same_phone": same_phone, "referral_link_id": str(link.id)},
+        )
     if offer.max_attributed_sales is not None and offer.attributed_sales_count >= offer.max_attributed_sales:
         raise HTTPException(status_code=409, detail="Broker campaign has reached its sales limit")
     value = Decimal(str(offer.commission_value))

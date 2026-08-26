@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from decimal import Decimal, ROUND_HALF_UP
 
 from sqlalchemy import func
@@ -142,7 +142,7 @@ def sync_all_broker_commissions(db: Session, *, broker_id) -> BrokerWallet:
     return wallet
 
 
-def create_broker_payout(db: Session, *, broker_id, payout_account_id, amount, note=None) -> BrokerPayoutRequest:
+def create_broker_payout(db: Session, *, broker_id, payout_account_id, amount, note=None, idempotency_key=None) -> BrokerPayoutRequest:
     wallet = sync_all_broker_commissions(db, broker_id=broker_id)
     amount = money(amount)
     if wallet.is_frozen:
@@ -166,6 +166,26 @@ def create_broker_payout(db: Session, *, broker_id, payout_account_id, amount, n
     if money(wallet.available_balance) < amount:
         raise ValueError("Insufficient available balance")
 
+    # B8 payout-abuse controls.  The wallet row is already locked, so these
+    # checks are concurrency-safe across API workers.
+    now = datetime.now(timezone.utc)
+    open_count = db.query(BrokerPayoutRequest).filter(
+        BrokerPayoutRequest.broker_id == broker_id,
+        BrokerPayoutRequest.status.in_(["pending", "approved", "processing"]),
+    ).count()
+    if open_count >= 3:
+        raise ValueError("Too many payout requests are already in progress")
+    duplicate_cutoff = now - timedelta(minutes=10)
+    duplicate = db.query(BrokerPayoutRequest).filter(
+        BrokerPayoutRequest.broker_id == broker_id,
+        BrokerPayoutRequest.payout_account_id == payout_account_id,
+        BrokerPayoutRequest.amount == amount,
+        BrokerPayoutRequest.requested_at >= duplicate_cutoff,
+        BrokerPayoutRequest.status.in_(["pending", "approved", "processing", "completed"]),
+    ).first()
+    if duplicate is not None:
+        raise ValueError("A matching payout was already requested recently")
+
     wallet.available_balance = money(wallet.available_balance) - amount
     wallet.reserved_balance = money(wallet.reserved_balance) + amount
     payout = BrokerPayoutRequest(
@@ -176,6 +196,7 @@ def create_broker_payout(db: Session, *, broker_id, payout_account_id, amount, n
         currency=wallet.currency,
         status="pending",
         broker_note=note,
+        idempotency_key=idempotency_key,
     )
     db.add(payout)
     db.flush()

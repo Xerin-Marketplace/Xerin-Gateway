@@ -5,21 +5,22 @@ from pathlib import Path
 import uuid
 import secrets
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status, Request, Header
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
-from sqlalchemy import or_
+from sqlalchemy import or_, func, distinct
 from decimal import Decimal
 
 from api.config import settings
 from api.deps import get_current_user, get_db
 from api.enums import PermissionCode
-from api.models import Broker, BrokerKYCDocument, BrokerStatus, BrokerStatusHistory, User, Product, ProductImage, ProductStatus, Inventory, Category, Brand, MarketplaceSettings, PaymentCurrency, BrokerOffer, BrokerOfferAcceptance, BrokerReferralLink, BrokerCommission, BrokerWallet, BrokerWalletTransaction, BrokerPayoutAccount, BrokerPayoutRequest
+from api.models import Broker, BrokerKYCDocument, BrokerStatus, BrokerStatusHistory, User, Product, ProductImage, ProductStatus, Inventory, Category, Brand, MarketplaceSettings, PaymentCurrency, BrokerOffer, BrokerOfferAcceptance, BrokerReferralLink, BrokerReferralClick, BrokerAttribution, BrokerCommission, BrokerWallet, BrokerWalletTransaction, BrokerPayoutAccount, BrokerPayoutRequest, BrokerRiskEvent
 from api.permissions import require_permission
 from api.services.product_image_service import MAX_PRODUCT_IMAGES, store_product_image, delete_product_image_files
 from api.services.broker_listing_expiry import expire_broker_listings
 from api.services.broker_finance_service import broker_commission_summary
 from api.services.broker_wallet_service import sync_all_broker_commissions, create_broker_payout, transition_broker_payout
+from api.services.broker_risk_service import fingerprint_ip, record_broker_risk, resolve_broker_risk, freeze_broker_wallet
 from api.schemas import (
     BrokerKYCResponse,
     BrokerKYCStatusResponse,
@@ -36,6 +37,9 @@ from api.schemas import (
     BrokerOfferAcceptanceResponse,
     BrokerOfferResponse,
     BrokerReferralLinkResponse,
+    BrokerReferralClickCreate,
+    BrokerAnalyticsOverviewResponse,
+    PaginatedBrokerCampaignAnalyticsResponse,
     BrokerCommissionResponse,
     PaginatedBrokerCommissionResponse,
     BrokerCommissionSummaryResponse,
@@ -50,6 +54,7 @@ from api.schemas import (
     BrokerPayoutRequestResponse,
     PaginatedBrokerPayoutResponse,
     BrokerPayoutAdminUpdate,
+    BrokerRiskEventResponse, PaginatedBrokerRiskEventResponse, BrokerRiskResolveRequest, BrokerWalletFreezeRequest,
 )
 
 router = APIRouter(prefix="/brokers", tags=["Brokers"])
@@ -593,6 +598,223 @@ def get_referral_link(offer_id: uuid.UUID, db: Session = Depends(get_db), curren
     return _referral_payload(link)
 
 
+
+# ---------------------------------------------------------------------------
+# B7 — Broker Dashboard & Analytics
+# ---------------------------------------------------------------------------
+
+@router.post("/referrals/{referral_code}/click", status_code=201)
+def record_referral_click(
+    referral_code: str,
+    data: BrokerReferralClickCreate,
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    """Record a share-link visit without requiring the shopper to be signed in.
+
+    Refresh noise is deduplicated per referral + anonymous visitor for 30 minutes.
+    This event is analytics only; B4 cart attribution remains the source of truth
+    for commission eligibility.
+    """
+    now = datetime.now(timezone.utc)
+    code = referral_code.strip().upper()
+    link = db.query(BrokerReferralLink).filter(
+        BrokerReferralLink.referral_code == code,
+        BrokerReferralLink.product_id == data.product_id,
+        BrokerReferralLink.is_active.is_(True),
+    ).first()
+    if link is None:
+        raise HTTPException(status_code=404, detail="Broker referral link not found or inactive")
+    offer = db.query(BrokerOffer).filter(BrokerOffer.id == link.offer_id, BrokerOffer.is_active.is_(True)).first()
+    acceptance = db.query(BrokerOfferAcceptance).filter(
+        BrokerOfferAcceptance.id == link.acceptance_id,
+        BrokerOfferAcceptance.is_active.is_(True),
+    ).first()
+    if offer is None or acceptance is None or offer.starts_at > now or (offer.ends_at is not None and offer.ends_at <= now):
+        raise HTTPException(status_code=409, detail="Broker promotion is not currently active")
+
+    visitor_key = data.visitor_key.strip()[:96]
+    ip_hash = fingerprint_ip(request.client.host if request.client else None)
+
+    # Production-safe rate limit persisted in PostgreSQL so it works across
+    # multiple API workers.  The raw IP is never stored in Broker analytics.
+    if ip_hash:
+        one_minute = now - timedelta(minutes=1)
+        recent_ip_clicks = db.query(BrokerReferralClick).filter(
+            BrokerReferralClick.ip_hash == ip_hash,
+            BrokerReferralClick.created_at >= one_minute,
+        ).count()
+        if recent_ip_clicks >= 60:
+            record_broker_risk(
+                db, event_type="referral_click_rate_limit", severity="high",
+                broker_id=link.broker_id, ip_hash=ip_hash, resource_type="referral_link",
+                resource_id=str(link.id), details={"window_seconds": 60, "attempts": recent_ip_clicks},
+            )
+            db.commit()
+            raise HTTPException(status_code=429, detail="Too many referral requests. Please try again shortly")
+
+        ten_minutes = now - timedelta(minutes=10)
+        distinct_links = db.query(func.count(distinct(BrokerReferralClick.referral_link_id))).filter(
+            BrokerReferralClick.ip_hash == ip_hash, BrokerReferralClick.created_at >= ten_minutes
+        ).scalar() or 0
+        if distinct_links >= 8:
+            already_flagged = db.query(BrokerRiskEvent).filter(
+                BrokerRiskEvent.ip_hash == ip_hash, BrokerRiskEvent.event_type == "referral_churn",
+                BrokerRiskEvent.created_at >= ten_minutes, BrokerRiskEvent.status == "open",
+            ).first()
+            if not already_flagged:
+                record_broker_risk(
+                    db, event_type="referral_churn", severity="warning", broker_id=link.broker_id,
+                    ip_hash=ip_hash, resource_type="referral_link", resource_id=str(link.id),
+                    details={"distinct_referral_links_10m": int(distinct_links)},
+                )
+
+    cutoff = now - timedelta(minutes=30)
+    existing = db.query(BrokerReferralClick).filter(
+        BrokerReferralClick.referral_link_id == link.id,
+        BrokerReferralClick.visitor_key == visitor_key,
+        BrokerReferralClick.created_at >= cutoff,
+    ).first()
+    if existing:
+        return {"recorded": False, "deduplicated": True}
+
+    db.add(BrokerReferralClick(
+        referral_link_id=link.id,
+        offer_id=link.offer_id,
+        broker_id=link.broker_id,
+        product_id=link.product_id,
+        visitor_key=visitor_key,
+        source=(data.source or "broker_share")[:80],
+        ip_hash=ip_hash,
+    ))
+    db.commit()
+    return {"recorded": True, "deduplicated": False}
+
+
+def _analytics_since(days: int) -> datetime:
+    return datetime.now(timezone.utc) - timedelta(days=days)
+
+
+def _money_sum(db: Session, column, *filters) -> Decimal:
+    value = db.query(func.coalesce(func.sum(column), 0)).filter(*filters).scalar()
+    return Decimal(value or 0)
+
+
+@router.get("/analytics/overview", response_model=BrokerAnalyticsOverviewResponse)
+def broker_analytics_overview(
+    days: int = Query(30, ge=1, le=3650),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    broker = _require_approved_broker(db, current_user)
+    since = _analytics_since(days)
+    now = datetime.now(timezone.utc)
+
+    clicks_q = db.query(BrokerReferralClick).filter(BrokerReferralClick.broker_id == broker.id, BrokerReferralClick.created_at >= since)
+    total_clicks = clicks_q.count()
+    unique_visitors = db.query(func.count(distinct(BrokerReferralClick.visitor_key))).filter(
+        BrokerReferralClick.broker_id == broker.id,
+        BrokerReferralClick.created_at >= since,
+    ).scalar() or 0
+    attributed_customers = db.query(func.count(distinct(BrokerAttribution.user_id))).filter(
+        BrokerAttribution.broker_id == broker.id,
+        BrokerAttribution.locked_at >= since,
+    ).scalar() or 0
+    attributed_orders = db.query(BrokerAttribution).filter(
+        BrokerAttribution.broker_id == broker.id,
+        BrokerAttribution.ordered_at.isnot(None),
+        BrokerAttribution.ordered_at >= since,
+    ).count()
+    successful_sales = db.query(BrokerCommission).filter(
+        BrokerCommission.broker_id == broker.id,
+        BrokerCommission.available_at.isnot(None),
+        BrokerCommission.available_at >= since,
+    ).count()
+    refunded_sales = db.query(BrokerCommission).filter(
+        BrokerCommission.broker_id == broker.id,
+        BrokerCommission.status.in_(["partially_reversed", "reversed"]),
+        BrokerCommission.created_at >= since,
+    ).count()
+
+    pending_earnings = _money_sum(db, BrokerCommission.amount - BrokerCommission.reversed_amount,
+        BrokerCommission.broker_id == broker.id, BrokerCommission.status == "pending", BrokerCommission.created_at >= since)
+    available_earnings = _money_sum(db, BrokerCommission.amount - BrokerCommission.reversed_amount,
+        BrokerCommission.broker_id == broker.id, BrokerCommission.status.in_(["available", "partially_reversed"]), BrokerCommission.created_at >= since)
+    lifetime_earnings = _money_sum(db, BrokerCommission.amount - BrokerCommission.reversed_amount,
+        BrokerCommission.broker_id == broker.id, BrokerCommission.status != "cancelled")
+
+    wallet = db.query(BrokerWallet).filter(BrokerWallet.broker_id == broker.id).first()
+    currently_promoting = db.query(BrokerOfferAcceptance).filter(
+        BrokerOfferAcceptance.broker_id == broker.id, BrokerOfferAcceptance.is_active.is_(True)).count()
+    available_opportunities = db.query(BrokerOffer).join(Product, Product.id == BrokerOffer.product_id).filter(
+        BrokerOffer.is_active.is_(True), BrokerOffer.starts_at <= now,
+        or_(BrokerOffer.ends_at.is_(None), BrokerOffer.ends_at > now),
+        Product.status == ProductStatus.approved, Product.is_active.is_(True),
+        or_(BrokerOffer.max_attributed_sales.is_(None), BrokerOffer.attributed_sales_count < BrokerOffer.max_attributed_sales),
+    ).count()
+    own_base = [Product.broker_id == broker.id, Product.listing_owner_type == "broker"]
+    own_active = db.query(Product).filter(*own_base, Product.status == ProductStatus.approved, Product.is_active.is_(True),
+        or_(Product.listing_expires_at.is_(None), Product.listing_expires_at > now)).count()
+    own_expired = db.query(Product).filter(*own_base, or_(Product.listing_expired_at.isnot(None), Product.listing_expires_at <= now)).count()
+    own_draft = db.query(Product).filter(*own_base, Product.status.in_([ProductStatus.draft, ProductStatus.pending_review, ProductStatus.rejected])).count()
+
+    currency = (wallet.currency if wallet else db.query(BrokerCommission.currency).filter(BrokerCommission.broker_id == broker.id).order_by(BrokerCommission.created_at.desc()).limit(1).scalar()) or "TZS"
+    conversion = (Decimal(attributed_orders) * Decimal("100") / Decimal(unique_visitors)) if unique_visitors else Decimal("0")
+    return {
+        "currency": currency, "period_days": days, "total_clicks": total_clicks, "unique_visitors": unique_visitors,
+        "attributed_customers": attributed_customers, "attributed_orders": attributed_orders, "successful_sales": successful_sales,
+        "refunded_sales": refunded_sales, "conversion_rate": conversion.quantize(Decimal("0.01")),
+        "pending_earnings": pending_earnings, "available_earnings": available_earnings, "lifetime_earnings": lifetime_earnings,
+        "wallet_available": Decimal(wallet.available_balance or 0) if wallet else Decimal("0"),
+        "wallet_pending": Decimal(wallet.pending_balance or 0) if wallet else Decimal("0"),
+        "wallet_paid_out": Decimal(wallet.paid_out_balance or 0) if wallet else Decimal("0"),
+        "currently_promoting": currently_promoting, "available_opportunities": available_opportunities,
+        "own_products_active": own_active, "own_products_expired": own_expired, "own_products_draft": own_draft,
+    }
+
+
+@router.get("/analytics/campaigns", response_model=PaginatedBrokerCampaignAnalyticsResponse)
+def broker_campaign_analytics(
+    days: int = Query(30, ge=1, le=3650),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=100),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    broker = _require_approved_broker(db, current_user)
+    since = _analytics_since(days)
+    q = db.query(BrokerOfferAcceptance, BrokerOffer, Product).join(BrokerOffer, BrokerOffer.id == BrokerOfferAcceptance.offer_id).join(Product, Product.id == BrokerOffer.product_id).filter(BrokerOfferAcceptance.broker_id == broker.id)
+    total = q.count()
+    rows = q.order_by(BrokerOfferAcceptance.accepted_at.desc()).offset((page-1)*page_size).limit(page_size).all()
+    results = []
+    for acceptance, offer, product in rows:
+        link = db.query(BrokerReferralLink).filter(BrokerReferralLink.acceptance_id == acceptance.id).first()
+        link_id = link.id if link else None
+        clicks = 0; unique = 0
+        if link_id:
+            clicks = db.query(BrokerReferralClick).filter(BrokerReferralClick.referral_link_id == link_id, BrokerReferralClick.created_at >= since).count()
+            unique = db.query(func.count(distinct(BrokerReferralClick.visitor_key))).filter(BrokerReferralClick.referral_link_id == link_id, BrokerReferralClick.created_at >= since).scalar() or 0
+        attrs = db.query(BrokerAttribution).filter(BrokerAttribution.broker_id == broker.id, BrokerAttribution.offer_id == offer.id, BrokerAttribution.locked_at >= since)
+        attributed_customers = db.query(func.count(distinct(BrokerAttribution.user_id))).filter(BrokerAttribution.broker_id == broker.id, BrokerAttribution.offer_id == offer.id, BrokerAttribution.locked_at >= since).scalar() or 0
+        attributed_orders = attrs.filter(BrokerAttribution.ordered_at.isnot(None)).count()
+        commissions = db.query(BrokerCommission).filter(BrokerCommission.broker_id == broker.id, BrokerCommission.broker_offer_id == offer.id, BrokerCommission.created_at >= since)
+        comm_rows = commissions.all()
+        successful = sum(1 for c in comm_rows if c.available_at is not None)
+        gross = sum((Decimal(c.amount or 0) for c in comm_rows), Decimal("0"))
+        reversed_amt = sum((Decimal(c.reversed_amount or 0) for c in comm_rows), Decimal("0"))
+        conversion = (Decimal(attributed_orders)*Decimal("100")/Decimal(unique)) if unique else Decimal("0")
+        results.append({
+            "offer_id": offer.id, "product_id": product.id, "product_name": product.name,
+            "referral_code": link.referral_code if link else None,
+            "is_active": bool(acceptance.is_active and offer.is_active), "accepted_at": acceptance.accepted_at,
+            "clicks": clicks, "unique_visitors": unique, "attributed_customers": attributed_customers,
+            "attributed_orders": attributed_orders, "successful_sales": successful,
+            "conversion_rate": conversion.quantize(Decimal("0.01")), "gross_commission": gross,
+            "reversed_commission": reversed_amt, "net_commission": max(Decimal("0"), gross-reversed_amt),
+        })
+    return {"total": total, "page": page, "page_size": page_size, "total_pages": 0 if total == 0 else (total+page_size-1)//page_size, "results": results}
+
+
 def _broker_commission_payload(row: BrokerCommission) -> dict:
     amount = Decimal(row.amount or 0)
     reversed_amount = Decimal(row.reversed_amount or 0)
@@ -732,14 +954,41 @@ def update_broker_payout_account(account_id: uuid.UUID, data: BrokerPayoutAccoun
 
 
 @router.post("/payouts", response_model=BrokerPayoutRequestResponse, status_code=201)
-def request_broker_payout(data: BrokerPayoutRequestCreate, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+def request_broker_payout(
+    data: BrokerPayoutRequestCreate,
+    request: Request,
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
     broker = _require_approved_broker(db, current_user)
+    key = (idempotency_key or "").strip()[:120] or None
+    if key:
+        existing = db.query(BrokerPayoutRequest).filter(
+            BrokerPayoutRequest.broker_id == broker.id, BrokerPayoutRequest.idempotency_key == key
+        ).first()
+        if existing is not None:
+            return existing
     try:
-        payout = create_broker_payout(db, broker_id=broker.id, payout_account_id=data.payout_account_id, amount=data.amount, note=data.note)
+        payout = create_broker_payout(
+            db, broker_id=broker.id, payout_account_id=data.payout_account_id,
+            amount=data.amount, note=data.note, idempotency_key=key,
+        )
         db.commit(); db.refresh(payout)
         return payout
     except ValueError as exc:
-        db.rollback(); raise HTTPException(status_code=409, detail=str(exc)) from exc
+        # Persist a privacy-preserving risk signal for payout abuse/replay patterns.
+        db.rollback()
+        try:
+            record_broker_risk(
+                db, event_type="payout_request_blocked", severity="warning", broker_id=broker.id,
+                user_id=current_user.id, ip_hash=fingerprint_ip(request.client.host if request.client else None),
+                resource_type="broker_wallet", resource_id=str(broker.id), details={"reason": str(exc)},
+            )
+            db.commit()
+        except Exception:
+            db.rollback()
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
 @router.get("/payouts", response_model=PaginatedBrokerPayoutResponse)
@@ -801,3 +1050,61 @@ def admin_update_broker_payout(payout_id: uuid.UUID, data: BrokerPayoutAdminUpda
         db.commit(); db.refresh(payout); return payout
     except ValueError as exc:
         db.rollback(); raise HTTPException(409, str(exc)) from exc
+        
+@router.post("/admin/products/{product_id}/archive")
+def admin_archive_broker_product(product_id: uuid.UUID, db: Session = Depends(get_db), current_user: User = Depends(require_permission(PermissionCode.products_edit.value))):
+    product=db.query(Product).filter(Product.id==product_id,Product.listing_owner_type=="broker").first()
+    if not product: raise HTTPException(status_code=404,detail="Broker product not found")
+    if product.listing_expired_at: raise HTTPException(status_code=409,detail="Broker product is already archived")
+    product.is_active=False
+    if not product.listing_expires_at: product.listing_expires_at=datetime.now(timezone.utc)
+    if not product.listing_expired_at: product.listing_expired_at=datetime.now(timezone.utc)
+    db.commit(); return {"message":"Broker product archived"}
+
+# ---------------------------------------------------------------------------
+# B8 — Broker Security & Production Hardening
+# ---------------------------------------------------------------------------
+
+@router.get("/admin/security/risk-events", response_model=PaginatedBrokerRiskEventResponse)
+def admin_broker_risk_events(
+    page: int = Query(1, ge=1), page_size: int = Query(20, ge=1, le=100),
+    risk_status: str | None = Query(None, alias="status"), severity: str | None = None,
+    broker_id: uuid.UUID | None = None, db: Session = Depends(get_db),
+    current_user: User = Depends(require_permission(PermissionCode.admin_brokers_read.value)),
+):
+    q = db.query(BrokerRiskEvent)
+    if risk_status: q = q.filter(BrokerRiskEvent.status == risk_status)
+    if severity: q = q.filter(BrokerRiskEvent.severity == severity)
+    if broker_id: q = q.filter(BrokerRiskEvent.broker_id == broker_id)
+    total = q.count()
+    rows = q.order_by(BrokerRiskEvent.created_at.desc()).offset((page-1)*page_size).limit(page_size).all()
+    return {"total": total, "page": page, "page_size": page_size, "total_pages": 0 if total == 0 else (total+page_size-1)//page_size, "results": rows}
+
+
+@router.patch("/admin/security/risk-events/{event_id}/resolve", response_model=BrokerRiskEventResponse)
+def admin_resolve_broker_risk(
+    event_id: uuid.UUID, data: BrokerRiskResolveRequest, db: Session = Depends(get_db),
+    current_user: User = Depends(require_permission(PermissionCode.admin_brokers_suspend.value)),
+):
+    event = db.query(BrokerRiskEvent).filter(BrokerRiskEvent.id == event_id).with_for_update().first()
+    if event is None: raise HTTPException(404, "Broker risk event not found")
+    resolve_broker_risk(db, event, resolved_by_id=current_user.id, note=data.note)
+    db.commit(); db.refresh(event); return event
+
+
+@router.patch("/admin/{broker_id}/security/wallet-freeze", response_model=BrokerWalletResponse | None)
+def admin_broker_wallet_freeze(
+    broker_id: uuid.UUID, data: BrokerWalletFreezeRequest, db: Session = Depends(get_db),
+    current_user: User = Depends(require_permission(PermissionCode.payouts_approve.value)),
+):
+    broker = db.query(Broker).filter(Broker.id == broker_id).first()
+    if broker is None: raise HTTPException(404, "Broker not found")
+    wallet = freeze_broker_wallet(db, broker_id=broker.id, frozen=data.frozen)
+    record_broker_risk(
+        db, event_type="wallet_frozen" if data.frozen else "wallet_unfrozen", severity="high" if data.frozen else "info",
+        broker_id=broker.id, user_id=current_user.id, resource_type="broker_wallet",
+        resource_id=str(wallet.id if wallet else broker.id), details={"reason": data.reason, "admin_action": True},
+    )
+    db.commit()
+    if wallet is not None: db.refresh(wallet)
+    return wallet
