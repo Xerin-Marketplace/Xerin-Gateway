@@ -7,11 +7,13 @@ import uuid
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
+from sqlalchemy import or_
+from decimal import Decimal
 
 from api.config import settings
 from api.deps import get_current_user, get_db
 from api.enums import PermissionCode
-from api.models import Broker, BrokerKYCDocument, BrokerStatus, BrokerStatusHistory, User, Product, ProductImage, ProductStatus, Inventory, Category, Brand, MarketplaceSettings, PaymentCurrency
+from api.models import Broker, BrokerKYCDocument, BrokerStatus, BrokerStatusHistory, User, Product, ProductImage, ProductStatus, Inventory, Category, Brand, MarketplaceSettings, PaymentCurrency, BrokerOffer, BrokerOfferAcceptance
 from api.permissions import require_permission
 from api.services.product_image_service import MAX_PRODUCT_IMAGES, store_product_image, delete_product_image_files
 from api.services.broker_listing_expiry import expire_broker_listings
@@ -27,6 +29,9 @@ from api.schemas import (
     BrokerProductUpdate,
     BrokerProductResponse,
     ProductImageResponse,
+    BrokerOpportunityResponse,
+    BrokerOfferAcceptanceResponse,
+    BrokerOfferResponse,
 )
 
 router = APIRouter(prefix="/brokers", tags=["Brokers"])
@@ -436,3 +441,86 @@ def archive_broker_product(product_id: uuid.UUID, db: Session = Depends(get_db),
     product.is_active=False; product.status=ProductStatus.inactive
     if product.listing_expires_at and not product.listing_expired_at: product.listing_expired_at=datetime.now(timezone.utc)
     db.commit(); return {"message":"Broker product archived"}
+
+
+
+def _opportunity_offer_payload(db: Session, offer: BrokerOffer, product: Product) -> dict:
+    base = Decimal(str(product.seller_sale_price if product.seller_sale_price is not None else product.seller_base_price or 0))
+    value = Decimal(str(offer.commission_value))
+    reward = value if offer.commission_type == "fixed" else (base * value / Decimal("100"))
+    reward = reward.quantize(Decimal("0.01"))
+    accepted = db.query(BrokerOfferAcceptance).filter(BrokerOfferAcceptance.offer_id == offer.id, BrokerOfferAcceptance.is_active.is_(True)).count()
+    return {"id":offer.id,"product_id":offer.product_id,"seller_id":offer.seller_id,"commission_type":offer.commission_type,"commission_value":offer.commission_value,"max_attributed_sales":offer.max_attributed_sales,"attributed_sales_count":offer.attributed_sales_count,"starts_at":offer.starts_at,"ends_at":offer.ends_at,"is_active":offer.is_active,"created_at":offer.created_at,"accepted_brokers_count":accepted,"estimated_reward_per_unit":reward,"estimated_seller_net_per_unit":max(Decimal("0"),base-reward)}
+
+
+def _require_approved_broker(db: Session, user: User) -> Broker:
+    broker = _broker_for_user(db, user)
+    if broker.status != BrokerStatus.approved:
+        raise HTTPException(status_code=403, detail="Broker KYC approval is required")
+    return broker
+
+
+@router.get("/opportunities", response_model=list[BrokerOpportunityResponse])
+def broker_opportunities(
+    search: str | None = Query(default=None, max_length=200),
+    category_id: uuid.UUID | None = Query(default=None),
+    skip: int = Query(default=0, ge=0), limit: int = Query(default=30, ge=1, le=100),
+    db: Session = Depends(get_db), current_user: User = Depends(get_current_user),
+):
+    broker = _require_approved_broker(db, current_user)
+    now = datetime.now(timezone.utc)
+    q = db.query(BrokerOffer, Product).join(Product, Product.id == BrokerOffer.product_id).filter(
+        BrokerOffer.is_active.is_(True), BrokerOffer.starts_at <= now,
+        or_(BrokerOffer.ends_at.is_(None), BrokerOffer.ends_at > now),
+        Product.listing_owner_type == "seller", Product.status == ProductStatus.approved, Product.is_active.is_(True),
+        or_(BrokerOffer.max_attributed_sales.is_(None), BrokerOffer.attributed_sales_count < BrokerOffer.max_attributed_sales),
+    )
+    if search and search.strip(): q=q.filter(or_(Product.name.ilike(f"%{search.strip()}%"), Product.description.ilike(f"%{search.strip()}%")))
+    if category_id: q=q.filter(Product.category_id==category_id)
+    rows=q.order_by(BrokerOffer.created_at.desc()).offset(skip).limit(limit).all()
+    result=[]
+    for offer, product in rows:
+        inv=db.query(Inventory).filter(Inventory.product_id==product.id, Inventory.variant_id.is_(None)).first()
+        available=inv.available_quantity if inv else 0
+        if available <= 0: continue
+        accepted=db.query(BrokerOfferAcceptance).filter(BrokerOfferAcceptance.offer_id==offer.id, BrokerOfferAcceptance.broker_id==broker.id, BrokerOfferAcceptance.is_active.is_(True)).first() is not None
+        result.append({"offer":_opportunity_offer_payload(db,offer,product),"product":product,"available_quantity":available,"already_accepted":accepted})
+    return result
+
+
+@router.get("/accepted-opportunities", response_model=list[BrokerOpportunityResponse])
+def accepted_opportunities(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    broker=_require_approved_broker(db,current_user); now=datetime.now(timezone.utc)
+    rows=db.query(BrokerOfferAcceptance,BrokerOffer,Product).join(BrokerOffer,BrokerOffer.id==BrokerOfferAcceptance.offer_id).join(Product,Product.id==BrokerOffer.product_id).filter(BrokerOfferAcceptance.broker_id==broker.id,BrokerOfferAcceptance.is_active.is_(True)).order_by(BrokerOfferAcceptance.accepted_at.desc()).all()
+    out=[]
+    for acceptance,offer,product in rows:
+        inv=db.query(Inventory).filter(Inventory.product_id==product.id,Inventory.variant_id.is_(None)).first(); available=inv.available_quantity if inv else 0
+        # Keep accepted history visible even if offer has just expired/out-of-stock; B4 will decide shareability.
+        out.append({"offer":_opportunity_offer_payload(db,offer,product),"product":product,"available_quantity":available,"already_accepted":True})
+    return out
+
+
+@router.post("/opportunities/{offer_id}/accept", response_model=BrokerOfferAcceptanceResponse)
+def accept_opportunity(offer_id: uuid.UUID, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    broker=_require_approved_broker(db,current_user); now=datetime.now(timezone.utc)
+    offer=db.query(BrokerOffer).filter(BrokerOffer.id==offer_id,BrokerOffer.is_active.is_(True),BrokerOffer.starts_at<=now,or_(BrokerOffer.ends_at.is_(None),BrokerOffer.ends_at>now)).first()
+    if not offer: raise HTTPException(status_code=404,detail="Broker opportunity is not currently available")
+    product=db.query(Product).filter(Product.id==offer.product_id,Product.status==ProductStatus.approved,Product.is_active.is_(True),Product.listing_owner_type=="seller").first()
+    if not product: raise HTTPException(status_code=409,detail="Product is no longer available for promotion")
+    inv=db.query(Inventory).filter(Inventory.product_id==product.id,Inventory.variant_id.is_(None)).first()
+    if not inv or inv.available_quantity<=0: raise HTTPException(status_code=409,detail="Product is out of stock")
+    if offer.max_attributed_sales is not None and offer.attributed_sales_count>=offer.max_attributed_sales: raise HTTPException(status_code=409,detail="This Broker campaign has reached its sales limit")
+    acceptance=db.query(BrokerOfferAcceptance).filter(BrokerOfferAcceptance.offer_id==offer.id,BrokerOfferAcceptance.broker_id==broker.id).first()
+    if acceptance:
+        acceptance.is_active=True; acceptance.stopped_at=None
+    else:
+        acceptance=BrokerOfferAcceptance(offer_id=offer.id,broker_id=broker.id,is_active=True); db.add(acceptance)
+    db.commit(); db.refresh(acceptance); return acceptance
+
+
+@router.delete("/opportunities/{offer_id}/accept")
+def stop_opportunity(offer_id: uuid.UUID, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    broker=_require_approved_broker(db,current_user)
+    acceptance=db.query(BrokerOfferAcceptance).filter(BrokerOfferAcceptance.offer_id==offer_id,BrokerOfferAcceptance.broker_id==broker.id,BrokerOfferAcceptance.is_active.is_(True)).first()
+    if not acceptance: return {"message":"Promotion already stopped"}
+    acceptance.is_active=False; acceptance.stopped_at=datetime.now(timezone.utc); db.commit(); return {"message":"Promotion stopped"}

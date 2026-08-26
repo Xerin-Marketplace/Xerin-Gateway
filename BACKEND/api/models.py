@@ -696,6 +696,51 @@ class Product(Base):
     )
 
 
+class BrokerOffer(Base):
+    __tablename__ = "broker_offers"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    product_id = Column(UUID(as_uuid=True), ForeignKey("products.id", ondelete="CASCADE"), nullable=False, index=True)
+    seller_id = Column(UUID(as_uuid=True), ForeignKey("sellers.id", ondelete="CASCADE"), nullable=False, index=True)
+    commission_type = Column(String(20), nullable=False, default="fixed", server_default="fixed")
+    commission_value = Column(Numeric(18, 2), nullable=False)
+    max_attributed_sales = Column(Integer, nullable=True)
+    attributed_sales_count = Column(Integer, nullable=False, default=0, server_default="0")
+    starts_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now(), index=True)
+    ends_at = Column(DateTime(timezone=True), nullable=True, index=True)
+    is_active = Column(Boolean, nullable=False, default=True, server_default="true", index=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+    product = relationship("Product")
+    seller = relationship("Seller")
+    acceptances = relationship("BrokerOfferAcceptance", back_populates="offer", cascade="all, delete-orphan")
+
+    __table_args__ = (
+        UniqueConstraint("product_id", name="uq_broker_offer_product"),
+        CheckConstraint("commission_type IN ('fixed','percentage')", name="ck_broker_offer_commission_type"),
+        CheckConstraint("commission_value > 0", name="ck_broker_offer_commission_positive"),
+        CheckConstraint("max_attributed_sales IS NULL OR max_attributed_sales > 0", name="ck_broker_offer_max_sales_positive"),
+        CheckConstraint("attributed_sales_count >= 0", name="ck_broker_offer_attributed_nonnegative"),
+    )
+
+
+class BrokerOfferAcceptance(Base):
+    __tablename__ = "broker_offer_acceptances"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    offer_id = Column(UUID(as_uuid=True), ForeignKey("broker_offers.id", ondelete="CASCADE"), nullable=False, index=True)
+    broker_id = Column(UUID(as_uuid=True), ForeignKey("brokers.id", ondelete="CASCADE"), nullable=False, index=True)
+    is_active = Column(Boolean, nullable=False, default=True, server_default="true", index=True)
+    accepted_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    stopped_at = Column(DateTime(timezone=True), nullable=True)
+
+    offer = relationship("BrokerOffer", back_populates="acceptances")
+    broker = relationship("Broker")
+
+    __table_args__ = (UniqueConstraint("offer_id", "broker_id", name="uq_broker_offer_acceptance"),)
+
+
 class ProductImage(Base):
     __tablename__ = "product_images"
 

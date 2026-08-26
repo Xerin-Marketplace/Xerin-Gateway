@@ -23,6 +23,7 @@ from api.models import (
     SellerStatus,
     SellerKYCDocument,
     Product,
+    BrokerOffer,
     ProductStatus,
 )
 from api.schemas import (
@@ -1847,6 +1848,12 @@ def approve_product(
         product.listing_expired_at = None
         product.listing_expires_at = product.approved_at + timedelta(hours=24)
     product.approval_method = "manual"
+    if getattr(product, "listing_owner_type", "seller") == "seller":
+        configured_offer = db.query(BrokerOffer).filter(BrokerOffer.product_id == product.id).first()
+        if configured_offer:
+            inv = db.query(Inventory).filter(Inventory.product_id == product.id, Inventory.variant_id.is_(None)).first()
+            now = product.approved_at
+            configured_offer.is_active = bool(inv and inv.available_quantity > 0 and configured_offer.starts_at <= now and (configured_offer.ends_at is None or configured_offer.ends_at > now))
 
     db.commit()
     db.refresh(product)

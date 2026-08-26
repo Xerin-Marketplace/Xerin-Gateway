@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from itertools import product as cartesian_product
+from decimal import Decimal
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
@@ -30,6 +31,8 @@ from api.models import (
     SellerStatus,
     Store,
     User,
+    BrokerOffer,
+    BrokerOfferAcceptance,
 )
 from api.permissions import require_permission
 from api.schemas import (
@@ -53,6 +56,8 @@ from api.schemas import (
     ProductVariantGenerateRequest,
     ProductVariantResponse,
     ProductVariantUpdate,
+    BrokerOfferUpsert,
+    BrokerOfferResponse,
 )
 from api.services.broker_listing_expiry import expire_broker_listings
 from api.services.category_image_service import delete_category_image_files, store_category_image
@@ -321,6 +326,96 @@ def create_product(
     return product
 
 
+def _broker_offer_payload(db: Session, offer: BrokerOffer, product: Product) -> dict:
+    base = Decimal(str(product.seller_sale_price if product.seller_sale_price is not None else product.seller_base_price or 0))
+    value = Decimal(str(offer.commission_value))
+    reward = value if offer.commission_type == "fixed" else (base * value / Decimal("100"))
+    reward = reward.quantize(Decimal("0.01"))
+    accepted = db.query(BrokerOfferAcceptance).filter(BrokerOfferAcceptance.offer_id == offer.id, BrokerOfferAcceptance.is_active.is_(True)).count()
+    return {
+        "id": offer.id, "product_id": offer.product_id, "seller_id": offer.seller_id,
+        "commission_type": offer.commission_type, "commission_value": offer.commission_value,
+        "max_attributed_sales": offer.max_attributed_sales, "attributed_sales_count": offer.attributed_sales_count,
+        "starts_at": offer.starts_at, "ends_at": offer.ends_at, "is_active": offer.is_active,
+        "created_at": offer.created_at, "accepted_brokers_count": accepted,
+        "estimated_reward_per_unit": reward,
+        "estimated_seller_net_per_unit": max(Decimal("0"), base - reward),
+    }
+
+
+@router.get("/{product_id}/broker-offer", response_model=BrokerOfferResponse)
+def get_broker_offer_for_product(
+    product_id: UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permission(PermissionCode.seller_products_read.value)),
+):
+    seller = get_my_seller(db, current_user, require_approved=False)
+    product = db.query(Product).filter(Product.id == product_id, Product.seller_id == seller.id, Product.listing_owner_type == "seller").first()
+    if not product:
+        raise HTTPException(status_code=404, detail="Seller product not found")
+    offer = db.query(BrokerOffer).filter(BrokerOffer.product_id == product.id).first()
+    if not offer:
+        raise HTTPException(status_code=404, detail="Broker promotion is not configured for this product")
+    return _broker_offer_payload(db, offer, product)
+
+
+@router.put("/{product_id}/broker-offer", response_model=BrokerOfferResponse)
+def upsert_broker_offer_for_product(
+    product_id: UUID,
+    data: BrokerOfferUpsert,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permission(PermissionCode.seller_products_update.value)),
+):
+    seller = get_my_seller(db, current_user)
+    product = db.query(Product).filter(Product.id == product_id, Product.seller_id == seller.id, Product.listing_owner_type == "seller").first()
+    if not product:
+        raise HTTPException(status_code=404, detail="Seller product not found")
+    inventory = db.query(Inventory).filter(Inventory.product_id == product.id, Inventory.variant_id.is_(None)).first()
+
+    base = Decimal(str(product.seller_sale_price if product.seller_sale_price is not None else product.seller_base_price or 0))
+    if data.commission_type == "fixed" and data.commission_value >= base:
+        raise HTTPException(status_code=422, detail="Fixed Broker reward must be lower than the seller's effective base price")
+    now = datetime.now(timezone.utc)
+    starts_at = data.starts_at or now
+    if data.ends_at and data.ends_at <= now:
+        raise HTTPException(status_code=422, detail="Offer end must be in the future")
+
+    offer = db.query(BrokerOffer).filter(BrokerOffer.product_id == product.id).first()
+    if offer is None:
+        offer = BrokerOffer(product_id=product.id, seller_id=seller.id)
+        db.add(offer)
+    offer.commission_type = data.commission_type
+    offer.commission_value = data.commission_value
+    offer.max_attributed_sales = data.max_attributed_sales
+    offer.starts_at = starts_at
+    offer.ends_at = data.ends_at
+    has_stock = bool(inventory and inventory.available_quantity > 0)
+    within_window = starts_at <= now and (data.ends_at is None or data.ends_at > now)
+    offer.is_active = bool(product.status == ProductStatus.approved and product.is_active and has_stock and within_window)
+    db.commit(); db.refresh(offer)
+    return _broker_offer_payload(db, offer, product)
+
+
+@router.delete("/{product_id}/broker-offer")
+def deactivate_broker_offer_for_product(
+    product_id: UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permission(PermissionCode.seller_products_update.value)),
+):
+    seller = get_my_seller(db, current_user, require_approved=False)
+    product = db.query(Product).filter(Product.id == product_id, Product.seller_id == seller.id).first()
+    if not product:
+        raise HTTPException(status_code=404, detail="Seller product not found")
+    offer = db.query(BrokerOffer).filter(BrokerOffer.product_id == product.id).first()
+    if not offer:
+        return {"message": "Broker promotion is already disabled"}
+    offer.is_active = False
+    for acceptance in db.query(BrokerOfferAcceptance).filter(BrokerOfferAcceptance.offer_id == offer.id, BrokerOfferAcceptance.is_active.is_(True)).all():
+        acceptance.is_active = False; acceptance.stopped_at = datetime.now(timezone.utc)
+    db.commit()
+    return {"message": "Broker promotion disabled"}
+
+
 @router.get("", response_model=list[ProductResponse])
 def list_products(
     db: Session = Depends(get_db),
@@ -422,6 +517,10 @@ def submit_product_for_review(
         product.approved_at = submitted_at
         product.approved_by_user_id = None
         product.approval_method = "automatic"
+        configured_offer = db.query(BrokerOffer).filter(BrokerOffer.product_id == product.id).first()
+        if configured_offer:
+            inv = db.query(Inventory).filter(Inventory.product_id == product.id, Inventory.variant_id.is_(None)).first()
+            configured_offer.is_active = bool(inv and inv.available_quantity > 0 and configured_offer.starts_at <= submitted_at and (configured_offer.ends_at is None or configured_offer.ends_at > submitted_at))
     else:
         product.status = ProductStatus.pending_review
         product.approved_at = None

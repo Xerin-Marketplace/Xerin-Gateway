@@ -1231,6 +1231,57 @@ class BrokerProductResponse(ProductResponse):
     available_quantity: int = 0
     seconds_remaining: Optional[int] = None
 
+
+class BrokerOfferUpsert(BaseModel):
+    commission_type: Literal["fixed", "percentage"] = "fixed"
+    commission_value: Decimal = Field(gt=0, max_digits=18, decimal_places=2)
+    max_attributed_sales: Optional[int] = Field(default=None, gt=0)
+    starts_at: Optional[datetime] = None
+    ends_at: Optional[datetime] = None
+
+    @model_validator(mode="after")
+    def validate_offer(self):
+        if self.commission_type == "percentage" and self.commission_value > 100:
+            raise ValueError("Percentage reward cannot exceed 100%")
+        if self.starts_at and self.ends_at and self.ends_at <= self.starts_at:
+            raise ValueError("Offer end must be after its start")
+        return self
+
+
+class BrokerOfferResponse(BaseModel):
+    id: UUID
+    product_id: UUID
+    seller_id: UUID
+    commission_type: str
+    commission_value: Decimal
+    max_attributed_sales: Optional[int] = None
+    attributed_sales_count: int = 0
+    starts_at: datetime
+    ends_at: Optional[datetime] = None
+    is_active: bool
+    created_at: datetime
+    accepted_brokers_count: int = 0
+    estimated_reward_per_unit: Decimal = Decimal("0")
+    estimated_seller_net_per_unit: Decimal = Decimal("0")
+    model_config = ORM_CONFIG
+
+
+class BrokerOpportunityResponse(BaseModel):
+    offer: BrokerOfferResponse
+    product: ProductResponse
+    available_quantity: int = 0
+    already_accepted: bool = False
+
+
+class BrokerOfferAcceptanceResponse(BaseModel):
+    id: UUID
+    offer_id: UUID
+    broker_id: UUID
+    is_active: bool
+    accepted_at: datetime
+    stopped_at: Optional[datetime] = None
+    model_config = ORM_CONFIG
+
 class AdminProductReviewDetailResponse(ProductResponse):
     seller_business_name: Optional[str] = None
     seller_contact_email: Optional[str] = None
