@@ -39,6 +39,7 @@ from api.models import (
     ShippingRate,
     ShippingZone,
     User,
+    BrokerAttribution,
 )
 from api.permissions import get_user_permissions, get_user_role_names, require_permission
 from api.schemas import (
@@ -1204,6 +1205,15 @@ def create_order(
 
         for prepared in prepared_items:
             cart_item = prepared["cart_item"]
+            broker_attribution = None
+            if cart_item.broker_attribution_id is not None:
+                broker_attribution = db.query(BrokerAttribution).filter(
+                    BrokerAttribution.id == cart_item.broker_attribution_id,
+                    BrokerAttribution.user_id == current_user.id,
+                    BrokerAttribution.product_id == cart_item.product_id,
+                    BrokerAttribution.status == "locked",
+                ).with_for_update().first()
+
             order_item = OrderItem(
                 order_id=order.id,
                 product_id=cart_item.product_id,
@@ -1223,9 +1233,19 @@ def create_order(
                     "promotion_discount_amount"
                 ],
                 customer_total=prepared["customer_total"],
+                broker_attribution_id=broker_attribution.id if broker_attribution else None,
+                broker_id=broker_attribution.broker_id if broker_attribution else None,
+                broker_referral_link_id=broker_attribution.referral_link_id if broker_attribution else None,
+                broker_offer_id=broker_attribution.offer_id if broker_attribution else None,
+                broker_commission_type=broker_attribution.commission_type if broker_attribution else None,
+                broker_commission_value=broker_attribution.commission_value if broker_attribution else None,
+                broker_commission_amount=(broker_attribution.commission_amount_per_unit * cart_item.quantity) if broker_attribution else None,
             )
             db.add(order_item)
             db.flush()
+            if broker_attribution is not None:
+                broker_attribution.status = "ordered"
+                broker_attribution.ordered_at = datetime.now(timezone.utc)
 
             create_reservation(
                 db,

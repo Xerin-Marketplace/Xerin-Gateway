@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 import uuid
+import secrets
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
 from fastapi.responses import FileResponse
@@ -13,7 +14,7 @@ from decimal import Decimal
 from api.config import settings
 from api.deps import get_current_user, get_db
 from api.enums import PermissionCode
-from api.models import Broker, BrokerKYCDocument, BrokerStatus, BrokerStatusHistory, User, Product, ProductImage, ProductStatus, Inventory, Category, Brand, MarketplaceSettings, PaymentCurrency, BrokerOffer, BrokerOfferAcceptance
+from api.models import Broker, BrokerKYCDocument, BrokerStatus, BrokerStatusHistory, User, Product, ProductImage, ProductStatus, Inventory, Category, Brand, MarketplaceSettings, PaymentCurrency, BrokerOffer, BrokerOfferAcceptance, BrokerReferralLink
 from api.permissions import require_permission
 from api.services.product_image_service import MAX_PRODUCT_IMAGES, store_product_image, delete_product_image_files
 from api.services.broker_listing_expiry import expire_broker_listings
@@ -32,6 +33,7 @@ from api.schemas import (
     BrokerOpportunityResponse,
     BrokerOfferAcceptanceResponse,
     BrokerOfferResponse,
+    BrokerReferralLinkResponse,
 )
 
 router = APIRouter(prefix="/brokers", tags=["Brokers"])
@@ -460,6 +462,36 @@ def _require_approved_broker(db: Session, user: User) -> Broker:
     return broker
 
 
+
+
+def _ensure_referral_link(db: Session, acceptance: BrokerOfferAcceptance, offer: BrokerOffer, broker: Broker) -> BrokerReferralLink:
+    link = db.query(BrokerReferralLink).filter(BrokerReferralLink.acceptance_id == acceptance.id).first()
+    if link:
+        if not link.is_active:
+            link.is_active = True
+            link.deactivated_at = None
+        return link
+    while True:
+        code = f"{broker.broker_code}-{secrets.token_hex(3).upper()}"
+        if not db.query(BrokerReferralLink).filter(BrokerReferralLink.referral_code == code).first():
+            break
+    link = BrokerReferralLink(
+        acceptance_id=acceptance.id, offer_id=offer.id, broker_id=broker.id,
+        product_id=offer.product_id, referral_code=code, is_active=True,
+    )
+    db.add(link); db.flush()
+    return link
+
+
+def _referral_payload(link: BrokerReferralLink) -> dict:
+    return {
+        "id": link.id, "acceptance_id": link.acceptance_id, "offer_id": link.offer_id,
+        "broker_id": link.broker_id, "product_id": link.product_id,
+        "referral_code": link.referral_code, "is_active": link.is_active,
+        "created_at": link.created_at,
+        "share_path": f"/products/{link.product_id}?ref={link.referral_code}",
+    }
+
 @router.get("/opportunities", response_model=list[BrokerOpportunityResponse])
 def broker_opportunities(
     search: str | None = Query(default=None, max_length=200),
@@ -515,6 +547,8 @@ def accept_opportunity(offer_id: uuid.UUID, db: Session = Depends(get_db), curre
         acceptance.is_active=True; acceptance.stopped_at=None
     else:
         acceptance=BrokerOfferAcceptance(offer_id=offer.id,broker_id=broker.id,is_active=True); db.add(acceptance)
+    db.flush()
+    _ensure_referral_link(db, acceptance, offer, broker)
     db.commit(); db.refresh(acceptance); return acceptance
 
 
@@ -523,4 +557,21 @@ def stop_opportunity(offer_id: uuid.UUID, db: Session = Depends(get_db), current
     broker=_require_approved_broker(db,current_user)
     acceptance=db.query(BrokerOfferAcceptance).filter(BrokerOfferAcceptance.offer_id==offer_id,BrokerOfferAcceptance.broker_id==broker.id,BrokerOfferAcceptance.is_active.is_(True)).first()
     if not acceptance: return {"message":"Promotion already stopped"}
-    acceptance.is_active=False; acceptance.stopped_at=datetime.now(timezone.utc); db.commit(); return {"message":"Promotion stopped"}
+    acceptance.is_active=False; acceptance.stopped_at=datetime.now(timezone.utc)
+    link=db.query(BrokerReferralLink).filter(BrokerReferralLink.acceptance_id==acceptance.id).first()
+    if link:
+        link.is_active=False; link.deactivated_at=datetime.now(timezone.utc)
+    db.commit(); return {"message":"Promotion stopped"}
+
+
+@router.get("/opportunities/{offer_id}/referral", response_model=BrokerReferralLinkResponse)
+def get_referral_link(offer_id: uuid.UUID, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    broker=_require_approved_broker(db,current_user)
+    row=db.query(BrokerOfferAcceptance,BrokerOffer).join(BrokerOffer,BrokerOffer.id==BrokerOfferAcceptance.offer_id).filter(
+        BrokerOfferAcceptance.offer_id==offer_id, BrokerOfferAcceptance.broker_id==broker.id, BrokerOfferAcceptance.is_active.is_(True)
+    ).first()
+    if not row: raise HTTPException(status_code=404,detail="Accept this opportunity before sharing it")
+    acceptance,offer=row
+    link=_ensure_referral_link(db,acceptance,offer,broker)
+    db.commit(); db.refresh(link)
+    return _referral_payload(link)

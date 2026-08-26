@@ -741,6 +741,53 @@ class BrokerOfferAcceptance(Base):
     __table_args__ = (UniqueConstraint("offer_id", "broker_id", name="uq_broker_offer_acceptance"),)
 
 
+class BrokerReferralLink(Base):
+    __tablename__ = "broker_referral_links"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    acceptance_id = Column(UUID(as_uuid=True), ForeignKey("broker_offer_acceptances.id", ondelete="CASCADE"), nullable=False, unique=True, index=True)
+    offer_id = Column(UUID(as_uuid=True), ForeignKey("broker_offers.id", ondelete="CASCADE"), nullable=False, index=True)
+    broker_id = Column(UUID(as_uuid=True), ForeignKey("brokers.id", ondelete="CASCADE"), nullable=False, index=True)
+    product_id = Column(UUID(as_uuid=True), ForeignKey("products.id", ondelete="CASCADE"), nullable=False, index=True)
+    referral_code = Column(String(40), nullable=False, unique=True, index=True)
+    is_active = Column(Boolean, nullable=False, default=True, server_default="true", index=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    deactivated_at = Column(DateTime(timezone=True), nullable=True)
+
+    acceptance = relationship("BrokerOfferAcceptance")
+    offer = relationship("BrokerOffer")
+    broker = relationship("Broker")
+    product = relationship("Product")
+
+
+class BrokerAttribution(Base):
+    __tablename__ = "broker_attributions"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    referral_link_id = Column(UUID(as_uuid=True), ForeignKey("broker_referral_links.id", ondelete="RESTRICT"), nullable=False, index=True)
+    offer_id = Column(UUID(as_uuid=True), ForeignKey("broker_offers.id", ondelete="RESTRICT"), nullable=False, index=True)
+    broker_id = Column(UUID(as_uuid=True), ForeignKey("brokers.id", ondelete="RESTRICT"), nullable=False, index=True)
+    product_id = Column(UUID(as_uuid=True), ForeignKey("products.id", ondelete="RESTRICT"), nullable=False, index=True)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    commission_type = Column(String(20), nullable=False)
+    commission_value = Column(Numeric(18,2), nullable=False)
+    commission_amount_per_unit = Column(Numeric(18,2), nullable=False)
+    status = Column(String(20), nullable=False, default="locked", server_default="locked", index=True)
+    locked_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    ordered_at = Column(DateTime(timezone=True), nullable=True)
+
+    referral_link = relationship("BrokerReferralLink")
+    offer = relationship("BrokerOffer")
+    broker = relationship("Broker")
+    product = relationship("Product")
+    user = relationship("User")
+
+    __table_args__ = (
+        CheckConstraint("commission_type IN ('fixed','percentage')", name="ck_broker_attribution_commission_type"),
+        CheckConstraint("commission_amount_per_unit >= 0", name="ck_broker_attribution_commission_nonnegative"),
+    )
+
+
 class ProductImage(Base):
     __tablename__ = "product_images"
 
@@ -976,6 +1023,7 @@ class CartItem(Base):
     )
     quantity = Column(Integer, nullable=False, default=1)
     unit_price = Column(Numeric(18, 2), nullable=False)
+    broker_attribution_id = Column(UUID(as_uuid=True), ForeignKey("broker_attributions.id", ondelete="SET NULL"), nullable=True, index=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
 
@@ -1801,6 +1849,13 @@ class OrderItem(Base):
     variant = relationship("ProductVariant")
     seller = relationship("Seller")
     store = relationship("Store")
+    broker_attribution_id = Column(UUID(as_uuid=True), ForeignKey("broker_attributions.id", ondelete="SET NULL"), nullable=True, index=True)
+    broker_id = Column(UUID(as_uuid=True), ForeignKey("brokers.id", ondelete="SET NULL"), nullable=True, index=True)
+    broker_referral_link_id = Column(UUID(as_uuid=True), ForeignKey("broker_referral_links.id", ondelete="SET NULL"), nullable=True, index=True)
+    broker_offer_id = Column(UUID(as_uuid=True), ForeignKey("broker_offers.id", ondelete="SET NULL"), nullable=True, index=True)
+    broker_commission_type = Column(String(20), nullable=True)
+    broker_commission_value = Column(Numeric(18,2), nullable=True)
+    broker_commission_amount = Column(Numeric(18,2), nullable=True)
     commission = relationship(
         "OrderItemCommission",
         back_populates="order_item",

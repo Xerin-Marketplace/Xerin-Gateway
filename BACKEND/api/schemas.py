@@ -1282,6 +1282,20 @@ class BrokerOfferAcceptanceResponse(BaseModel):
     stopped_at: Optional[datetime] = None
     model_config = ORM_CONFIG
 
+
+
+class BrokerReferralLinkResponse(BaseModel):
+    id: UUID
+    acceptance_id: UUID
+    offer_id: UUID
+    broker_id: UUID
+    product_id: UUID
+    referral_code: str
+    is_active: bool
+    created_at: datetime
+    share_path: str
+    model_config = ORM_CONFIG
+
 class AdminProductReviewDetailResponse(ProductResponse):
     seller_business_name: Optional[str] = None
     seller_contact_email: Optional[str] = None
@@ -1741,6 +1755,7 @@ class CartItemCreate(BaseModel):
     product_id: UUID
     variant_id: Optional[UUID] = None
     quantity: int = Field(ge=1)
+    broker_referral_code: Optional[str] = Field(default=None, min_length=4, max_length=40)
 
 
 class CartItemUpdate(BaseModel):

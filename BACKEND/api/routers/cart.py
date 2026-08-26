@@ -21,6 +21,11 @@ from api.models import (
     PromotionRule,
     PromotionUsage,
     User,
+    Broker,
+    BrokerOffer,
+    BrokerOfferAcceptance,
+    BrokerReferralLink,
+    BrokerAttribution,
 )
 from api.services.fx_service import FxRateUnavailableError, convert_amount_to_tzs
 from api.schemas import (
@@ -117,6 +122,34 @@ def _resolve_price(
             ),
         ) from exc
 
+
+
+
+def _lock_broker_attribution(db: Session, *, user: User, product: Product, referral_code: str, unit_price: Decimal) -> BrokerAttribution:
+    now = datetime.now(timezone.utc)
+    link = db.query(BrokerReferralLink).filter(BrokerReferralLink.referral_code == referral_code.strip(), BrokerReferralLink.is_active.is_(True)).first()
+    if not link or link.product_id != product.id:
+        raise HTTPException(status_code=422, detail="Broker referral code is invalid for this product")
+    offer = db.query(BrokerOffer).filter(BrokerOffer.id == link.offer_id, BrokerOffer.is_active.is_(True)).first()
+    acceptance = db.query(BrokerOfferAcceptance).filter(BrokerOfferAcceptance.id == link.acceptance_id, BrokerOfferAcceptance.is_active.is_(True)).first()
+    if not offer or not acceptance or offer.starts_at > now or (offer.ends_at is not None and offer.ends_at <= now):
+        raise HTTPException(status_code=409, detail="Broker referral is no longer active")
+    broker = db.query(Broker).filter(Broker.id == link.broker_id).first()
+    if not broker:
+        raise HTTPException(status_code=409, detail="Broker referral is unavailable")
+    if broker.user_id == user.id:
+        raise HTTPException(status_code=422, detail="A Broker cannot earn commission from their own purchase")
+    if offer.max_attributed_sales is not None and offer.attributed_sales_count >= offer.max_attributed_sales:
+        raise HTTPException(status_code=409, detail="Broker campaign has reached its sales limit")
+    value = Decimal(str(offer.commission_value))
+    amount = value if offer.commission_type == "fixed" else (unit_price * value / Decimal("100"))
+    amount = max(ZERO, amount).quantize(Decimal("0.01"))
+    attribution = BrokerAttribution(
+        referral_link_id=link.id, offer_id=offer.id, broker_id=broker.id, product_id=product.id, user_id=user.id,
+        commission_type=offer.commission_type, commission_value=value, commission_amount_per_unit=amount, status="locked",
+    )
+    db.add(attribution); db.flush()
+    return attribution
 
 def _subtotal(cart: Cart) -> Decimal:
     return sum(
@@ -510,9 +543,14 @@ def add_cart_item(
             raise HTTPException(status_code=409, detail="Insufficient stock")
 
         unit_price = _resolve_price(db, product, variant)
+        attribution = None
+        if data.broker_referral_code and (existing is None or existing.broker_attribution_id is None):
+            attribution = _lock_broker_attribution(db, user=current_user, product=product, referral_code=data.broker_referral_code, unit_price=unit_price)
         if existing:
             existing.quantity = requested_quantity
             existing.unit_price = unit_price
+            if existing.broker_attribution_id is None and attribution is not None:
+                existing.broker_attribution_id = attribution.id
         else:
             db.add(
                 CartItem(
@@ -521,6 +559,7 @@ def add_cart_item(
                     variant_id=data.variant_id,
                     quantity=data.quantity,
                     unit_price=unit_price,
+                    broker_attribution_id=attribution.id if attribution is not None else None,
                 )
             )
 
