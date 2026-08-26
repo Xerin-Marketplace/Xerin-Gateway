@@ -573,6 +573,10 @@ class Product(Base):
     approved_by_user_id = Column(
         UUID(as_uuid=True), ForeignKey("users.id"), nullable=True
     )
+    # Audit origin for approved products. NULL means not currently approved.
+    # Values are intentionally simple strings to preserve compatibility with
+    # existing ProductStatus enum migrations.
+    approval_method = Column(String(20), nullable=True, index=True)
 
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
@@ -3078,6 +3082,8 @@ class MarketplaceSettings(Base):
     dispute_period_hours = Column(Integer, nullable=True)
     cod_allowed = Column(Boolean, nullable=True)
     international_delivery_allowed = Column(Boolean, nullable=True)
+    # Global catalog moderation policy. False preserves the existing manual-review flow.
+    auto_approve_products = Column(Boolean, nullable=False, default=False, server_default="false")
     updated_by_id = Column(
         UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )

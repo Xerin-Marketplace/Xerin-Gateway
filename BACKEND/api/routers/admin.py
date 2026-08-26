@@ -1843,6 +1843,7 @@ def approve_product(
     product.is_active = True
     product.approved_at = datetime.now(timezone.utc)
     product.approved_by_user_id = current_user.id
+    product.approval_method = "manual"
 
     db.commit()
     db.refresh(product)
@@ -1875,6 +1876,7 @@ def reject_product(
     product.is_active = True
     product.approved_at = None
     product.approved_by_user_id = None
+    product.approval_method = None
 
     db.commit()
     db.refresh(product)

@@ -1039,6 +1039,7 @@ class ProductResponse(BaseModel):
     submitted_at: Optional[datetime] = None
     approved_at: Optional[datetime] = None
     approved_by_user_id: Optional[UUID] = None
+    approval_method: Optional[str] = None
     images: list["ProductImageResponse"] = Field(default_factory=list)
     created_at: datetime
 
@@ -3469,6 +3470,8 @@ class MarketplaceSettingsUpdate(BaseModel):
     dispute_period_hours: int = Field(ge=1, le=720)
     cod_allowed: bool
     international_delivery_allowed: bool
+    # Default keeps older admin clients backwards-compatible until the UI toggle is deployed.
+    auto_approve_products: bool = False
 
 
 class MarketplaceSettingsResponse(BaseModel):
@@ -3478,6 +3481,7 @@ class MarketplaceSettingsResponse(BaseModel):
     dispute_period_hours: int | None = None
     cod_allowed: bool | None = None
     international_delivery_allowed: bool | None = None
+    auto_approve_products: bool = False
     configured: bool = False
     updated_by_id: UUID | None = None
     created_at: datetime | None = None

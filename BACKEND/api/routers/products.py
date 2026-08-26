@@ -25,6 +25,7 @@ from api.models import (
     ProductVariant,
     ProductVariantValue,
     Inventory,
+    MarketplaceSettings,
     Seller,
     SellerStatus,
     Store,
@@ -402,9 +403,28 @@ def submit_product_for_review(
         first = db.query(ProductImage).filter(ProductImage.product_id == product.id).order_by(ProductImage.display_order.asc()).first()
         if first:
             first.is_primary = True
-    product.status = ProductStatus.pending_review
+    submitted_at = datetime.now(timezone.utc)
+    settings = (
+        db.query(MarketplaceSettings)
+        .filter(MarketplaceSettings.singleton_key == 1)
+        .first()
+    )
+    auto_approve = bool(settings and settings.auto_approve_products)
+
     product.rejection_reason = None
-    product.submitted_at = datetime.now(timezone.utc)
+    product.submitted_at = submitted_at
+    if auto_approve:
+        # All normal submission validation above still runs. Auto approval only
+        # changes the final moderation state after the product is valid.
+        product.status = ProductStatus.approved
+        product.approved_at = submitted_at
+        product.approved_by_user_id = None
+        product.approval_method = "automatic"
+    else:
+        product.status = ProductStatus.pending_review
+        product.approved_at = None
+        product.approved_by_user_id = None
+        product.approval_method = None
     _commit(db)
     db.refresh(product)
     return product
