@@ -49,6 +49,8 @@ from api.enums import (
     QuestionStatus,
     QuestionReportReason,
     LogisticsCompanyStatus,
+    LogisticsDocumentType,
+    LogisticsDocumentStatus,
     LogisticsScope,
     LogisticsMemberRole,
     LogisticsIntegrationAuthType,
@@ -945,6 +947,51 @@ class LogisticsCompany(Base):
         "LogisticsWebhookEvent", back_populates="company", cascade="all, delete-orphan"
     )
     shipments = relationship("Shipment", back_populates="logistics_company")
+    documents = relationship(
+        "LogisticsCompanyDocument",
+        back_populates="company",
+        cascade="all, delete-orphan",
+    )
+
+
+class LogisticsCompanyDocument(Base):
+    __tablename__ = "logistics_company_documents"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    logistics_company_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("logistics_companies.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    document_type = Column(String(80), nullable=False, index=True)
+    document_name = Column(String(180), nullable=False)
+    document_url = Column(Text, nullable=False)
+    original_filename = Column(String(255), nullable=False)
+    mime_type = Column(String(120), nullable=False)
+    file_size = Column(Integer, nullable=False)
+    version = Column(Integer, nullable=False, default=1, server_default="1")
+    is_current = Column(Boolean, nullable=False, default=True, server_default="true", index=True)
+    status = Column(String(40), nullable=False, default="pending_review", server_default="pending_review", index=True)
+    review_comment = Column(Text, nullable=True)
+    uploaded_by_user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    reviewed_by_user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    reviewed_at = Column(DateTime(timezone=True), nullable=True)
+    deleted_at = Column(DateTime(timezone=True), nullable=True, index=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+    company = relationship("LogisticsCompany", back_populates="documents")
+    uploaded_by = relationship("User", foreign_keys=[uploaded_by_user_id])
+    reviewed_by = relationship("User", foreign_keys=[reviewed_by_user_id])
+
+    __table_args__ = (
+        UniqueConstraint(
+            "logistics_company_id", "document_type", "version",
+            name="uq_logistics_company_document_version",
+        ),
+        CheckConstraint("version >= 1", name="ck_logistics_company_document_version_positive"),
+    )
 
 
 class LogisticsCompanyUser(Base):

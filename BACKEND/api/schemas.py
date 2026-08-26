@@ -23,7 +23,7 @@ from api.enums import DayOfWeek, StoreStatus, StoreScope, ShippingRateType
 from api.enums import (
     ShipmentStatus, WalletTransactionType, PayoutStatus, RefundStatus, RefundReason,
     SellerOrderStatus, InventoryMovementType, LogisticsCompanyStatus, LogisticsScope,
-    LogisticsMemberRole, LogisticsCompanyPermission,
+    LogisticsMemberRole, LogisticsCompanyPermission, LogisticsDocumentType, LogisticsDocumentStatus,
     LogisticsIntegrationAuthType, MultiSellerPricingStrategy, PickupJobStatus,
 )
 
@@ -2413,7 +2413,7 @@ class LogisticsCredentialsEmailResponse(BaseModel):
 
 
 class LogisticsOnboardingStep(BaseModel):
-    key: Literal["company_profile", "zones", "services", "rates", "payout_account", "webhook"]
+    key: Literal["company_profile", "company_documents", "zones", "services", "rates", "payout_account", "webhook"]
     label: str
     description: str
     completed: bool
@@ -2425,7 +2425,7 @@ class LogisticsOnboardingStatusResponse(BaseModel):
     company_id: UUID
     company_name: str
     company_status: LogisticsCompanyStatus
-    state: Literal["invited", "in_progress", "ready_for_review", "submitted", "changes_requested", "approved"]
+    state: Literal["invited", "in_progress", "ready_for_review", "submitted", "under_review", "changes_requested", "rejected", "approved"]
     required_completed: int
     required_total: int
     progress_percent: int
@@ -2446,14 +2446,65 @@ class PaginatedLogisticsOnboardingResponse(BaseModel):
 
 
 class LogisticsOnboardingReviewRequest(BaseModel):
-    decision: Literal["approve", "changes_requested"]
+    decision: Literal["approve", "changes_requested", "rejected"]
     note: Optional[str] = Field(default=None, max_length=2000)
 
     @model_validator(mode="after")
     def require_changes_note(self):
-        if self.decision == "changes_requested" and not (self.note or "").strip():
-            raise ValueError("A review note is required when requesting changes")
+        if self.decision in {"changes_requested", "rejected"} and not (self.note or "").strip():
+            raise ValueError("A review note is required when approval is not granted")
         return self
+
+
+class LogisticsDocumentResponse(BaseModel):
+    id: UUID
+    logistics_company_id: UUID
+    document_type: LogisticsDocumentType
+    document_name: str
+    original_filename: str
+    mime_type: str
+    file_size: int
+    version: int
+    is_current: bool
+    status: LogisticsDocumentStatus
+    review_comment: Optional[str] = None
+    uploaded_by_user_id: Optional[UUID] = None
+    reviewed_by_user_id: Optional[UUID] = None
+    reviewed_at: Optional[datetime] = None
+    created_at: datetime
+    updated_at: Optional[datetime] = None
+    can_edit: bool = False
+    can_delete: bool = False
+    model_config = ORM_CONFIG
+
+
+class PaginatedLogisticsDocumentResponse(BaseModel):
+    total: int
+    page: int
+    page_size: int
+    total_pages: int
+    results: list[LogisticsDocumentResponse]
+
+
+class LogisticsDocumentReviewRequest(BaseModel):
+    decision: Literal["approve", "changes_requested", "rejected"]
+    comment: Optional[str] = Field(default=None, max_length=2000)
+
+    @model_validator(mode="after")
+    def require_comment_for_nonapproval(self):
+        if self.decision in {"changes_requested", "rejected"} and not (self.comment or "").strip():
+            raise ValueError("A review comment is required when a document is not approved")
+        return self
+
+
+class LogisticsDocumentRequirementsResponse(BaseModel):
+    required_types: list[LogisticsDocumentType]
+    optional_types: list[LogisticsDocumentType]
+    uploaded_required_types: list[LogisticsDocumentType]
+    missing_required_types: list[LogisticsDocumentType]
+    all_required_uploaded: bool
+    all_required_approved: bool
+    editing_locked: bool
 
 
 class PaginatedLogisticsCompanyResponse(BaseModel):

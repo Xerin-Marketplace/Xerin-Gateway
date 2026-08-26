@@ -216,6 +216,8 @@ class PermissionCode(str, enum.Enum):
     # Permission-based: custom roles can receive these without role-name checks.
     logistics_companies_read = "logistics_companies:read"
     logistics_companies_manage = "logistics_companies:manage"
+    logistics_documents_read = "logistics_documents:read"
+    logistics_documents_review = "logistics_documents:review"
     logistics_profile_manage = "logistics_profile:manage"
     logistics_services_read = "logistics_services:read"
     logistics_services_manage = "logistics_services:manage"
@@ -285,6 +287,25 @@ class LogisticsCompanyStatus(str, enum.Enum):
     active = "active"
     suspended = "suspended"
     inactive = "inactive"
+
+
+class LogisticsDocumentType(str, enum.Enum):
+    tin_certificate = "tin_certificate"
+    registration_certificate = "registration_certificate"
+    business_license = "business_license"
+    representative_id = "representative_id"
+    proof_of_address = "proof_of_address"
+    insurance_certificate = "insurance_certificate"
+    logistics_license = "logistics_license"
+    other = "other"
+
+
+class LogisticsDocumentStatus(str, enum.Enum):
+    pending_review = "pending_review"
+    under_review = "under_review"
+    approved = "approved"
+    changes_requested = "changes_requested"
+    rejected = "rejected"
 
 
 class LogisticsScope(str, enum.Enum):

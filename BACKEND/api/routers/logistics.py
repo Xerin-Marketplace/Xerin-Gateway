@@ -2,10 +2,13 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
+from pathlib import Path
+import mimetypes
 import secrets
 from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
+from fastapi.responses import FileResponse
 from sqlalchemy import or_, func
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, joinedload, selectinload
@@ -15,6 +18,8 @@ from api.deps import get_current_user, get_db
 from api.enums import (
     LogisticsCompanyStatus,
     LogisticsCompanyPermission,
+    LogisticsDocumentType,
+    LogisticsDocumentStatus,
     LogisticsMemberRole,
     MultiSellerPricingStrategy,
     LogisticsScope,
@@ -24,6 +29,7 @@ from api.enums import (
 )
 from api.models import (
     LogisticsCompany,
+    LogisticsCompanyDocument,
     LogisticsCompanyUser,
     LogisticsIntegrationConfig,
     LogisticsPayoutAccount,
@@ -57,6 +63,10 @@ from api.schemas import (
     LogisticsOnboardingStatusResponse,
     PaginatedLogisticsOnboardingResponse,
     LogisticsOnboardingReviewRequest,
+    LogisticsDocumentResponse,
+    PaginatedLogisticsDocumentResponse,
+    LogisticsDocumentReviewRequest,
+    LogisticsDocumentRequirementsResponse,
     LogisticsCompanyAccountResponse,
     LogisticsCompanyProfileUpdate,
     LogisticsCompanyResponse,
@@ -1812,6 +1822,353 @@ def my_logistics_account(
     }
 
 
+LOGISTICS_DOCUMENT_UPLOAD_DIR = Path("private_uploads/logistics_documents")
+LOGISTICS_DOCUMENT_UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+MAX_LOGISTICS_DOCUMENT_SIZE = 15 * 1024 * 1024
+ALLOWED_LOGISTICS_DOCUMENT_EXTENSIONS = {".pdf", ".png", ".jpg", ".jpeg"}
+REQUIRED_LOGISTICS_DOCUMENT_TYPES = {
+    LogisticsDocumentType.tin_certificate.value,
+    LogisticsDocumentType.registration_certificate.value,
+    LogisticsDocumentType.business_license.value,
+    LogisticsDocumentType.representative_id.value,
+}
+OPTIONAL_LOGISTICS_DOCUMENT_TYPES = {
+    LogisticsDocumentType.proof_of_address.value,
+    LogisticsDocumentType.insurance_certificate.value,
+    LogisticsDocumentType.logistics_license.value,
+    LogisticsDocumentType.other.value,
+}
+
+
+def _current_company_documents(db: Session, company_id: UUID) -> list[LogisticsCompanyDocument]:
+    return (
+        db.query(LogisticsCompanyDocument)
+        .filter(
+            LogisticsCompanyDocument.logistics_company_id == company_id,
+            LogisticsCompanyDocument.is_current.is_(True),
+            LogisticsCompanyDocument.deleted_at.is_(None),
+        )
+        .order_by(LogisticsCompanyDocument.document_type.asc())
+        .all()
+    )
+
+
+def _document_requirements(db: Session, company: LogisticsCompany) -> dict:
+    documents = _current_company_documents(db, company.id)
+    by_type = {row.document_type: row for row in documents}
+    uploaded = sorted(REQUIRED_LOGISTICS_DOCUMENT_TYPES.intersection(by_type))
+    missing = sorted(REQUIRED_LOGISTICS_DOCUMENT_TYPES.difference(by_type))
+    all_approved = not missing and all(
+        by_type[item].status == LogisticsDocumentStatus.approved.value
+        for item in REQUIRED_LOGISTICS_DOCUMENT_TYPES
+    )
+    state = ((company.metadata_json or {}).get("onboarding") or {}).get("state")
+    return {
+        "required_types": sorted(REQUIRED_LOGISTICS_DOCUMENT_TYPES),
+        "optional_types": sorted(OPTIONAL_LOGISTICS_DOCUMENT_TYPES),
+        "uploaded_required_types": uploaded,
+        "missing_required_types": missing,
+        "all_required_uploaded": not missing,
+        "all_required_approved": all_approved,
+        "editing_locked": state in {"under_review", "approved"},
+    }
+
+
+def _ensure_company_documents_editable(company: LogisticsCompany) -> None:
+    state = ((company.metadata_json or {}).get("onboarding") or {}).get("state")
+    if company.status == LogisticsCompanyStatus.active or state in {"under_review", "approved"}:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "Company documents are view-only while administrator review is in progress "
+                "or after approval. They become editable again when changes are requested."
+            ),
+        )
+
+
+def _document_response(row: LogisticsCompanyDocument, *, can_edit: bool = False) -> dict:
+    return {
+        "id": row.id,
+        "logistics_company_id": row.logistics_company_id,
+        "document_type": row.document_type,
+        "document_name": row.document_name,
+        "original_filename": row.original_filename,
+        "mime_type": row.mime_type,
+        "file_size": row.file_size,
+        "version": row.version,
+        "is_current": row.is_current,
+        "status": row.status,
+        "review_comment": row.review_comment,
+        "uploaded_by_user_id": row.uploaded_by_user_id,
+        "reviewed_by_user_id": row.reviewed_by_user_id,
+        "reviewed_at": row.reviewed_at,
+        "created_at": row.created_at,
+        "updated_at": row.updated_at,
+        "can_edit": can_edit,
+        "can_delete": can_edit,
+    }
+
+
+def _get_company_document(db: Session, company_id: UUID, document_id: UUID, *, current_only: bool = True) -> LogisticsCompanyDocument:
+    query = db.query(LogisticsCompanyDocument).filter(
+        LogisticsCompanyDocument.id == document_id,
+        LogisticsCompanyDocument.logistics_company_id == company_id,
+        LogisticsCompanyDocument.deleted_at.is_(None),
+    )
+    if current_only:
+        query = query.filter(LogisticsCompanyDocument.is_current.is_(True))
+    row = query.first()
+    if not row:
+        raise HTTPException(404, "Logistics company document not found")
+    return row
+
+
+def _resolve_logistics_document_file(row: LogisticsCompanyDocument) -> Path:
+    path = Path(row.document_url).resolve()
+    root = LOGISTICS_DOCUMENT_UPLOAD_DIR.resolve()
+    try:
+        path.relative_to(root)
+    except ValueError as exc:
+        raise HTTPException(404, "Document file is unavailable") from exc
+    if not path.is_file():
+        raise HTTPException(404, "Document file is unavailable")
+    return path
+
+
+async def _save_logistics_document(company_id: UUID, document_type: str, upload: UploadFile) -> tuple[str, str, str, int]:
+    if not upload.filename:
+        raise HTTPException(400, "Uploaded document must have a filename")
+    extension = Path(upload.filename).suffix.lower()
+    if extension not in ALLOWED_LOGISTICS_DOCUMENT_EXTENSIONS:
+        raise HTTPException(400, "Only PDF, PNG, JPG and JPEG documents are allowed")
+    content = await upload.read()
+    if not content:
+        raise HTTPException(400, "Uploaded document is empty")
+    if len(content) > MAX_LOGISTICS_DOCUMENT_SIZE:
+        raise HTTPException(413, "Company document must not exceed 15 MB")
+    media_type = upload.content_type or mimetypes.guess_type(upload.filename)[0] or "application/octet-stream"
+    filename = f"{company_id}_{document_type}_{uuid4().hex}{extension}"
+    path = LOGISTICS_DOCUMENT_UPLOAD_DIR / filename
+    path.write_bytes(content)
+    return str(path), upload.filename, media_type, len(content)
+
+
+def _remove_logistics_document_file(path_value: str | None) -> None:
+    if not path_value:
+        return
+    try:
+        path = Path(path_value).resolve()
+        path.relative_to(LOGISTICS_DOCUMENT_UPLOAD_DIR.resolve())
+        if path.is_file():
+            path.unlink()
+    except (OSError, ValueError):
+        pass
+
+
+def _set_onboarding_state(company: LogisticsCompany, state_value: str, **values) -> None:
+    metadata = dict(company.metadata_json or {})
+    onboarding = dict(metadata.get("onboarding") or {})
+    onboarding.update({"state": state_value, **values})
+    metadata["onboarding"] = onboarding
+    company.metadata_json = metadata
+
+
+@router.get("/me/documents/requirements", response_model=LogisticsDocumentRequirementsResponse)
+def my_logistics_document_requirements(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    membership = _membership_for_user(db, current_user.id)
+    if not membership or not membership.company:
+        raise HTTPException(403, "User is not linked to a logistics company")
+    return _document_requirements(db, membership.company)
+
+
+@router.get("/me/documents", response_model=PaginatedLogisticsDocumentResponse)
+def list_my_logistics_documents(
+    page: int = Query(1, ge=1),
+    page_size: int = Query(50, ge=1, le=100),
+    include_history: bool = Query(False),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    membership = _membership_for_user(db, current_user.id)
+    if not membership or not membership.company:
+        raise HTTPException(403, "User is not linked to a logistics company")
+    query = db.query(LogisticsCompanyDocument).filter(
+        LogisticsCompanyDocument.logistics_company_id == membership.company.id,
+        LogisticsCompanyDocument.deleted_at.is_(None),
+    )
+    if not include_history:
+        query = query.filter(LogisticsCompanyDocument.is_current.is_(True))
+    total = query.count()
+    rows = query.order_by(LogisticsCompanyDocument.document_type.asc(), LogisticsCompanyDocument.version.desc()).offset((page - 1) * page_size).limit(page_size).all()
+    can_edit = not _document_requirements(db, membership.company)["editing_locked"]
+    return {"total": total, "page": page, "page_size": page_size, "total_pages": _pages(total, page_size), "results": [_document_response(row, can_edit=can_edit and row.is_current) for row in rows]}
+
+
+@router.post("/me/documents", response_model=LogisticsDocumentResponse, status_code=status.HTTP_201_CREATED)
+async def create_my_logistics_document(
+    document_type: LogisticsDocumentType = Form(...),
+    document_name: str | None = Form(default=None),
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    membership = _membership_for_user(db, current_user.id)
+    if not membership or not membership.company:
+        raise HTTPException(403, "User is not linked to a logistics company")
+    _require_company_permission(membership, LogisticsCompanyPermission.profile_manage)
+    company = membership.company
+    _ensure_company_documents_editable(company)
+    existing = db.query(LogisticsCompanyDocument).filter(
+        LogisticsCompanyDocument.logistics_company_id == company.id,
+        LogisticsCompanyDocument.document_type == document_type.value,
+        LogisticsCompanyDocument.is_current.is_(True),
+        LogisticsCompanyDocument.deleted_at.is_(None),
+    ).first()
+    if existing:
+        raise HTTPException(409, f"A current {document_type.value} document already exists; update it instead")
+    path, original, mime, size = await _save_logistics_document(company.id, document_type.value, file)
+    row = LogisticsCompanyDocument(
+        logistics_company_id=company.id, document_type=document_type.value,
+        document_name=(document_name or document_type.value.replace("_", " ").title()).strip(),
+        document_url=path, original_filename=original, mime_type=mime, file_size=size,
+        version=1, is_current=True, status=LogisticsDocumentStatus.pending_review.value,
+        uploaded_by_user_id=current_user.id,
+    )
+    try:
+        db.add(row); _commit(db); db.refresh(row)
+    except Exception:
+        _remove_logistics_document_file(path); raise
+    return _document_response(row, can_edit=True)
+
+
+@router.get("/me/documents/{document_id}", response_model=LogisticsDocumentResponse)
+def get_my_logistics_document(document_id: UUID, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    membership = _membership_for_user(db, current_user.id)
+    if not membership or not membership.company:
+        raise HTTPException(403, "User is not linked to a logistics company")
+    row = _get_company_document(db, membership.company.id, document_id, current_only=False)
+    can_edit = row.is_current and not _document_requirements(db, membership.company)["editing_locked"]
+    return _document_response(row, can_edit=can_edit)
+
+
+@router.get("/me/documents/{document_id}/view")
+def view_my_logistics_document(document_id: UUID, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    membership = _membership_for_user(db, current_user.id)
+    if not membership or not membership.company:
+        raise HTTPException(403, "User is not linked to a logistics company")
+    row = _get_company_document(db, membership.company.id, document_id, current_only=False)
+    path = _resolve_logistics_document_file(row)
+    return FileResponse(path=path, media_type=row.mime_type, filename=row.original_filename, content_disposition_type="inline")
+
+
+@router.put("/me/documents/{document_id}", response_model=LogisticsDocumentResponse)
+async def update_my_logistics_document(
+    document_id: UUID, document_name: str | None = Form(default=None), file: UploadFile | None = File(default=None),
+    db: Session = Depends(get_db), current_user: User = Depends(get_current_user),
+):
+    membership = _membership_for_user(db, current_user.id)
+    if not membership or not membership.company:
+        raise HTTPException(403, "User is not linked to a logistics company")
+    _require_company_permission(membership, LogisticsCompanyPermission.profile_manage)
+    company = membership.company; _ensure_company_documents_editable(company)
+    current = _get_company_document(db, company.id, document_id)
+    if current.status in {LogisticsDocumentStatus.under_review.value, LogisticsDocumentStatus.approved.value}:
+        raise HTTPException(409, "This document is view-only until an administrator requests changes")
+    if document_name is None and file is None:
+        raise HTTPException(400, "Provide document_name, file, or both")
+    if file is None:
+        current.document_name = (document_name or current.document_name).strip(); _commit(db); db.refresh(current)
+        return _document_response(current, can_edit=True)
+    path, original, mime, size = await _save_logistics_document(company.id, current.document_type, file)
+    next_version = current.version + 1
+    current.is_current = False
+    row = LogisticsCompanyDocument(
+        logistics_company_id=company.id, document_type=current.document_type,
+        document_name=(document_name or current.document_name).strip(), document_url=path,
+        original_filename=original, mime_type=mime, file_size=size, version=next_version, is_current=True,
+        status=LogisticsDocumentStatus.pending_review.value, uploaded_by_user_id=current_user.id,
+    )
+    try:
+        db.add(row); _commit(db); db.refresh(row)
+    except Exception:
+        _remove_logistics_document_file(path); raise
+    return _document_response(row, can_edit=True)
+
+
+@router.delete("/me/documents/{document_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_my_logistics_document(document_id: UUID, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    membership = _membership_for_user(db, current_user.id)
+    if not membership or not membership.company:
+        raise HTTPException(403, "User is not linked to a logistics company")
+    _require_company_permission(membership, LogisticsCompanyPermission.profile_manage)
+    company = membership.company; _ensure_company_documents_editable(company)
+    row = _get_company_document(db, company.id, document_id)
+    if row.status in {LogisticsDocumentStatus.under_review.value, LogisticsDocumentStatus.approved.value}:
+        raise HTTPException(409, "This document is view-only until an administrator requests changes")
+    row.is_current = False; row.deleted_at = datetime.now(timezone.utc); _commit(db)
+    return None
+
+
+@router.get("/companies/{company_id}/documents", response_model=PaginatedLogisticsDocumentResponse)
+def admin_list_logistics_documents(
+    company_id: UUID, page: int = Query(1, ge=1), page_size: int = Query(50, ge=1, le=100), include_history: bool = Query(False),
+    db: Session = Depends(get_db), _: User = Depends(require_permission(PermissionCode.logistics_documents_read.value)),
+):
+    company = db.get(LogisticsCompany, company_id)
+    if not company: raise HTTPException(404, "Logistics company not found")
+    query = db.query(LogisticsCompanyDocument).filter(LogisticsCompanyDocument.logistics_company_id == company_id, LogisticsCompanyDocument.deleted_at.is_(None))
+    if not include_history: query = query.filter(LogisticsCompanyDocument.is_current.is_(True))
+    total=query.count(); rows=query.order_by(LogisticsCompanyDocument.document_type.asc(), LogisticsCompanyDocument.version.desc()).offset((page-1)*page_size).limit(page_size).all()
+    return {"total":total,"page":page,"page_size":page_size,"total_pages":_pages(total,page_size),"results":[_document_response(row) for row in rows]}
+
+
+@router.get("/companies/{company_id}/documents/{document_id}/view")
+def admin_view_logistics_document(
+    company_id: UUID, document_id: UUID, db: Session = Depends(get_db), _: User = Depends(require_permission(PermissionCode.logistics_documents_read.value)),
+):
+    row=_get_company_document(db, company_id, document_id, current_only=False); path=_resolve_logistics_document_file(row)
+    return FileResponse(path=path, media_type=row.mime_type, filename=row.original_filename, content_disposition_type="inline")
+
+
+@router.post("/companies/{company_id}/documents/review/start", response_model=LogisticsOnboardingStatusResponse)
+def start_logistics_document_review(
+    company_id: UUID, db: Session = Depends(get_db), current_user: User = Depends(require_permission(PermissionCode.logistics_documents_review.value)),
+):
+    company=db.get(LogisticsCompany, company_id)
+    if not company: raise HTTPException(404, "Logistics company not found")
+    readiness=_company_onboarding_status(db, company)
+    if not readiness["ready_for_review"]: raise HTTPException(409, "Company onboarding is not ready for review")
+    for row in _current_company_documents(db, company_id):
+        if row.status == LogisticsDocumentStatus.pending_review.value:
+            row.status = LogisticsDocumentStatus.under_review.value
+    _set_onboarding_state(company, "under_review", review_started_at=datetime.now(timezone.utc).isoformat(), review_started_by_user_id=str(current_user.id))
+    _commit(db); db.refresh(company)
+    return _company_onboarding_status(db, company)
+
+
+@router.post("/companies/{company_id}/documents/{document_id}/review", response_model=LogisticsDocumentResponse)
+def review_logistics_document(
+    company_id: UUID, document_id: UUID, data: LogisticsDocumentReviewRequest,
+    db: Session = Depends(get_db), current_user: User = Depends(require_permission(PermissionCode.logistics_documents_review.value)),
+):
+    company=db.get(LogisticsCompany, company_id)
+    if not company: raise HTTPException(404, "Logistics company not found")
+    row=_get_company_document(db, company_id, document_id)
+    if row.status not in {LogisticsDocumentStatus.pending_review.value, LogisticsDocumentStatus.under_review.value, LogisticsDocumentStatus.changes_requested.value, LogisticsDocumentStatus.rejected.value}:
+        if row.status == LogisticsDocumentStatus.approved.value and data.decision == "approve": return _document_response(row)
+        raise HTTPException(409, "Document is not in a reviewable state")
+    row.status = {"approve": LogisticsDocumentStatus.approved.value, "changes_requested": LogisticsDocumentStatus.changes_requested.value, "rejected": LogisticsDocumentStatus.rejected.value}[data.decision]
+    row.review_comment=(data.comment or "").strip() or None; row.reviewed_by_user_id=current_user.id; row.reviewed_at=datetime.now(timezone.utc)
+    if data.decision in {"changes_requested", "rejected"}:
+        _set_onboarding_state(company, "changes_requested" if data.decision == "changes_requested" else "rejected", reviewed_at=datetime.now(timezone.utc).isoformat(), reviewed_by_user_id=str(current_user.id), review_note=row.review_comment)
+        company.status = LogisticsCompanyStatus.pending
+    _commit(db); db.refresh(row)
+    return _document_response(row)
+
+
 def _company_onboarding_status(db: Session, company: LogisticsCompany) -> dict:
     """Build one authoritative readiness view for company and admin workflows."""
     company_id = company.id
@@ -1856,9 +2213,11 @@ def _company_onboarding_status(db: Session, company: LogisticsCompany) -> dict:
         and integration.is_active
         and (integration.outbound_webhook_url or integration.api_base_url)
     )
+    document_requirements = _document_requirements(db, company)
 
     steps = [
         {"key": "company_profile", "label": "Company profile", "description": "Add legal, tax, contact and operating-address details.", "completed": profile_complete, "required": True, "href": "/logistics/settings"},
+        {"key": "company_documents", "label": "Company documents", "description": "Upload TIN, registration, business licence and authorized representative ID.", "completed": document_requirements["all_required_uploaded"], "required": True, "href": "/logistics/settings?section=documents"},
         {"key": "zones", "label": "Delivery zones", "description": "Define at least one active delivery coverage zone.", "completed": has_zones, "required": True, "href": "/logistics/pricing"},
         {"key": "services", "label": "Delivery services", "description": "Create at least one active delivery service and its ETA.", "completed": has_services, "required": True, "href": "/logistics/pricing"},
         {"key": "rates", "label": "Shipping charges", "description": "Configure at least one active rate for your service and zone.", "completed": has_rates, "required": True, "href": "/logistics/pricing"},
@@ -1873,10 +2232,14 @@ def _company_onboarding_status(db: Session, company: LogisticsCompany) -> dict:
     stored_state = onboarding.get("state")
     if company.status == LogisticsCompanyStatus.active:
         state = "approved"
+    elif stored_state == "under_review":
+        state = "under_review"
     elif stored_state == "submitted" and ready:
         state = "submitted"
     elif stored_state == "changes_requested":
         state = "changes_requested"
+    elif stored_state == "rejected":
+        state = "rejected"
     elif ready:
         # Completing every required item automatically places the company in
         # the admin-decision state; a separate submit click is not required.
@@ -1923,7 +2286,7 @@ def logistics_onboarding_review_queue(
     _: User = Depends(require_permission(PermissionCode.logistics_companies_read.value)),
 ):
     """Admin queue for company onboarding readiness and approval decisions."""
-    allowed_states = {"invited", "in_progress", "ready_for_review", "submitted", "changes_requested", "approved"}
+    allowed_states = {"invited", "in_progress", "ready_for_review", "submitted", "under_review", "changes_requested", "rejected", "approved"}
     if state_filter and state_filter not in allowed_states:
         raise HTTPException(422, "Invalid onboarding state filter")
     query = db.query(LogisticsCompany)
@@ -1939,7 +2302,7 @@ def logistics_onboarding_review_queue(
     statuses = [_company_onboarding_status(db, company) for company in query.order_by(LogisticsCompany.created_at.desc()).all()]
     if state_filter:
         statuses = [item for item in statuses if item["state"] == state_filter]
-    priority = {"submitted": 0, "changes_requested": 1, "ready_for_review": 2, "in_progress": 3, "invited": 4, "approved": 5}
+    priority = {"under_review": 0, "submitted": 1, "changes_requested": 2, "rejected": 3, "ready_for_review": 4, "in_progress": 5, "invited": 6, "approved": 7}
     statuses.sort(key=lambda item: (priority.get(item["state"], 99), item["company_name"].lower()))
     total = len(statuses)
     start = (page - 1) * page_size
@@ -2007,13 +2370,16 @@ def review_company_onboarding(
     readiness = _company_onboarding_status(db, company)
     if data.decision == "approve" and not readiness["ready_for_review"]:
         raise HTTPException(409, "Company onboarding is incomplete and cannot be approved")
+    document_requirements = _document_requirements(db, company)
+    if data.decision == "approve" and not document_requirements["all_required_approved"]:
+        raise HTTPException(409, "All required company documents must be approved before company approval")
     onboarding = (company.metadata_json or {}).get("onboarding") or {}
 
     now = datetime.now(timezone.utc).isoformat()
     metadata = dict(company.metadata_json or {})
     metadata["onboarding"] = {
         **onboarding,
-        "state": "approved" if data.decision == "approve" else "changes_requested",
+        "state": "approved" if data.decision == "approve" else data.decision,
         "reviewed_at": now,
         "reviewed_by_user_id": str(current_user.id),
         "review_note": (data.note or "").strip() or None,
