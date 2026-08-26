@@ -156,16 +156,10 @@ BACKEND/backend.zip
 update.py
 BACKEND/alembic
 BACKEND/alembic/*
-BACKEND/api/middleware
-BACKEND/api/middleware/*
 BACKEND/api/Backup
 BACKEND/api/Backup/*
 BACKEND/api/Services
 BACKEND/api/Services/*
-BACKEND/api/routers/admin.py
-BACKEND/api/routers/admin.py/*
-BACKEND/api/routers/seller.py
-BACKEND/api/routers/seller.py/*
 
 
 
