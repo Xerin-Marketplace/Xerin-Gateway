@@ -77,6 +77,15 @@ class SellerStatus(str, enum.Enum):
     suspended = "suspended"
 
 
+class BrokerStatus(str, enum.Enum):
+    pending_kyc = "pending_kyc"
+    kyc_submitted = "kyc_submitted"
+    under_review = "under_review"
+    approved = "approved"
+    rejected = "rejected"
+    suspended = "suspended"
+
+
 class User(Base):
     __tablename__ = "users"
 
@@ -94,6 +103,7 @@ class User(Base):
 
     addresses = relationship("Address", back_populates="user")
     seller_profile = relationship("Seller", back_populates="user", uselist=False)
+    broker_profile = relationship("Broker", back_populates="user", uselist=False)
     roles = relationship("UserRole", back_populates="user")
     wishlist_products = relationship(
         "WishlistProduct", back_populates="user", cascade="all, delete-orphan"
@@ -322,6 +332,65 @@ class Seller(Base):
     )
 
 
+class Broker(Base):
+    __tablename__ = "brokers"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), unique=True, nullable=False, index=True)
+    broker_code = Column(String(32), unique=True, nullable=False, index=True)
+    country = Column(String(100), nullable=False)
+    region = Column(String(100), nullable=False)
+    city = Column(String(100), nullable=False)
+    nida_number = Column(String(100), nullable=True, index=True)
+    status = Column(Enum(BrokerStatus), nullable=False, default=BrokerStatus.pending_kyc, index=True)
+    approved_at = Column(DateTime(timezone=True), nullable=True)
+    rejected_at = Column(DateTime(timezone=True), nullable=True)
+    suspended_at = Column(DateTime(timezone=True), nullable=True)
+    status_reason = Column(Text, nullable=True)
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), nullable=True, onupdate=func.now())
+
+    user = relationship("User", back_populates="broker_profile")
+    kyc_documents = relationship("BrokerKYCDocument", back_populates="broker", cascade="all, delete-orphan")
+    status_history = relationship("BrokerStatusHistory", back_populates="broker", cascade="all, delete-orphan", order_by="BrokerStatusHistory.created_at")
+
+
+class BrokerKYCDocument(Base):
+    __tablename__ = "broker_kyc_documents"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    broker_id = Column(UUID(as_uuid=True), ForeignKey("brokers.id", ondelete="CASCADE"), nullable=False, index=True)
+    document_type = Column(String(50), nullable=False, index=True)
+    file_path = Column(Text, nullable=False)
+    original_filename = Column(String(255), nullable=True)
+    mime_type = Column(String(100), nullable=True)
+    status = Column(String(30), nullable=False, default="pending", server_default="pending", index=True)
+    rejection_reason = Column(Text, nullable=True)
+    reviewed_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), nullable=True, onupdate=func.now())
+
+    broker = relationship("Broker", back_populates="kyc_documents")
+
+    __table_args__ = (
+        UniqueConstraint("broker_id", "document_type", name="uq_broker_kyc_document_type"),
+    )
+
+
+class BrokerStatusHistory(Base):
+    __tablename__ = "broker_status_history"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    broker_id = Column(UUID(as_uuid=True), ForeignKey("brokers.id", ondelete="CASCADE"), nullable=False, index=True)
+    from_status = Column(String(30), nullable=True)
+    to_status = Column(String(30), nullable=False, index=True)
+    reason = Column(Text, nullable=True)
+    changed_by_user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+    broker = relationship("Broker", back_populates="status_history")
+
+
 class SellerPickupLocation(Base):
     """Reusable seller pickup origin for logistics fulfillment.
 
@@ -538,8 +607,13 @@ class Product(Base):
     __tablename__ = "products"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    seller_id = Column(UUID(as_uuid=True), ForeignKey("sellers.id"), nullable=False)
-    store_id = Column(UUID(as_uuid=True), ForeignKey("stores.id", ondelete="RESTRICT"), nullable=False, index=True)
+    seller_id = Column(UUID(as_uuid=True), ForeignKey("sellers.id"), nullable=True)
+    store_id = Column(UUID(as_uuid=True), ForeignKey("stores.id", ondelete="RESTRICT"), nullable=True, index=True)
+    broker_id = Column(UUID(as_uuid=True), ForeignKey("brokers.id", ondelete="RESTRICT"), nullable=True, index=True)
+    listing_owner_type = Column(String(20), nullable=False, default="seller", server_default="seller", index=True)
+    listing_expires_at = Column(DateTime(timezone=True), nullable=True, index=True)
+    listing_expired_at = Column(DateTime(timezone=True), nullable=True, index=True)
+    fulfillment_location = Column(Text, nullable=True)
     category_id = Column(
         UUID(as_uuid=True), ForeignKey("categories.id"), nullable=False
     )
@@ -584,6 +658,7 @@ class Product(Base):
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
 
     seller = relationship("Seller")
+    broker = relationship("Broker")
     store = relationship("Store", back_populates="products")
     category = relationship("Category")
     brand = relationship("Brand")
@@ -608,6 +683,8 @@ class Product(Base):
 
     __table_args__ = (
         CheckConstraint("price >= 0", name="ck_product_price_nonnegative"),
+        CheckConstraint("listing_owner_type IN ('seller', 'broker')", name="ck_product_listing_owner_type"),
+        CheckConstraint("(listing_owner_type = 'seller' AND seller_id IS NOT NULL AND store_id IS NOT NULL AND broker_id IS NULL) OR (listing_owner_type = 'broker' AND broker_id IS NOT NULL AND seller_id IS NULL AND store_id IS NULL)", name="ck_product_listing_owner_consistency"),
         CheckConstraint(
             "sale_price IS NULL OR sale_price >= 0",
             name="ck_product_sale_price_nonnegative",

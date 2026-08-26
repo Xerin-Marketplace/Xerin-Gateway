@@ -50,6 +50,15 @@ class PermissionCode(str, enum.Enum):
     can_approve_sellers = "can_approve_sellers"
     can_reject_sellers = "can_reject_sellers"
 
+    # Brokers
+    broker_profile_read = "broker_profile:read"
+    broker_profile_update = "broker_profile:update"
+    broker_kyc_upload = "broker_kyc:upload"
+    broker_kyc_submit = "broker_kyc:submit"
+    admin_brokers_read = "admin_brokers:read"
+    admin_brokers_review = "admin_brokers:review"
+    admin_brokers_suspend = "admin_brokers:suspend"
+
     # Business and product catalogue
     can_create_business_categories = "can_create_business_categories"
     can_view_business_categories = "can_view_business_categories"

@@ -54,6 +54,7 @@ from api.schemas import (
     ProductVariantResponse,
     ProductVariantUpdate,
 )
+from api.services.broker_listing_expiry import expire_broker_listings
 from api.services.category_image_service import delete_category_image_files, store_category_image
 from api.services.seller_pricing import apply_product_pricing, apply_variant_pricing
 from api.services.inventory_catalog import inventory_configuration_errors
@@ -331,6 +332,7 @@ def list_products(
     skip: int = Query(default=0, ge=0),
     limit: int = Query(default=20, ge=1, le=100),
 ):
+    expire_broker_listings(db)
     query = db.query(Product).filter(Product.is_active.is_(True), Product.status == ProductStatus.approved)
     if search and search.strip():
         term = search.strip()
@@ -512,6 +514,7 @@ def get_display_currencies(db: Session = Depends(get_db)):
 
 @router.get("/{product_id}", response_model=ProductResponse)
 def get_product(product_id: UUID, db: Session = Depends(get_db)):
+    expire_broker_listings(db)
     product = db.query(Product).filter(Product.id == product_id, Product.is_active.is_(True), Product.status == ProductStatus.approved).first()
     if not product:
         raise HTTPException(status_code=404, detail="Product not found")

@@ -1,5 +1,5 @@
 from uuid import UUID
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from fastapi import Query
 from sqlalchemy import or_
 from api.security import hash_password
@@ -1843,6 +1843,9 @@ def approve_product(
     product.is_active = True
     product.approved_at = datetime.now(timezone.utc)
     product.approved_by_user_id = current_user.id
+    if getattr(product, "listing_owner_type", "seller") == "broker":
+        product.listing_expired_at = None
+        product.listing_expires_at = product.approved_at + timedelta(hours=24)
     product.approval_method = "manual"
 
     db.commit()

@@ -43,6 +43,15 @@ class SellerStatus(str, enum.Enum):
     suspended = "suspended"
 
 
+class BrokerStatus(str, enum.Enum):
+    pending_kyc = "pending_kyc"
+    kyc_submitted = "kyc_submitted"
+    under_review = "under_review"
+    approved = "approved"
+    rejected = "rejected"
+    suspended = "suspended"
+
+
 class ProductStatus(str, enum.Enum):
     draft = "draft"
     pending_review = "pending_review"
@@ -255,6 +264,20 @@ class SellerRegistrationResponse(BaseModel):
     seller_status: str
     verification_required: Literal[True] = True
     verification_purpose: Literal["register_seller"] = "register_seller"
+    otp_expires_in_seconds: int = 300
+    resumed_registration: bool = False
+
+
+class BrokerRegistrationResponse(BaseModel):
+    message: str
+    user_id: UUID
+    broker_id: UUID
+    broker_code: str
+    email: EmailStr
+    phone: str
+    broker_status: str
+    verification_required: Literal[True] = True
+    verification_purpose: Literal["register_broker"] = "register_broker"
     otp_expires_in_seconds: int = 300
     resumed_registration: bool = False
 
@@ -547,6 +570,116 @@ class SellerRegisterRequest(BaseModel):
         if not value:
             raise ValueError("At least one business category is required")
         return list(dict.fromkeys(value))
+
+class BrokerRegisterRequest(BaseModel):
+    first_name: str
+    last_name: str
+    email: EmailStr
+    phone: str
+    password: str
+    country: str
+    region: str
+    city: str
+
+    _clean_names = field_validator("first_name", "last_name", "country", "region", "city")(_clean_required_text)
+    _clean_phone = field_validator("phone")(_normalise_phone)
+    _strong_password = field_validator("password")(_validate_password)
+
+
+class BrokerUpdateRequest(BaseModel):
+    country: str | None = None
+    region: str | None = None
+    city: str | None = None
+    nida_number: str | None = Field(default=None, max_length=100)
+
+
+class BrokerResponse(BaseModel):
+    id: UUID
+    user_id: UUID
+    broker_code: str
+    country: str
+    region: str
+    city: str
+    nida_number: str | None = None
+    status: str
+    approved_at: datetime | None = None
+    rejected_at: datetime | None = None
+    suspended_at: datetime | None = None
+    status_reason: str | None = None
+    created_at: datetime
+    first_name: str | None = None
+    last_name: str | None = None
+    email: EmailStr | None = None
+    phone: str | None = None
+
+    model_config = ORM_CONFIG
+
+    @model_validator(mode="before")
+    @classmethod
+    def flatten_user(cls, value):
+        if isinstance(value, dict):
+            return value
+        user = getattr(value, "user", None)
+        return {
+            "id": getattr(value, "id", None),
+            "user_id": getattr(value, "user_id", None),
+            "broker_code": getattr(value, "broker_code", None),
+            "country": getattr(value, "country", None),
+            "region": getattr(value, "region", None),
+            "city": getattr(value, "city", None),
+            "nida_number": getattr(value, "nida_number", None),
+            "status": getattr(value, "status", None),
+            "approved_at": getattr(value, "approved_at", None),
+            "rejected_at": getattr(value, "rejected_at", None),
+            "suspended_at": getattr(value, "suspended_at", None),
+            "status_reason": getattr(value, "status_reason", None),
+            "created_at": getattr(value, "created_at", None),
+            "first_name": getattr(user, "first_name", None),
+            "last_name": getattr(user, "last_name", None),
+            "email": getattr(user, "email", None),
+            "phone": getattr(user, "phone", None),
+        }
+
+
+class BrokerKYCResponse(BaseModel):
+    id: UUID
+    broker_id: UUID
+    document_type: str
+    original_filename: str | None = None
+    mime_type: str | None = None
+    status: str
+    rejection_reason: str | None = None
+    reviewed_at: datetime | None = None
+    created_at: datetime
+    model_config = ORM_CONFIG
+
+
+class BrokerKYCStatusResponse(BaseModel):
+    broker_status: str
+    required_documents: list[str]
+    uploaded_documents: list[str]
+    missing_documents: list[str]
+    can_submit_for_review: bool
+    can_use_broker_features: bool
+
+
+class BrokerReviewRequest(BaseModel):
+    reason: str | None = Field(default=None, max_length=2000)
+
+
+class PaginatedBrokerResponse(BaseModel):
+    total: int
+    page: int
+    page_size: int
+    results: list[BrokerResponse]
+
+
+class PaginatedBrokerKYCResponse(BaseModel):
+    total: int
+    page: int
+    page_size: int
+    results: list[BrokerKYCResponse]
+
 
 class SellerApplicationRequest(BaseModel):
     """Business details submitted by an authenticated customer becoming a seller."""
@@ -887,6 +1020,9 @@ class UserMeResponse(BaseModel):
     status: str | None
     is_seller: bool
     seller_status: str | None
+    is_broker: bool = False
+    broker_status: str | None = None
+    broker_code: str | None = None
     account_type: str
     roles: list[str] = Field(default_factory=list)
 
@@ -1017,8 +1153,13 @@ class ProductUpdate(BaseModel):
 
 class ProductResponse(BaseModel):
     id: UUID
-    seller_id: UUID
-    store_id: UUID
+    seller_id: Optional[UUID] = None
+    store_id: Optional[UUID] = None
+    broker_id: Optional[UUID] = None
+    listing_owner_type: str = "seller"
+    listing_expires_at: Optional[datetime] = None
+    listing_expired_at: Optional[datetime] = None
+    fulfillment_location: Optional[str] = None
     category_id: UUID
     brand_id: Optional[UUID]
     sku: str
@@ -1045,6 +1186,50 @@ class ProductResponse(BaseModel):
 
     model_config = ORM_CONFIG
 
+
+
+
+class BrokerProductCreate(BaseModel):
+    category_id: UUID
+    brand_id: Optional[UUID] = None
+    name: str = Field(min_length=2, max_length=255)
+    description: Optional[str] = None
+    price: Decimal = Field(gt=0, max_digits=18, decimal_places=2)
+    sale_price: Optional[Decimal] = Field(default=None, ge=0, max_digits=18, decimal_places=2)
+    currency: str = "TZS"
+    weight: Optional[Decimal] = Field(default=None, ge=0)
+    quantity: int = Field(ge=1, le=1000000)
+    fulfillment_location: str = Field(min_length=3, max_length=500)
+
+    _currency = field_validator("currency")(_normalise_currency)
+
+    @model_validator(mode="after")
+    def validate_sale_price(self):
+        if self.sale_price is not None and self.sale_price > self.price:
+            raise ValueError("Sale price cannot be greater than price")
+        return self
+
+
+class BrokerProductUpdate(BaseModel):
+    category_id: Optional[UUID] = None
+    brand_id: Optional[UUID] = None
+    name: Optional[str] = Field(default=None, min_length=2, max_length=255)
+    description: Optional[str] = None
+    price: Optional[Decimal] = Field(default=None, gt=0, max_digits=18, decimal_places=2)
+    sale_price: Optional[Decimal] = Field(default=None, ge=0, max_digits=18, decimal_places=2)
+    currency: Optional[str] = None
+    weight: Optional[Decimal] = Field(default=None, ge=0)
+    quantity: Optional[int] = Field(default=None, ge=0, le=1000000)
+    fulfillment_location: Optional[str] = Field(default=None, min_length=3, max_length=500)
+
+    _currency = field_validator("currency")(_normalise_currency)
+
+
+class BrokerProductResponse(ProductResponse):
+    quantity: int = 0
+    reserved_quantity: int = 0
+    available_quantity: int = 0
+    seconds_remaining: Optional[int] = None
 
 class AdminProductReviewDetailResponse(ProductResponse):
     seller_business_name: Optional[str] = None

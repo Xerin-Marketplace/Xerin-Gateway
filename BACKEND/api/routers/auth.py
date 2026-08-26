@@ -17,6 +17,9 @@ from api.models import (
     Seller,
     SellerProfile,
     SellerStatus,
+    Broker,
+    BrokerStatus,
+    BrokerStatusHistory,
     BusinessCategory,
     SellerBusinessCategory,
     UserRole,
@@ -610,6 +613,7 @@ def register_seller(data: SellerRegisterRequest, db: Session = Depends(get_db)):
 
 def build_auth_user_response(db: Session, user: User):
     seller = db.query(Seller).filter(Seller.user_id == user.id).first()
+    broker = db.query(Broker).filter(Broker.user_id == user.id).first()
     logistics_membership = (
         db.query(LogisticsCompanyUser)
         .filter(
@@ -654,6 +658,8 @@ def build_auth_user_response(db: Session, user: User):
         account_type = "admin"
     elif seller:
         account_type = "seller"
+    elif broker:
+        account_type = "broker"
     elif logistics_membership:
         account_type = "logistics"
     else:
@@ -670,9 +676,63 @@ def build_auth_user_response(db: Session, user: User):
         "account_type": account_type,
         "is_seller": seller is not None,
         "seller_status": seller.status.value if seller else None,
+        "is_broker": broker is not None,
+        "broker_status": broker.status.value if broker else None,
+        "broker_code": broker.broker_code if broker else None,
         "roles": roles,
         "permissions": permissions,
     }
+
+
+@router.post("/register-broker", response_model=BrokerRegistrationResponse)
+def register_broker(data: BrokerRegisterRequest, db: Session = Depends(get_db)):
+    email = data.email.strip().lower()
+    phone = data.phone.strip()
+    existing_user, conflicts = _registration_conflicts(db, email=email, phone=phone)
+    resumed_registration = False
+
+    if conflicts and existing_user is None:
+        raise HTTPException(status_code=409, detail="An account with this email or phone already exists. Please sign in.")
+
+    if existing_user:
+        same_identity = existing_user.email == email and (existing_user.phone or "").strip() == phone
+        still_pending = not existing_user.is_verified and existing_user.status == UserStatus.pending_verification
+        broker = db.query(Broker).filter(Broker.user_id == existing_user.id).first()
+        if not (same_identity and still_pending and broker is not None):
+            raise HTTPException(status_code=409, detail="This email or phone already belongs to another account. Please sign in or use another account.")
+        user = existing_user
+        resumed_registration = True
+    else:
+        user = User(first_name=data.first_name.strip(), last_name=data.last_name.strip(), email=email, phone=phone, password_hash=hash_password(data.password), status=UserStatus.pending_verification, is_verified=False)
+        db.add(user)
+        db.flush()
+        _assign_role(db, user.id, "broker")
+        code = f"BRK-{str(user.id).replace('-', '')[:8].upper()}"
+        broker = Broker(user_id=user.id, broker_code=code, country=data.country.strip(), region=data.region.strip(), city=data.city.strip(), status=BrokerStatus.pending_kyc)
+        db.add(broker)
+        db.flush()
+        db.add(BrokerStatusHistory(broker_id=broker.id, from_status=None, to_status=BrokerStatus.pending_kyc.value, reason="Broker account created"))
+
+    otp = generate_otp()
+    try:
+        _invalidate_existing_otps(db, phone, purpose="register_broker")
+        db.add(OTPRequest(user_id=user.id, phone=phone, otp_hash=hash_otp(otp), purpose="register_broker", expires_at=datetime.now(timezone.utc) + timedelta(minutes=5), verified=False))
+        db.commit()
+        db.refresh(user); db.refresh(broker)
+    except Exception:
+        db.rollback(); logger.exception("Broker registration failed for %s / %s", email, phone)
+        raise HTTPException(status_code=500, detail="Broker registration failed. Please try again.")
+
+    try:
+        send_otp_email(to=email, otp=otp, recipient_name=user.first_name, purpose="register_broker")
+    except Exception as exc:
+        logger.exception("send_email failed for %s: %s", email, exc)
+    try:
+        send_sms(to=phone, message=f"Use this OTP to verify your Xerin Marketplace broker account: {otp}")
+    except Exception as exc:
+        logger.exception("send_sms failed for %s: %s", phone, exc)
+
+    return BrokerRegistrationResponse(message="Broker registration resumed. A fresh verification code has been sent." if resumed_registration else "Broker account created. Enter the verification code to continue.", user_id=user.id, broker_id=broker.id, broker_code=broker.broker_code, email=user.email, phone=user.phone, broker_status=broker.status.value if hasattr(broker.status, "value") else str(broker.status), resumed_registration=resumed_registration)
 
 
 @router.post("/login", response_model=TokenResponse)
@@ -922,7 +982,12 @@ def _find_user_by_verification_identifier(db: Session, identifier: str) -> User 
 
 def _pending_verification_purpose(db: Session, user: User) -> str:
     seller = db.query(Seller).filter(Seller.user_id == user.id).first()
-    return "register_seller" if seller is not None else "register"
+    if seller is not None:
+        return "register_seller"
+    broker = db.query(Broker).filter(Broker.user_id == user.id).first()
+    if broker is not None:
+        return "register_broker"
+    return "register"
 
 
 @router.post("/resend-verification")

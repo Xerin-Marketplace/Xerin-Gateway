@@ -12,6 +12,20 @@ logger = logging.getLogger(__name__)
 
 
 DEFAULT_ROLE_PERMISSIONS: dict[str, set[str]] = {
+    "broker": {
+        PermissionCode.view_profile.value,
+        PermissionCode.update_profile.value,
+        PermissionCode.manage_addresses.value,
+        PermissionCode.broker_profile_read.value,
+        PermissionCode.broker_profile_update.value,
+        PermissionCode.broker_kyc_upload.value,
+        PermissionCode.broker_kyc_submit.value,
+        PermissionCode.notifications_read.value,
+        PermissionCode.notifications_manage.value,
+        PermissionCode.support_tickets_create.value,
+        PermissionCode.support_tickets_read_own.value,
+        PermissionCode.support_tickets_reply_own.value,
+    },
     "customer": {
         PermissionCode.view_profile.value,
         PermissionCode.update_profile.value,
@@ -121,6 +135,9 @@ DEFAULT_ROLE_PERMISSIONS: dict[str, set[str]] = {
         PermissionCode.seller_pickup_locations_manage.value,
     },
     "admin": {
+        PermissionCode.admin_brokers_read.value,
+        PermissionCode.admin_brokers_review.value,
+        PermissionCode.admin_brokers_suspend.value,
         PermissionCode.view_profile.value,
         PermissionCode.update_profile.value,
         PermissionCode.manage_users.value,

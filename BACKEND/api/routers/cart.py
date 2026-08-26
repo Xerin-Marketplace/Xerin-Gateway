@@ -205,6 +205,9 @@ def _promotion_matches_item(
     product = item.product
 
     # A seller-funded promotion never leaks to another seller's products.
+    if getattr(product, "listing_owner_type", "seller") == "broker":
+        raise HTTPException(status_code=409, detail="Broker-owned product checkout is not enabled until the Broker fulfillment phase is activated")
+
     if promotion.seller_id is not None and product.seller_id != promotion.seller_id:
         return False
 
