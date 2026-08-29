@@ -2471,7 +2471,7 @@ def my_company_shipments(
         .options(
             selectinload(Shipment.items),
             selectinload(Shipment.tracking_events),
-            joinedload(Shipment.order),
+            selectinload(Shipment.order),
         )
         .filter(Shipment.logistics_company_id == membership.logistics_company_id)
     )
@@ -2713,7 +2713,7 @@ async def upload_logistics_pickup_proof(
 
     shipment = (
         db.query(Shipment)
-        .options(joinedload(Shipment.order))
+        .options(selectinload(Shipment.order))
         .filter(
             Shipment.id == shipment_id,
             Shipment.logistics_company_id == membership.logistics_company_id,
@@ -2785,7 +2785,7 @@ def update_company_shipment(
         .options(
             selectinload(Shipment.items),
             selectinload(Shipment.tracking_events),
-            joinedload(Shipment.order),
+            selectinload(Shipment.order),
         )
         .filter(
             Shipment.id == shipment_id,
