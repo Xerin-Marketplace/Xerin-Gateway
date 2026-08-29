@@ -62,6 +62,8 @@ class ProductStatus(str, enum.Enum):
 
 class OrderStatus(str, enum.Enum):
     pending = "pending"
+    paid = "paid"
+    # Kept for backward compatibility with older API/client payloads.
     confirmed = "confirmed"
     processing = "processing"
     shipped = "shipped"
