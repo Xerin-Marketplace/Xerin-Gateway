@@ -26,6 +26,7 @@ from api.enums import (
     PermissionCode,
     ShipmentStatus,
     PickupJobStatus,
+    NotificationEvent,
 )
 from api.models import (
     LogisticsCompany,
@@ -35,7 +36,10 @@ from api.models import (
     LogisticsPayoutAccount,
     LogisticsWebhookEvent,
     LogisticsPickupJob,
+    Seller,
     SellerOrder,
+    SellerOrderMessage,
+    SellerOrderMessageAttachment,
     Shipment,
     ShipmentHandover,
     ShipmentPickupProof,
@@ -50,6 +54,7 @@ from api.models import (
 )
 from api.permissions import get_user_permissions, require_permission
 from api.services.seller_handover import ensure_shipment_handover
+from api.services.notification_service import notification_service
 from api.services.pickup_proof_service import (
     PickupProofError,
     create_pickup_proof,
@@ -96,6 +101,8 @@ from api.schemas import (
     PaginatedShippingZoneResponse,
     ShipmentResponse,
     ShipmentHandoverResponse,
+    SellerOrderMessageCreate,
+    SellerOrderMessageResponse,
     PickupProofResponse,
     ShipmentTrackingEventCreate,
     ShippingMethodCreate,
@@ -2627,6 +2634,24 @@ def confirm_courier_arrival_for_pickup(
             created_by_id=current_user.id,
         )
     )
+
+    seller = db.query(Seller).filter(Seller.id == shipment.seller_id).first()
+    if seller is not None:
+        notification_service.notify(
+            db=db,
+            user_id=seller.user_id,
+            event=NotificationEvent.delivery_updated,
+            title="Courier has arrived for pickup",
+            message="The assigned logistics courier has arrived. Open the seller order and confirm the physical product handover.",
+            data={
+                "shipment_id": str(shipment.id),
+                "seller_order_id": str(seller_order.id),
+                "order_id": str(shipment.order_id),
+                "handover_id": str(handover.id),
+            },
+            action_url=f"/seller/orders/{seller_order.id}",
+            commit=False,
+        )
     _commit(db)
     db.refresh(handover)
     return handover
@@ -2970,21 +2995,105 @@ def update_pickup_job_status(
     job.status = data.status
     job.courier_notes = data.notes
     job.failure_reason = data.failure_reason
-    if data.status == PickupJobStatus.en_route: job.started_at = now
-    elif data.status == PickupJobStatus.arrived: job.arrived_at = now
-    elif data.status == PickupJobStatus.cancelled: job.cancelled_at = now
+    if data.status == PickupJobStatus.en_route:
+        job.started_at = now
+    elif data.status == PickupJobStatus.arrived:
+        job.arrived_at = now
+
+        # F4: the pickup-job arrival is the operational source of courier arrival.
+        # Keep the seller handover checkpoint synchronized so the Seller UI can
+        # immediately unlock "Confirm Product Handover".
+        seller_order = (
+            db.query(SellerOrder)
+            .filter(
+                SellerOrder.order_id == shipment.order_id,
+                SellerOrder.seller_id == shipment.seller_id,
+                SellerOrder.store_id == shipment.store_id,
+            )
+            .first()
+        )
+        if seller_order is None:
+            db.rollback()
+            raise HTTPException(409, "Seller order is missing for this shipment")
+
+        handover = (
+            db.query(ShipmentHandover)
+            .filter(ShipmentHandover.shipment_id == shipment.id)
+            .with_for_update()
+            .first()
+        )
+        if handover is None:
+            handover = ensure_shipment_handover(
+                db, seller_order=seller_order, shipment=shipment
+            )
+
+        if handover.status != "seller_confirmed" and handover.courier_arrived_at is None:
+            handover.status = "courier_arrived"
+            handover.courier_arrived_at = now
+            handover.courier_arrived_by_id = current_user.id
+            handover.courier_arrival_notes = data.notes
+
+            db.add(
+                ShipmentTrackingEvent(
+                    shipment_id=shipment.id,
+                    status=shipment.status,
+                    notes=data.notes or "Assigned logistics courier arrived for seller pickup",
+                    created_by_id=current_user.id,
+                )
+            )
+
+            seller = db.query(Seller).filter(Seller.id == shipment.seller_id).first()
+            if seller is not None:
+                notification_service.notify(
+                    db=db,
+                    user_id=seller.user_id,
+                    event=NotificationEvent.delivery_updated,
+                    title="Courier has arrived for pickup",
+                    message="The assigned logistics courier has arrived. Open the seller order and confirm the physical product handover.",
+                    data={
+                        "shipment_id": str(shipment.id),
+                        "seller_order_id": str(seller_order.id),
+                        "order_id": str(shipment.order_id),
+                        "handover_id": str(handover.id),
+                    },
+                    action_url=f"/seller/orders/{seller_order.id}",
+                    commit=False,
+                )
+    elif data.status == PickupJobStatus.cancelled:
+        job.cancelled_at = now
     elif data.status == PickupJobStatus.completed:
-        handover = db.query(ShipmentHandover).filter(ShipmentHandover.shipment_id == shipment.id).first()
+        handover = (
+            db.query(ShipmentHandover)
+            .filter(ShipmentHandover.shipment_id == shipment.id)
+            .with_for_update()
+            .first()
+        )
         if not handover or handover.status != "seller_confirmed":
             db.rollback()
             raise HTTPException(409, "Seller must confirm shipment handover before pickup completion")
+
+        pickup_proof = (
+            db.query(ShipmentPickupProof)
+            .filter(ShipmentPickupProof.shipment_id == shipment.id)
+            .first()
+        )
+        if pickup_proof is None:
+            db.rollback()
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "pickup_proof_required",
+                    "message": "Upload the pickup proof photo before completing the pickup job.",
+                },
+            )
+
         job.completed_at = now
         shipment.status = ShipmentStatus.dispatched
         shipment.dispatched_at = shipment.dispatched_at or now
         db.add(ShipmentTrackingEvent(
             shipment_id=shipment.id,
             status=ShipmentStatus.dispatched,
-            notes=data.notes or "Pickup completed and shipment dispatched",
+            notes=data.notes or "Pickup completed after seller handover and pickup proof",
             created_by_id=current_user.id,
         ))
     _commit(db); db.refresh(job); return job
@@ -3038,3 +3147,98 @@ def get_eligible_logistics_companies(
     
     companies = query.distinct().all()
     return companies
+
+# F2 — Logistics participation in the same public seller-order conversation.
+def _company_shipment_and_seller_order(
+    db: Session, *, shipment_id: UUID, user_id: UUID
+) -> tuple[Shipment, SellerOrder, LogisticsCompanyUser]:
+    membership = _membership_for_user(db, user_id)
+    if not membership:
+        raise HTTPException(status_code=403, detail="User is not linked to a logistics company")
+    shipment = (
+        db.query(Shipment)
+        .filter(
+            Shipment.id == shipment_id,
+            Shipment.logistics_company_id == membership.logistics_company_id,
+        )
+        .first()
+    )
+    if not shipment:
+        raise HTTPException(status_code=404, detail="Shipment not found")
+    seller_order = (
+        db.query(SellerOrder)
+        .filter(
+            SellerOrder.order_id == shipment.order_id,
+            SellerOrder.seller_id == shipment.seller_id,
+            SellerOrder.store_id == shipment.store_id,
+        )
+        .first()
+    )
+    if not seller_order:
+        raise HTTPException(status_code=404, detail="Seller order conversation not found")
+    return shipment, seller_order, membership
+
+
+@router.get(
+    "/me/shipments/{shipment_id}/messages",
+    response_model=list[SellerOrderMessageResponse],
+)
+def logistics_shipment_messages(
+    shipment_id: UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(
+        require_permission(PermissionCode.logistics_shipments_read.value)
+    ),
+):
+    _, seller_order, _ = _company_shipment_and_seller_order(
+        db, shipment_id=shipment_id, user_id=current_user.id
+    )
+    return (
+        db.query(SellerOrderMessage)
+        .options(selectinload(SellerOrderMessage.attachments))
+        .filter(
+            SellerOrderMessage.seller_order_id == seller_order.id,
+            SellerOrderMessage.is_internal.is_(False),
+        )
+        .order_by(SellerOrderMessage.created_at.asc())
+        .all()
+    )
+
+
+@router.post(
+    "/me/shipments/{shipment_id}/messages",
+    response_model=SellerOrderMessageResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+def logistics_send_shipment_message(
+    shipment_id: UUID,
+    data: SellerOrderMessageCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(
+        require_permission(PermissionCode.logistics_shipments_update.value)
+    ),
+):
+    _, seller_order, membership = _company_shipment_and_seller_order(
+        db, shipment_id=shipment_id, user_id=current_user.id
+    )
+    _require_company_permission(membership, LogisticsCompanyPermission.shipments_manage)
+    if data.is_internal:
+        raise HTTPException(status_code=400, detail="Logistics cannot create internal seller notes")
+    message = SellerOrderMessage(
+        seller_order_id=seller_order.id,
+        sender_user_id=current_user.id,
+        sender_role_label="logistics",
+        message=data.message.strip(),
+        is_internal=False,
+    )
+    db.add(message)
+    db.flush()
+    for url in data.attachment_urls:
+        db.add(SellerOrderMessageAttachment(message_id=message.id, file_url=url))
+    db.commit()
+    return (
+        db.query(SellerOrderMessage)
+        .options(selectinload(SellerOrderMessage.attachments))
+        .filter(SellerOrderMessage.id == message.id)
+        .one()
+    )

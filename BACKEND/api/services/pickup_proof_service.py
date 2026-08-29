@@ -15,6 +15,8 @@ from api.config import settings
 from api.enums import NotificationEvent, ShipmentStatus
 from api.models import (
     LogisticsCompany,
+    LogisticsCompanyUser,
+    Seller,
     Order,
     Shipment,
     ShipmentHandover,
@@ -64,6 +66,55 @@ def _release_verified_seller_funds(db: Session, *, proof: ShipmentPickupProof, a
             code="seller_settlement_conflict",
             status_code=409,
         ) from exc
+
+
+def _notify_pickup_approved_participants(
+    db: Session,
+    *,
+    proof: ShipmentPickupProof,
+    auto_approved: bool = False,
+) -> None:
+    seller = db.query(Seller).filter(Seller.id == proof.seller_id).first()
+    approval_label = "automatically approved" if auto_approved else "approved by the customer"
+    if seller is not None:
+        notification_service.notify(
+            db=db,
+            user_id=seller.user_id,
+            event=NotificationEvent.payout_updated,
+            title="Seller funds released",
+            message=f"Pickup evidence was {approval_label}. Your eligible seller funds have been released from escrow to your available wallet balance.",
+            data={
+                "pickup_proof_id": str(proof.id),
+                "shipment_id": str(proof.shipment_id),
+                "order_id": str(proof.order_id),
+            },
+            action_url="/seller/earnings",
+            commit=False,
+        )
+
+    logistics_users = (
+        db.query(LogisticsCompanyUser)
+        .filter(
+            LogisticsCompanyUser.logistics_company_id == proof.logistics_company_id,
+            LogisticsCompanyUser.is_active.is_(True),
+        )
+        .all()
+    )
+    for logistics_user in logistics_users:
+        notification_service.notify(
+            db=db,
+            user_id=logistics_user.user_id,
+            event=NotificationEvent.delivery_updated,
+            title="Pickup evidence approved",
+            message=f"Pickup evidence was {approval_label}. Continue the shipment delivery workflow.",
+            data={
+                "pickup_proof_id": str(proof.id),
+                "shipment_id": str(proof.shipment_id),
+                "order_id": str(proof.order_id),
+            },
+            action_url="/logistics/shipments",
+            commit=False,
+        )
 
 
 def _block_disputed_seller_funds(db: Session, *, proof: ShipmentPickupProof, actor_id) -> None:
@@ -197,6 +248,7 @@ def auto_approve_if_expired(
         )
     )
     _release_verified_seller_funds(db, proof=proof, actor_id=None, trigger="pickup_auto_approved")
+    _notify_pickup_approved_participants(db, proof=proof, auto_approved=True)
 
     if commit:
         db.commit()
@@ -289,7 +341,7 @@ def create_pickup_proof(
             "shipment_id": str(shipment.id),
             "order_id": str(shipment.order_id),
         },
-        action_url=f"/account/orders/{shipment.order_id}",
+        action_url="/account/pickup-verification",
         commit=False,
     )
 
@@ -338,6 +390,7 @@ def approve_pickup_proof(
         )
     )
     _release_verified_seller_funds(db, proof=proof, actor_id=customer_id, trigger="pickup_customer_approved")
+    _notify_pickup_approved_participants(db, proof=proof, auto_approved=False)
     db.commit()
     db.refresh(proof)
     return proof
@@ -400,6 +453,32 @@ def dispute_pickup_proof(
                 "order_id": str(proof.order_id),
             },
             action_url="/seller/orders",
+            commit=False,
+        )
+
+    # The assigned logistics team must also stop treating the pickup as cleared
+    # when the customer disputes the evidence.
+    logistics_users = (
+        db.query(LogisticsCompanyUser)
+        .filter(
+            LogisticsCompanyUser.logistics_company_id == proof.logistics_company_id,
+            LogisticsCompanyUser.is_active.is_(True),
+        )
+        .all()
+    )
+    for logistics_user in logistics_users:
+        notification_service.notify(
+            db=db,
+            user_id=logistics_user.user_id,
+            event=NotificationEvent.system_alert,
+            title="Pickup evidence disputed",
+            message="The customer reported a problem with the pickup evidence. Pause the normal delivery progression and wait for dispute review.",
+            data={
+                "pickup_proof_id": str(proof.id),
+                "shipment_id": str(proof.shipment_id),
+                "order_id": str(proof.order_id),
+            },
+            action_url="/logistics/shipments",
             commit=False,
         )
 

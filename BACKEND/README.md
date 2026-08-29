@@ -55,6 +55,22 @@ zip -r backend.zip . -x ".git/*" ".venv/*"
 
 systemctl status xerin-unpaid-order-expiry.timer --no-pager
 
+sudo apt update
+sudo apt install -y curl git unzip xz-utils clang cmake ninja-build g++ pkg-config libgtk-3-dev
+
+dart pub global activate fvm
+export PATH="$PATH:$HOME/.pub-cache/bin"
+
+fvm install 3.47.1
+fvm use 3.47.1
+
+cd ~/Downloads/XERIM/MOBILE/xerinmobilev2
+
+fvm flutter clean
+fvm flutter pub get
+fvm flutter run -d chrome
+
+
 
 
 

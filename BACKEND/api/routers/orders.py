@@ -33,6 +33,8 @@ from api.models import (
     PromotionRule,
     PromotionUsage,
     SellerOrder,
+    SellerOrderMessage,
+    SellerOrderMessageAttachment,
     Shipment,
     ShipmentPickupProof,
     ShippingMethod,
@@ -56,6 +58,8 @@ from api.schemas import (
     OrderResponse,
     OrderWorkflowResponse,
     OrderStatusUpdateRequest,
+    SellerOrderMessageCreate,
+    SellerOrderMessageResponse,
     PaginatedAdminOrderResponse,
     PaginatedOrderResponse,
 )
@@ -1940,3 +1944,80 @@ def update_order_status(
         db.rollback()
         raise HTTPException(status_code=500, detail="Could not update order status") from exc
 
+
+
+# F2 — Shared public order conversation for the customer, seller and assigned logistics company.
+def _customer_seller_order_or_404(db: Session, *, order_id: UUID, seller_order_id: UUID, user_id: UUID) -> SellerOrder:
+    order = db.get(Order, order_id)
+    if not order or order.user_id != user_id:
+        raise HTTPException(status_code=404, detail="Order not found")
+    seller_order = (
+        db.query(SellerOrder)
+        .filter(SellerOrder.id == seller_order_id, SellerOrder.order_id == order.id)
+        .first()
+    )
+    if not seller_order:
+        raise HTTPException(status_code=404, detail="Seller order not found")
+    return seller_order
+
+
+@router.get(
+    "/{order_id}/seller-orders/{seller_order_id}/messages",
+    response_model=list[SellerOrderMessageResponse],
+)
+def customer_order_messages(
+    order_id: UUID,
+    seller_order_id: UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    seller_order = _customer_seller_order_or_404(
+        db, order_id=order_id, seller_order_id=seller_order_id, user_id=current_user.id
+    )
+    return (
+        db.query(SellerOrderMessage)
+        .options(selectinload(SellerOrderMessage.attachments))
+        .filter(
+            SellerOrderMessage.seller_order_id == seller_order.id,
+            SellerOrderMessage.is_internal.is_(False),
+        )
+        .order_by(SellerOrderMessage.created_at.asc())
+        .all()
+    )
+
+
+@router.post(
+    "/{order_id}/seller-orders/{seller_order_id}/messages",
+    response_model=SellerOrderMessageResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+def customer_send_order_message(
+    order_id: UUID,
+    seller_order_id: UUID,
+    data: SellerOrderMessageCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    seller_order = _customer_seller_order_or_404(
+        db, order_id=order_id, seller_order_id=seller_order_id, user_id=current_user.id
+    )
+    if data.is_internal:
+        raise HTTPException(status_code=400, detail="Customers cannot create internal order notes")
+    message = SellerOrderMessage(
+        seller_order_id=seller_order.id,
+        sender_user_id=current_user.id,
+        sender_role_label="customer",
+        message=data.message.strip(),
+        is_internal=False,
+    )
+    db.add(message)
+    db.flush()
+    for url in data.attachment_urls:
+        db.add(SellerOrderMessageAttachment(message_id=message.id, file_url=url))
+    db.commit()
+    return (
+        db.query(SellerOrderMessage)
+        .options(selectinload(SellerOrderMessage.attachments))
+        .filter(SellerOrderMessage.id == message.id)
+        .one()
+    )

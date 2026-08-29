@@ -10,11 +10,12 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
 
 from api.deps import get_db
-from api.enums import PermissionCode, SellerOrderStatus, ShipmentStatus
-from api.models import Order, OrderStatus, OrderStatusHistory, SellerOrder, Shipment, ShipmentHandover, ShipmentTrackingEvent, User
+from api.enums import NotificationEvent, PermissionCode, SellerOrderStatus, ShipmentStatus
+from api.models import LogisticsCompanyUser, Order, OrderStatus, OrderStatusHistory, SellerOrder, Shipment, ShipmentHandover, ShipmentTrackingEvent, User
 from api.services.seller_fulfillment_readiness import evaluate_seller_fulfillment_readiness
 from api.services.logistics_orchestration import enqueue_ready_for_pickup
 from api.services.seller_handover import ensure_shipment_handover
+from api.services.notification_service import notification_service
 from api.permissions import require_permission
 from api.schemas import SellerFulfillmentReadinessResponse, SellerHandoverConfirmationRequest, ShipmentHandoverResponse, SellerOrderActionRequest, SellerOrderCancellationRequest, SellerOrderDispatchRequest, SellerOrderListResponse, SellerOrderSummaryResponse, SellerOrderView
 
@@ -364,6 +365,31 @@ def confirm_seller_handover(
             created_by_id=user.id,
         )
     )
+
+    logistics_users = (
+        db.query(LogisticsCompanyUser)
+        .filter(
+            LogisticsCompanyUser.logistics_company_id == shipment.logistics_company_id,
+            LogisticsCompanyUser.is_active.is_(True),
+        )
+        .all()
+    )
+    for logistics_user in logistics_users:
+        notification_service.notify(
+            db=db,
+            user_id=logistics_user.user_id,
+            event=NotificationEvent.delivery_updated,
+            title="Seller confirmed product handover",
+            message="The seller has confirmed physical handover. You can now capture and upload the pickup proof photo.",
+            data={
+                "shipment_id": str(shipment.id),
+                "seller_order_id": str(row.id),
+                "order_id": str(row.order_id),
+                "handover_id": str(handover.id),
+            },
+            action_url="/logistics/pickups",
+            commit=False,
+        )
     db.commit()
     db.refresh(handover)
     return handover

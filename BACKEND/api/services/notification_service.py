@@ -44,6 +44,32 @@ class NotificationService:
             db.commit(); db.refresh(notification)
         return notification
 
+    def create_notification(
+        self,
+        db: Session,
+        *,
+        user_id: UUID,
+        event: NotificationEvent | str,
+        title: str,
+        message: str,
+        data: dict[str, Any] | None = None,
+        action_url: str | None = None,
+        channels: Iterable[NotificationChannel] | None = None,
+        commit: bool = True,
+    ) -> Notification:
+        """Backward-compatible explicit creation API used by workflow services."""
+        return self.notify(
+            db=db,
+            user_id=user_id,
+            event=event,
+            title=title,
+            message=message,
+            data=data,
+            action_url=action_url,
+            channels=channels,
+            commit=commit,
+        )
+
     def unread_count(self, db: Session, user_id: UUID) -> int:
         return db.query(Notification).filter(Notification.user_id == user_id, Notification.is_read.is_(False)).count()
 

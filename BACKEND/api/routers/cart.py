@@ -1084,7 +1084,7 @@ def merge_guest_cart(
 
             if new_quantity > inventory.available_quantity:
                 rejected.append(
-                    {
+                     {
                         "product_id": incoming.product_id,
                         "reason": "Insufficient stock",
                         "available_quantity": inventory.available_quantity,
