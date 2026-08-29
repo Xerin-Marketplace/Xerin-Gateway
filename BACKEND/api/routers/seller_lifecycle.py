@@ -428,6 +428,79 @@ def upsert_package(
     )
 
 
+@router.get("/admin/payout-accounts")
+def admin_list_payout_accounts(
+    status_filter: str | None = Query(None, alias="status"),
+    search: str | None = Query(None, min_length=1, max_length=120),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=100),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permission(PermissionCode.seller_payout_accounts_verify.value)),
+):
+    from api.models import SellerPayoutAccount
+
+    if status_filter and status_filter not in {"pending", "verified", "rejected"}:
+        raise HTTPException(422, "status must be pending, verified or rejected")
+
+    query = (
+        db.query(SellerPayoutAccount)
+        .join(Seller, Seller.id == SellerPayoutAccount.seller_id)
+        .join(User, User.id == Seller.user_id)
+    )
+    if status_filter:
+        query = query.filter(SellerPayoutAccount.verification_status == status_filter)
+    if search:
+        term = f"%{search.strip()}%"
+        query = query.filter(
+            (Seller.business_name.ilike(term))
+            | (User.first_name.ilike(term))
+            | (User.last_name.ilike(term))
+            | (User.email.ilike(term))
+            | (SellerPayoutAccount.provider.ilike(term))
+            | (SellerPayoutAccount.account_name.ilike(term))
+            | (SellerPayoutAccount.account_number.ilike(term))
+        )
+
+    total = query.count()
+    rows = (
+        query.order_by(SellerPayoutAccount.created_at.desc())
+        .offset((page - 1) * page_size)
+        .limit(page_size)
+        .all()
+    )
+
+    return {
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+        "total_pages": 0 if total == 0 else (total + page_size - 1) // page_size,
+        "results": [
+            {
+                "id": str(account.id),
+                "seller_id": str(account.seller_id),
+                "seller_name": (
+                    f"{account.seller.user.first_name or ''} {account.seller.user.last_name or ''}".strip()
+                    or account.seller.business_name
+                ),
+                "business_name": account.seller.business_name,
+                "seller_email": account.seller.user.email,
+                "account_type": account.account_type,
+                "provider": account.provider,
+                "account_name": account.account_name,
+                "account_number": account.account_number,
+                "currency": account.currency,
+                "is_default": bool(account.is_default),
+                "is_active": bool(account.is_active),
+                "verification_status": account.verification_status,
+                "provider_reference": account.provider_reference,
+                "verified_at": account.verified_at,
+                "created_at": account.created_at,
+            }
+            for account in rows
+        ],
+    }
+
+
 @router.patch("/admin/payout-accounts/{account_id}/verification")
 def verify_payout_account(
     account_id: UUID,
