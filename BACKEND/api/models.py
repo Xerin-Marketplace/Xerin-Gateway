@@ -1317,9 +1317,6 @@ class LogisticsCompany(Base):
     supports_tracking = Column(
         Boolean, nullable=False, default=True, server_default="true"
     )
-    # F7: company declares its Xerin Express capability; Xerin validates it per domestic route.
-    xerin_delivery_tier = Column(String(20), nullable=True, index=True)
-    promised_delivery_minutes = Column(Integer, nullable=True)
     supports_webhooks = Column(
         Boolean, nullable=False, default=False, server_default="false"
     )
@@ -1725,6 +1722,10 @@ class ShippingMethod(Base):
     supports_tracking = Column(
         Boolean, nullable=False, default=True, server_default="true"
     )
+    # F7: each logistics service declares the Xerin Express tier it can meet
+    # and its promised delivery SLA. Admin validates that SLA per domestic route.
+    xerin_delivery_tier = Column(String(20), nullable=True, index=True)
+    promised_delivery_minutes = Column(Integer, nullable=True)
     min_delivery_days = Column(Integer, nullable=False, default=1)
     max_delivery_days = Column(Integer, nullable=False, default=7)
     is_active = Column(Boolean, nullable=False, default=True, server_default="true")
