@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 
 from api.deps import get_db
 from api.enums import CommissionRuleType, CommissionScope, PermissionCode
-from api.models import Category, CommissionRule, MarketplaceSettings, Product, Seller, User
+from api.models import Category, CommissionRule, MarketplaceSettings, Product, Seller, User, XerinDomesticServiceStandard
 from api.permissions import require_permission
 from api.schemas import (
     CommissionPricingPreviewRequest,
@@ -22,6 +22,7 @@ from api.schemas import (
     MarketplaceSettingsResponse,
     MarketplaceSettingsUpdate,
     PaginatedCommissionRuleResponse,
+    XerinDomesticServiceStandardCreate, XerinDomesticServiceStandardResponse,
 )
 from api.services.commission_engine import resolve_commission_rule_for_targets
 
@@ -255,3 +256,20 @@ def preview_commission_price(
         "seller_receivable_before_other_adjustments": base,
         "currency": data.currency,
     }
+
+
+@router.get("/domestic-service-standards", response_model=list[XerinDomesticServiceStandardResponse])
+def list_domestic_service_standards(db: Session = Depends(get_db), _: User = Depends(require_permission(PermissionCode.marketplace_settings_read.value))):
+    return db.query(XerinDomesticServiceStandard).order_by(XerinDomesticServiceStandard.origin_region, XerinDomesticServiceStandard.destination_region, XerinDomesticServiceStandard.tier).all()
+
+@router.post("/domestic-service-standards", response_model=XerinDomesticServiceStandardResponse, status_code=201)
+def create_domestic_service_standard(data: XerinDomesticServiceStandardCreate, db: Session = Depends(get_db), _: User = Depends(require_permission(PermissionCode.marketplace_settings_manage.value))):
+    row = XerinDomesticServiceStandard(**data.model_dump())
+    db.add(row); _commit(db); db.refresh(row); return row
+
+@router.patch("/domestic-service-standards/{rule_id}", response_model=XerinDomesticServiceStandardResponse)
+def update_domestic_service_standard(rule_id: UUID, data: XerinDomesticServiceStandardCreate, db: Session = Depends(get_db), _: User = Depends(require_permission(PermissionCode.marketplace_settings_manage.value))):
+    row = db.get(XerinDomesticServiceStandard, rule_id)
+    if not row: raise HTTPException(404, "Domestic service standard not found")
+    for key, value in data.model_dump().items(): setattr(row, key, value)
+    _commit(db); db.refresh(row); return row

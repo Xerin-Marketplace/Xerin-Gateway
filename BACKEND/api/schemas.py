@@ -3234,6 +3234,33 @@ class PaginatedShipmentResponse(BaseModel):
     results: list["ShipmentResponse"]
 
 
+class XerinDomesticServiceStandardCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    origin_region: str = Field(min_length=2, max_length=100)
+    destination_region: str = Field(min_length=2, max_length=100)
+    tier: Literal["standard", "express"]
+    max_delivery_minutes: int = Field(ge=1, le=10080)
+    is_active: bool = True
+
+class XerinDomesticServiceStandardResponse(XerinDomesticServiceStandardCreate):
+    id: UUID
+    created_at: datetime
+    updated_at: Optional[datetime] = None
+    model_config = ORM_CONFIG
+
+class XerinExpressOption(BaseModel):
+    tier: Literal["standard", "express"]
+    label: str
+    delivery_amount: Decimal
+    currency: str = "TZS"
+    promised_delivery_minutes: int
+    logistics_company_id: UUID
+    logistics_company_name: str
+    rate_id: UUID
+    method_id: UUID
+    supports_cod: bool = False
+    supports_tracking: bool = True
+
 class ShippingZoneCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
     logistics_company_id: Optional[UUID] = None
@@ -3368,6 +3395,8 @@ class ShippingMethodCreate(BaseModel):
     scope: LogisticsScope = LogisticsScope.local
     supports_cod: bool = False
     supports_tracking: bool = True
+    xerin_delivery_tier: Optional[Literal["standard", "express"]] = None
+    promised_delivery_minutes: Optional[int] = Field(default=None, ge=1, le=10080)
     min_delivery_days: int = Field(default=1, ge=0, le=365)
     max_delivery_days: int = Field(default=7, ge=0, le=365)
     is_active: bool = True
@@ -3388,6 +3417,8 @@ class ShippingMethodUpdate(BaseModel):
     scope: Optional[LogisticsScope] = None
     supports_cod: Optional[bool] = None
     supports_tracking: Optional[bool] = None
+    xerin_delivery_tier: Optional[Literal["standard", "express"]] = None
+    promised_delivery_minutes: Optional[int] = Field(default=None, ge=1, le=10080)
     min_delivery_days: Optional[int] = Field(default=None, ge=0, le=365)
     max_delivery_days: Optional[int] = Field(default=None, ge=0, le=365)
     is_active: Optional[bool] = None

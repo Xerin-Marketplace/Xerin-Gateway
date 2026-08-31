@@ -15,6 +15,8 @@ from api.models import (
     CartItem,
     CheckoutDeliveryQuote,
     ProductStatus,
+    ShippingMethod,
+    XerinDomesticServiceStandard,
 )
 from api.services.multi_seller_pricing import (
     MultiSellerPricingError,
@@ -144,6 +146,24 @@ def create_checkout_delivery_quote(
             status_code=409,
             extra={"rate_id": str(rate_id)},
         )
+
+    # F7: domestic checkout must use a validated Xerin Express tier.
+    if delivery_mode == "local":
+        method = db.get(ShippingMethod, selected["method_id"])
+        tier = (getattr(method, "xerin_delivery_tier", None) or "").lower() if method else ""
+        promised = getattr(method, "promised_delivery_minutes", None) if method else None
+        if tier not in {"standard", "express"} or not promised:
+            raise CheckoutDeliveryQuoteError("Domestic delivery must use Xerin Express Standard or Express.", code="xerin_express_service_required", status_code=409)
+        destination = db.get(Address, address_id)
+        for route in selected.get("sellers", []):
+            rule = db.query(XerinDomesticServiceStandard).filter(
+                XerinDomesticServiceStandard.is_active.is_(True),
+                XerinDomesticServiceStandard.tier == tier,
+                XerinDomesticServiceStandard.origin_region.ilike(str(route.get("origin_region") or "")),
+                XerinDomesticServiceStandard.destination_region.ilike(str(destination.region or "")),
+            ).first()
+            if rule is None or promised > rule.max_delivery_minutes:
+                raise CheckoutDeliveryQuoteError("Selected domestic service no longer meets the Xerin Express SLA for this route.", code="xerin_express_sla_not_met", status_code=409)
 
     address = db.get(Address, address_id)
     if address is None or address.user_id != user_id:

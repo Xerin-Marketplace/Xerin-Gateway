@@ -1317,6 +1317,9 @@ class LogisticsCompany(Base):
     supports_tracking = Column(
         Boolean, nullable=False, default=True, server_default="true"
     )
+    # F7: company declares its Xerin Express capability; Xerin validates it per domestic route.
+    xerin_delivery_tier = Column(String(20), nullable=True, index=True)
+    promised_delivery_minutes = Column(Integer, nullable=True)
     supports_webhooks = Column(
         Boolean, nullable=False, default=False, server_default="false"
     )
@@ -1675,6 +1678,26 @@ class ShippingZone(Base):
     )
 
 
+class XerinDomesticServiceStandard(Base):
+    """Admin-owned definition of Standard/Express for a domestic region route."""
+    __tablename__ = "xerin_domestic_service_standards"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    origin_region = Column(String(100), nullable=False, index=True)
+    destination_region = Column(String(100), nullable=False, index=True)
+    tier = Column(String(20), nullable=False, index=True)
+    max_delivery_minutes = Column(Integer, nullable=False)
+    is_active = Column(Boolean, nullable=False, default=True, server_default="true")
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), nullable=True, onupdate=func.now())
+
+    __table_args__ = (
+        UniqueConstraint("origin_region", "destination_region", "tier", name="uq_xerin_domestic_standard_route_tier"),
+        CheckConstraint("tier IN ('standard','express')", name="ck_xerin_domestic_standard_tier"),
+        CheckConstraint("max_delivery_minutes > 0", name="ck_xerin_domestic_standard_minutes_positive"),
+    )
+
+
 class ShippingMethod(Base):
     __tablename__ = "shipping_methods"
 
@@ -1730,6 +1753,14 @@ class ShippingMethod(Base):
         CheckConstraint(
             "max_delivery_days >= min_delivery_days",
             name="ck_shipping_method_days_valid",
+        ),
+        CheckConstraint(
+            "xerin_delivery_tier IS NULL OR xerin_delivery_tier IN ('standard','express')",
+            name="ck_shipping_method_xerin_delivery_tier",
+        ),
+        CheckConstraint(
+            "promised_delivery_minutes IS NULL OR promised_delivery_minutes > 0",
+            name="ck_shipping_method_promised_minutes_positive",
         ),
     )
 

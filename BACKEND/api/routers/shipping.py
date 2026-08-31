@@ -11,7 +11,7 @@ from api.enums import PermissionCode, ShippingRateType, MultiSellerPricingStrate
 from api.models import (
     Address, Cart, CartItem, CheckoutDeliveryQuote, LogisticsCompany, MarketplaceSettings, Order,
     ProductStatus, Promotion, Shipment, ShipmentStatus, ShipmentTrackingEvent,
-    ShippingMethod, ShippingRate, ShippingZone, User,
+    ShippingMethod, ShippingRate, ShippingZone, XerinDomesticServiceStandard, User,
 )
 from api.permissions import require_permission
 from api.services.fx_service import FxRateUnavailableError, convert_amount_to_tzs
@@ -45,7 +45,7 @@ from api.schemas import (
     PaginatedEligibleLogisticsCompanyResponse,
     ShippingMethodCreate, ShippingMethodResponse, ShippingMethodUpdate,
     ShippingCheckoutConfig, ShippingQuoteOption, ShippingQuoteRequest,
-    ShippingRateCreate, ShippingRateResponse, ShippingZoneCreate,
+    ShippingRateCreate, ShippingRateResponse, ShippingZoneCreate, XerinExpressOption,
     ShippingZoneResponse, ShippingZoneUpdate, ShipmentResponse,
     ShipmentTrackingEventCreate,
 )
@@ -408,6 +408,66 @@ def eligible_logistics_companies(
             detail=detail,
         ) from exc
 
+
+@router.post("/xerin-express-options", response_model=list[XerinExpressOption])
+def xerin_express_options(
+    data: EligibleLogisticsSelectionRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Return one best Xerin Express option per domestic tier.
+
+    Customers choose Standard/Express; Xerin selects the cheapest eligible partner
+    whose declared SLA satisfies Admin's region-to-region service standard.
+    """
+    detected = detect_cart_delivery_mode(db, user_id=current_user.id, address_id=data.address_id)
+    if detected["delivery_mode"] != "local":
+        raise HTTPException(409, detail={"code": "xerin_express_domestic_only", "message": "Xerin Express tier selection is for domestic delivery only."})
+    address = db.get(Address, data.address_id)
+    if not address or address.user_id != current_user.id:
+        raise HTTPException(404, "Address not found")
+    eligible = find_eligible_logistics_companies(db, user_id=current_user.id, address_id=data.address_id, delivery_mode="local", page=1, page_size=100)
+    best: dict[str, dict] = {}
+    for company_row in eligible.get("results", []):
+        company_id = company_row["logistics_company_id"] if isinstance(company_row, dict) else company_row.logistics_company_id
+        try:
+            pricing = calculate_multi_seller_delivery_pricing(db, user_id=current_user.id, address_id=data.address_id, logistics_company_id=company_id, delivery_mode="local", method_id=None)
+        except MultiSellerPricingError:
+            continue
+        for option in pricing.get("options", []):
+            method = db.get(ShippingMethod, option["method_id"])
+            tier = (getattr(method, "xerin_delivery_tier", None) or "").lower()
+            promised = getattr(method, "promised_delivery_minutes", None)
+            if tier not in {"standard", "express"} or not promised:
+                continue
+            route_ok = True
+            for route in option.get("sellers", []):
+                origin_region = str(route.get("origin_region") or "").strip()
+                destination_region = str(address.region or "").strip()
+                rule = db.query(XerinDomesticServiceStandard).filter(
+                    XerinDomesticServiceStandard.is_active.is_(True),
+                    XerinDomesticServiceStandard.tier == tier,
+                    XerinDomesticServiceStandard.origin_region.ilike(origin_region),
+                    XerinDomesticServiceStandard.destination_region.ilike(destination_region),
+                ).first()
+                if rule is None or promised > rule.max_delivery_minutes:
+                    route_ok = False
+                    break
+            if not route_ok:
+                continue
+            candidate = {
+                "tier": tier, "label": "Express" if tier == "express" else "Standard",
+                "delivery_amount": option["delivery_amount"], "currency": "TZS",
+                "promised_delivery_minutes": promised,
+                "logistics_company_id": option["logistics_company_id"],
+                "logistics_company_name": option["logistics_company_name"],
+                "rate_id": option["rate_id"], "method_id": option["method_id"],
+                "supports_cod": option["supports_cod"], "supports_tracking": option["supports_tracking"],
+            }
+            current = best.get(tier)
+            if current is None or (Decimal(candidate["delivery_amount"]), promised) < (Decimal(current["delivery_amount"]), current["promised_delivery_minutes"]):
+                best[tier] = candidate
+    return [best[t] for t in ("standard", "express") if t in best]
 
 @router.post("/quote", response_model=list[ShippingQuoteOption])
 def quote_shipping(

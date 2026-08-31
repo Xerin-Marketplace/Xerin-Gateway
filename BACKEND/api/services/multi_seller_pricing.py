@@ -311,6 +311,7 @@ def calculate_multi_seller_delivery_pricing(
                     "store_id": route.get("store_id"),
                     "store_name": route.get("store_name"),
                     "origin_country": route.get("origin_country"),
+                    "origin_region": route.get("origin_region"),
                     "route_type": route.get("route_type"),
                     "pickup_location_id": route["pickup_location_id"],
                     "pickup_label": route["pickup_label"],
