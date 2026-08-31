@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from decimal import Decimal
 from typing import Any
+import re
 from urllib import response
 
 import requests
@@ -20,6 +21,49 @@ class MapProviderError(RuntimeError):
     def __init__(self, message: str, *, status_code: int | None = None):
         super().__init__(message)
         self.status_code = status_code
+
+
+# F8: map providers are allowed to use their own spelling/labels, but Xerin's
+# routing engine must persist canonical administrative names.  Keep aliases
+# intentionally small and explicit so we never "guess" unrelated worldwide
+# locations.  New provider aliases can be added here without touching checkout.
+_CANONICAL_LOCATION_ALIASES: dict[str, str] = {
+    "dar es salam": "Dar es Salaam",
+    "dar es salaam": "Dar es Salaam",
+    "united republic of tanzania": "Tanzania",
+    "tanzania, united republic of": "Tanzania",
+}
+
+
+def canonical_location_name(value: str | None) -> str | None:
+    """Return a stable Xerin label for a provider-supplied location value."""
+    if value is None:
+        return None
+    cleaned = " ".join(str(value).strip().split())
+    if not cleaned:
+        return None
+    return _CANONICAL_LOCATION_ALIASES.get(cleaned.casefold(), cleaned)
+
+
+def canonical_formatted_address(value: str | None) -> str | None:
+    """Normalize known provider spelling aliases without destroying display text."""
+    if value is None:
+        return None
+    cleaned = " ".join(str(value).strip().split())
+    if not cleaned:
+        return None
+    # Google may return "Dar es Salam" in formatted_address even while Xerin's
+    # canonical region is "Dar es Salaam".  Normalize the display text too so
+    # the user does not see a spelling that will later fail route matching.
+    cleaned = re.sub(r"\bDar\s+es\s+Salam\b", "Dar es Salaam", cleaned, flags=re.IGNORECASE)
+    return cleaned
+
+
+def _canonicalize_address_fields(address: dict[str, str | None]) -> dict[str, str | None]:
+    normalized = dict(address)
+    for key in ("country", "region", "city", "district", "ward"):
+        normalized[key] = canonical_location_name(normalized.get(key))
+    return normalized
 
 
 def _request_session() -> requests.Session:
@@ -62,7 +106,7 @@ def _address_fields(values: dict[str, str]) -> dict[str, str | None]:
     district = values.get("administrative_area_level_2") or values.get("sublocality_level_1") or values.get("sublocality")
     ward = values.get("administrative_area_level_3") or values.get("sublocality_level_2") or values.get("neighborhood")
     street = " ".join(part for part in (values.get("street_number"), values.get("route")) if part) or None
-    return {
+    return _canonicalize_address_fields({
         "country": values.get("country"),
         "country_code": values.get("country_code"),
         "region": values.get("administrative_area_level_1"),
@@ -71,7 +115,7 @@ def _address_fields(values: dict[str, str]) -> dict[str, str | None]:
         "ward": ward,
         "street": street,
         "postal_code": values.get("postal_code"),
-    }
+    })
 
 @dataclass
 class GoogleMapLocationClient:
@@ -145,7 +189,7 @@ class GoogleMapLocationClient:
         if latitude is None or longitude is None or not formatted:
             raise MapProviderError("Selected place did not contain a usable address and coordinates")
         address = _address_fields(_component_map_new(data.get("addressComponents")))
-        return {"provider": "google", "place_id": data.get("id") or place_id, "display_name": (data.get("displayName") or {}).get("text"), "formatted_address": formatted, "latitude": Decimal(str(latitude)), "longitude": Decimal(str(longitude)), **address}
+        return {"provider": "google", "place_id": data.get("id") or place_id, "display_name": (data.get("displayName") or {}).get("text"), "formatted_address": canonical_formatted_address(formatted), "latitude": Decimal(str(latitude)), "longitude": Decimal(str(longitude)), **address}
     
 
     def reverse_geocode(self, *, latitude: Decimal, longitude: Decimal, language: str | None = None) -> dict[str, Any]:
@@ -159,7 +203,7 @@ class GoogleMapLocationClient:
             raise MapProviderError("No address was found for the selected map point")
         row = rows[0]
         address = _address_fields(_component_map_legacy(row.get("address_components")))
-        return {"provider": "google", "place_id": row.get("place_id"), "display_name": None, "formatted_address": row.get("formatted_address") or f"{latitude},{longitude}", "latitude": latitude, "longitude": longitude, **address}
+        return {"provider": "google", "place_id": row.get("place_id"), "display_name": None, "formatted_address": canonical_formatted_address(row.get("formatted_address")) or f"{latitude},{longitude}", "latitude": latitude, "longitude": longitude, **address}
 
     @staticmethod
     def _ensure_ok(response: requests.Response, message: str) -> None:
