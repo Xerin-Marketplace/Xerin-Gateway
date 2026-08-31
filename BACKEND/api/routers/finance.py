@@ -18,6 +18,7 @@ from api.models import (
     PaymentFxRate,
     PaymentProviderConfig,
     Order,
+    SettlementProtectionClaim,
     FinancialReconciliationRecord,
     User,
 )
@@ -34,6 +35,9 @@ from api.schemas import (
     FxConversionRequest,
     FxConversionResponse,
     PaginatedEscrowHoldResponse,
+    PaginatedSettlementProtectionClaimResponse,
+    SettlementProtectionClaimResponse,
+    SettlementProtectionClaimResolve,
     OrderFinanceLifecycleResponse,
     FinancialReconciliationCreate,
     FinancialReconciliationEventCreate,
@@ -257,6 +261,77 @@ def convert_currency(
         rate_source=source,
         effective_at=effective_at,
     )
+
+
+@router.get("/protection-claims", response_model=PaginatedSettlementProtectionClaimResponse)
+def list_protection_claims(
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=100),
+    status_filter: str | None = Query(None, alias="status"),
+    responsibility: str | None = Query(None),
+    db: Session = Depends(get_db),
+    _: User = Depends(require_permission(PermissionCode.escrow_read.value)),
+):
+    query = db.query(SettlementProtectionClaim)
+    if status_filter and status_filter != "all":
+        query = query.filter(SettlementProtectionClaim.status == status_filter)
+    if responsibility and responsibility != "all":
+        query = query.filter(SettlementProtectionClaim.likely_responsibility == responsibility)
+    total = query.count()
+    rows = query.order_by(SettlementProtectionClaim.created_at.desc()).offset((page - 1) * page_size).limit(page_size).all()
+    return {"total": total, "page": page, "page_size": page_size, "total_pages": _pages(total, page_size), "results": rows}
+
+
+@router.post("/protection-claims/{claim_id}/resolve", response_model=SettlementProtectionClaimResponse)
+def resolve_protection_claim(
+    claim_id: UUID,
+    data: SettlementProtectionClaimResolve,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permission(PermissionCode.escrow_manage.value)),
+):
+    claim = db.query(SettlementProtectionClaim).filter(SettlementProtectionClaim.id == claim_id).with_for_update().first()
+    if not claim:
+        raise HTTPException(404, "Protection claim not found")
+    if claim.status in {"resolved", "rejected", "seller_liable", "logistics_liable", "customer_liable"}:
+        return claim
+
+    holds_query = db.query(EscrowHold).filter(EscrowHold.order_id == claim.order_id)
+    if claim.order_item_id is not None:
+        holds_query = holds_query.filter(EscrowHold.order_item_id == claim.order_item_id)
+    holds = holds_query.with_for_update().all()
+
+    claim.likely_responsibility = data.responsibility
+    claim.admin_resolution_note = data.note
+    claim.resolved_by_id = current_user.id
+    claim.resolved_at = datetime.now(timezone.utc)
+
+    if data.action in {"release_seller", "reject_claim"}:
+        for hold in holds:
+            if hold.status == "disputed":
+                hold.status = "held"
+                hold.disputed_at = None
+            if hold.status not in {"released", "refunded"}:
+                try:
+                    release_escrow_hold_funds(
+                        db,
+                        hold=hold,
+                        note=f"Protection claim {claim.id} resolved: {data.note}",
+                        created_by_id=current_user.id,
+                        event_type="claim_resolved_seller_release",
+                    )
+                except ValueError as exc:
+                    db.rollback()
+                    raise HTTPException(409, str(exc)) from exc
+        claim.status = "rejected" if data.action == "reject_claim" else (
+            "logistics_liable" if data.responsibility == "logistics" else
+            "customer_liable" if data.responsibility == "customer" else "resolved"
+        )
+    else:
+        claim.status = "seller_liable" if data.responsibility == "seller" else "under_review"
+
+    db.commit()
+    db.refresh(claim)
+    return claim
 
 
 @router.get("/escrow-holds", response_model=PaginatedEscrowHoldResponse)

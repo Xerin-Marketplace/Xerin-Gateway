@@ -81,14 +81,14 @@ def _notify_pickup_approved_participants(
             db=db,
             user_id=seller.user_id,
             event=NotificationEvent.payout_updated,
-            title="Seller funds released",
-            message=f"Pickup evidence was {approval_label}. Your eligible seller funds have been released from escrow to your available wallet balance.",
+            title="Pickup custody verified",
+            message=f"Pickup evidence was {approval_label}. Xerin has recorded the seller handover evidence. Seller funds remain protected until verified delivery and the customer-protection settlement rule is satisfied.",
             data={
                 "pickup_proof_id": str(proof.id),
                 "shipment_id": str(proof.shipment_id),
                 "order_id": str(proof.order_id),
             },
-            action_url="/seller/earnings",
+            action_url="/seller/orders",
             commit=False,
         )
 

@@ -18,6 +18,7 @@ from api.models import (
     CartItem,
     Coupon,
     CheckoutDeliveryQuote,
+    EscrowEvent,
     EscrowHold,
     Inventory,
     LogisticsCompany,
@@ -37,6 +38,7 @@ from api.models import (
     SellerOrderMessageAttachment,
     Shipment,
     ShipmentPickupProof,
+    SettlementProtectionClaim,
     ShippingMethod,
     ShippingRate,
     ShippingZone,
@@ -48,6 +50,8 @@ from api.schemas import (
     AdminOrderResponse,
     CustomerEscrowApprovalRequest,
     CustomerEscrowSummary,
+    SettlementProtectionClaimCreate,
+    SettlementProtectionClaimResponse,
     CustomerOrderDetailResponse,
     CustomerOrderTrackingResponse,
     PaginatedCustomerTrackingEventResponse,
@@ -67,7 +71,7 @@ from api.enums import InventoryReservationStatus, ShipmentStatus
 from api.services.eligible_logistics import EligibleLogisticsError, detect_cart_delivery_mode
 from api.services.fx_service import FxRateUnavailableError, convert_amount_to_tzs
 from api.services.inventory_reservations import create_reservation, release_order_reservations
-from api.services.escrow_service import order_escrow_summary, release_order_escrow
+from api.services.escrow_service import order_escrow_summary, release_order_escrow, release_order_item_escrow
 from api.services.customer_shipment_tracking import (
     CustomerShipmentTrackingError,
     get_customer_order_tracking,
@@ -98,6 +102,44 @@ ALLOWED_TRANSITIONS: dict[OrderStatus, set[OrderStatus]] = {
     OrderStatus.cancelled: set(),
     OrderStatus.refunded: set(),
 }
+
+
+# F6 customer-protection claim triage. Only reasons that plausibly implicate the
+# seller or remain genuinely undetermined freeze seller escrow automatically.
+SELLER_HOLD_CLAIM_REASONS = {
+    "wrong_product": "seller",
+    "not_as_described": "seller",
+    "defective_on_arrival": "seller",
+    "damaged_on_arrival": "undetermined",
+    "missing_item": "undetermined",
+}
+LOGISTICS_CLAIM_REASONS = {
+    "package_damaged",
+    "package_tampered",
+    "wrong_delivery_recipient",
+    "entire_delivery_missing",
+    "late_delivery",
+}
+CUSTOMER_NON_ESCROW_REASONS = {"customer_accidental_damage", "change_of_mind"}
+
+
+def _order_has_verified_delivery(order: Order) -> bool:
+    return bool(order.shipments) and all(
+        getattr(shipment.status, "value", shipment.status) == "delivered"
+        and shipment.delivery_proof is not None
+        and shipment.delivery_proof.status == "verified"
+        for shipment in order.shipments
+    )
+
+
+def _claim_responsibility(reason: str) -> str:
+    if reason in SELLER_HOLD_CLAIM_REASONS:
+        return SELLER_HOLD_CLAIM_REASONS[reason]
+    if reason in LOGISTICS_CLAIM_REASONS:
+        return "logistics"
+    if reason in CUSTOMER_NON_ESCROW_REASONS:
+        return "customer"
+    return "undetermined"
 
 
 
@@ -1736,6 +1778,161 @@ def approve_order_receipt(
     db.refresh(order)
     return order_escrow_summary(db, order)
 
+
+
+@router.post(
+    "/{order_id}/accept-items/{order_item_id}",
+    response_model=CustomerEscrowSummary,
+)
+def accept_delivered_order_item(
+    order_id: UUID,
+    order_item_id: UUID,
+    data: CustomerEscrowApprovalRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    order = (
+        db.query(Order)
+        .options(selectinload(Order.payments), selectinload(Order.shipments))
+        .filter(Order.id == order_id, Order.user_id == current_user.id)
+        .with_for_update()
+        .first()
+    )
+    if not order:
+        raise HTTPException(404, "Order not found")
+    marketplace = db.query(MarketplaceSettings).filter(MarketplaceSettings.singleton_key == 1).first()
+    if marketplace is not None and not marketplace.allow_customer_early_acceptance:
+        raise HTTPException(409, "Early customer acceptance is disabled by marketplace policy")
+    if not _order_has_verified_delivery(order):
+        raise HTTPException(409, "Product acceptance is available only after verified delivery")
+    if not db.query(OrderItem.id).filter(OrderItem.id == order_item_id, OrderItem.order_id == order.id).first():
+        raise HTTPException(404, "Order item not found")
+    try:
+        release_order_item_escrow(
+            db,
+            order=order,
+            order_item_id=order_item_id,
+            created_by_id=current_user.id,
+            note=data.note or "Customer confirmed this delivered product is satisfactory",
+        )
+    except ValueError as exc:
+        db.rollback()
+        raise HTTPException(409, str(exc)) from exc
+    db.commit()
+    return order_escrow_summary(db, order)
+
+
+@router.get(
+    "/{order_id}/protection-claims",
+    response_model=list[SettlementProtectionClaimResponse],
+)
+def list_my_order_protection_claims(
+    order_id: UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    if not db.query(Order.id).filter(Order.id == order_id, Order.user_id == current_user.id).first():
+        raise HTTPException(404, "Order not found")
+    return (
+        db.query(SettlementProtectionClaim)
+        .filter(SettlementProtectionClaim.order_id == order_id, SettlementProtectionClaim.customer_id == current_user.id)
+        .order_by(SettlementProtectionClaim.created_at.desc())
+        .all()
+    )
+
+
+@router.post(
+    "/{order_id}/protection-claims",
+    response_model=SettlementProtectionClaimResponse,
+    status_code=201,
+)
+def create_order_protection_claim(
+    order_id: UUID,
+    data: SettlementProtectionClaimCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    order = (
+        db.query(Order)
+        .options(selectinload(Order.shipments), selectinload(Order.payments))
+        .filter(Order.id == order_id, Order.user_id == current_user.id)
+        .with_for_update()
+        .first()
+    )
+    if not order:
+        raise HTTPException(404, "Order not found")
+    if not _order_has_verified_delivery(order):
+        raise HTTPException(409, "Customer protection claims open only after verified delivery")
+
+    holds_query = db.query(EscrowHold).filter(EscrowHold.order_id == order.id)
+    if data.scope == "item":
+        if not db.query(OrderItem.id).filter(OrderItem.id == data.order_item_id, OrderItem.order_id == order.id).first():
+            raise HTTPException(404, "Order item not found")
+        holds_query = holds_query.filter(EscrowHold.order_item_id == data.order_item_id)
+    holds = holds_query.with_for_update().all()
+    if not holds:
+        raise HTTPException(409, "No seller escrow applies to the selected product/order")
+
+    active_claim = db.query(SettlementProtectionClaim.id).filter(
+        SettlementProtectionClaim.order_id == order.id,
+        SettlementProtectionClaim.customer_id == current_user.id,
+        SettlementProtectionClaim.scope == data.scope,
+        SettlementProtectionClaim.order_item_id == (data.order_item_id if data.scope == "item" else None),
+        SettlementProtectionClaim.status.in_(["submitted", "under_review", "evidence_required", "seller_liable"]),
+    ).first()
+    if active_claim:
+        raise HTTPException(409, "An active protection claim already exists for this selection")
+
+    responsibility = _claim_responsibility(data.reason)
+    seller_hold_reason = data.reason in SELLER_HOLD_CLAIM_REASONS
+    now = datetime.now(timezone.utc)
+    already_settled = all(h.status in {"released", "refunded"} for h in holds)
+    # The configured deadline is a real entitlement boundary. If the worker has
+    # not run yet, a late claim must not freeze money that is already due.
+    protection_expired = bool(holds) and all(h.release_after is not None and h.release_after <= now for h in holds)
+    hold_applied = False
+    status_value = "post_settlement" if (already_settled or protection_expired) else "submitted"
+
+    # Accidental customer damage and change-of-mind are recorded for support,
+    # but must never freeze seller money. Logistics-only reasons are likewise
+    # routed for review without automatically blaming the seller.
+    if not already_settled and not protection_expired and seller_hold_reason:
+        for hold in holds:
+            if hold.status in {"released", "refunded"}:
+                continue
+            if hold.status != "disputed":
+                hold.status = "disputed"
+                hold.disputed_at = datetime.now(timezone.utc)
+                db.add(EscrowEvent(
+                    escrow_hold_id=hold.id,
+                    event_type="customer_protection_claim",
+                    note=f"F6 customer claim: {data.reason}",
+                    created_by_id=current_user.id,
+                ))
+            hold_applied = True
+        status_value = "submitted"
+    elif not already_settled and not protection_expired:
+        status_value = "recorded_no_hold"
+
+    claim = SettlementProtectionClaim(
+        order_id=order.id,
+        customer_id=current_user.id,
+        order_item_id=data.order_item_id if data.scope == "item" else None,
+        scope=data.scope,
+        reason=data.reason,
+        notes=data.notes,
+        when_noticed=data.when_noticed,
+        package_damaged=data.package_damaged,
+        product_used=data.product_used,
+        evidence_urls=data.evidence_urls,
+        likely_responsibility=responsibility,
+        status=status_value,
+        hold_applied=hold_applied,
+    )
+    db.add(claim)
+    db.commit()
+    db.refresh(claim)
+    return claim
 
 
 

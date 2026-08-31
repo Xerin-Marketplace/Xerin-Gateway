@@ -2488,6 +2488,18 @@ class ZenoPayDiagnosticsResponse(BaseModel):
     errors: list[str] = Field(default_factory=list)
 
 
+class CustomerEscrowItemSummary(BaseModel):
+    order_item_id: UUID
+    seller_id: Optional[UUID] = None
+    status: str
+    seller_amount: Decimal
+    released_amount: Decimal
+    remaining_amount: Decimal
+    release_after: Optional[datetime] = None
+    can_customer_accept: bool = False
+    can_report_problem: bool = False
+
+
 class CustomerEscrowSummary(BaseModel):
     order_id: UUID
     currency: str
@@ -2495,6 +2507,9 @@ class CustomerEscrowSummary(BaseModel):
         "not_applicable",
         "held",
         "partially_released",
+        "partially_refunded",
+        "settled_with_refunds",
+        "refunded",
         "released",
         "disputed",
     ]
@@ -2505,11 +2520,91 @@ class CustomerEscrowSummary(BaseModel):
     released_amount: Decimal
     remaining_amount: Decimal
     release_after: Optional[datetime] = None
+    delivery_verified_at: Optional[datetime] = None
+    seller_release_grace_hours: Optional[int] = None
+    allow_customer_early_acceptance: bool = True
     can_customer_approve: bool = False
+    can_report_problem: bool = False
+    items: list[CustomerEscrowItemSummary] = Field(default_factory=list)
 
 
 class CustomerEscrowApprovalRequest(BaseModel):
     note: Optional[str] = Field(default=None, max_length=500)
+
+
+ProtectionClaimReason = Literal[
+    "wrong_product",
+    "not_as_described",
+    "missing_item",
+    "defective_on_arrival",
+    "damaged_on_arrival",
+    "package_damaged",
+    "package_tampered",
+    "wrong_delivery_recipient",
+    "entire_delivery_missing",
+    "late_delivery",
+    "customer_accidental_damage",
+    "change_of_mind",
+    "other",
+]
+
+
+class SettlementProtectionClaimCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    scope: Literal["item", "order"] = "item"
+    order_item_id: Optional[UUID] = None
+    reason: ProtectionClaimReason
+    notes: str = Field(min_length=5, max_length=2000)
+    when_noticed: Optional[Literal["before_acceptance", "on_opening", "after_initial_use", "later_after_delivery"]] = None
+    package_damaged: Optional[bool] = None
+    product_used: Optional[bool] = None
+    evidence_urls: list[str] = Field(default_factory=list, max_length=8)
+
+    @model_validator(mode="after")
+    def validate_scope_item(self):
+        if self.scope == "item" and self.order_item_id is None:
+            raise ValueError("order_item_id is required for an item-level claim")
+        if self.scope == "order" and self.order_item_id is not None:
+            raise ValueError("order_item_id must be omitted for an order-level claim")
+        return self
+
+
+class SettlementProtectionClaimResponse(BaseModel):
+    id: UUID
+    order_id: UUID
+    customer_id: UUID
+    order_item_id: Optional[UUID] = None
+    scope: str
+    reason: str
+    notes: Optional[str] = None
+    when_noticed: Optional[str] = None
+    package_damaged: Optional[bool] = None
+    product_used: Optional[bool] = None
+    evidence_urls: list[str] = Field(default_factory=list)
+    likely_responsibility: str
+    status: str
+    hold_applied: bool
+    admin_resolution_note: Optional[str] = None
+    resolved_by_id: Optional[UUID] = None
+    resolved_at: Optional[datetime] = None
+    created_at: datetime
+    updated_at: Optional[datetime] = None
+    model_config = ORM_CONFIG
+
+
+class PaginatedSettlementProtectionClaimResponse(BaseModel):
+    total: int
+    page: int
+    page_size: int
+    total_pages: int
+    results: list[SettlementProtectionClaimResponse]
+
+
+class SettlementProtectionClaimResolve(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    responsibility: Literal["seller", "logistics", "customer", "platform", "shared"]
+    action: Literal["release_seller", "keep_held", "reject_claim"]
+    note: str = Field(min_length=3, max_length=2000)
 
 
   
@@ -3881,11 +3976,13 @@ class PaginatedCommissionRuleResponse(BaseModel):
 
 class MarketplaceSettingsUpdate(BaseModel):
     model_config = ConfigDict(extra="forbid")
+    # Legacy payment-relative value retained for compatibility; F6 does not use it for new holds.
     escrow_release_hours: int = Field(ge=1, le=720)
     dispute_period_hours: int = Field(ge=1, le=720)
+    seller_release_grace_hours: int = Field(default=144, ge=1, le=720)
+    allow_customer_early_acceptance: bool = True
     cod_allowed: bool
     international_delivery_allowed: bool
-    # Default keeps older admin clients backwards-compatible until the UI toggle is deployed.
     auto_approve_products: bool = False
 
 
@@ -3894,6 +3991,8 @@ class MarketplaceSettingsResponse(BaseModel):
     id: UUID | None = None
     escrow_release_hours: int | None = None
     dispute_period_hours: int | None = None
+    seller_release_grace_hours: int | None = None
+    allow_customer_early_acceptance: bool = True
     cod_allowed: bool | None = None
     international_delivery_allowed: bool | None = None
     auto_approve_products: bool = False

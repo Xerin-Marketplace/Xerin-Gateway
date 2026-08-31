@@ -55,6 +55,8 @@ def _settings_payload(settings: MarketplaceSettings | None) -> dict:
             "id": None,
             "escrow_release_hours": None,
             "dispute_period_hours": None,
+            "seller_release_grace_hours": 144,
+            "allow_customer_early_acceptance": True,
             "cod_allowed": None,
             "international_delivery_allowed": None,
             "auto_approve_products": False,
@@ -67,6 +69,8 @@ def _settings_payload(settings: MarketplaceSettings | None) -> dict:
         "id": settings.id,
         "escrow_release_hours": settings.escrow_release_hours,
         "dispute_period_hours": settings.dispute_period_hours,
+        "seller_release_grace_hours": settings.seller_release_grace_hours,
+        "allow_customer_early_acceptance": bool(settings.allow_customer_early_acceptance),
         "cod_allowed": settings.cod_allowed,
         "international_delivery_allowed": settings.international_delivery_allowed,
         "auto_approve_products": bool(settings.auto_approve_products),
@@ -75,6 +79,7 @@ def _settings_payload(settings: MarketplaceSettings | None) -> dict:
             for value in (
                 settings.escrow_release_hours,
                 settings.dispute_period_hours,
+                settings.seller_release_grace_hours,
                 settings.cod_allowed,
                 settings.international_delivery_allowed,
             )

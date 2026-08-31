@@ -320,7 +320,9 @@ def _finalise_online_payment(
 
     finance = _finance_settings(db)
     escrow_enabled = bool(finance is None or finance.escrow_enabled)
-    release_after = _escrow_release_after(db) if escrow_enabled else None
+    # F6: payment creates protected escrow, but the seller countdown must not
+    # start until recipient-verified delivery.
+    release_after = None
 
     commission_records = calculate_order_commissions(
         db,

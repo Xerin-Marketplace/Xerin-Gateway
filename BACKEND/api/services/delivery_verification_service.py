@@ -18,6 +18,7 @@ from api.models import (
 )
 from api.security import generate_otp, hash_otp, verify_otp_hash
 from api.services.logistics_wallet_service import release_verified_delivery_entitlement
+from api.services.escrow_service import arm_shipment_seller_escrow_after_delivery
 
 
 class DeliveryVerificationError(ValueError):
@@ -106,6 +107,15 @@ def verify_delivery_proof(db: Session, *, proof: ShipmentDeliveryProof, otp_code
     if shipment.status != ShipmentStatus.out_for_delivery: raise DeliveryVerificationError("Shipment is no longer out for delivery")
     proof.status="verified";proof.verified_at=now;proof.verified_by_id=actor_id
     shipment.status=ShipmentStatus.delivered;shipment.delivered_at=now
+    # F6: verified recipient delivery starts the seller protection clock for
+    # this shipment. It does not release seller funds yet.
+    arm_shipment_seller_escrow_after_delivery(
+        db,
+        shipment_id=shipment.id,
+        order_id=shipment.order_id,
+        verified_at=now,
+        actor_id=actor_id,
+    )
     seller_order=db.query(SellerOrder).filter(SellerOrder.order_id==shipment.order_id,SellerOrder.seller_id==shipment.seller_id,SellerOrder.store_id==shipment.store_id).first()
     if seller_order: seller_order.status=SellerOrderStatus.delivered;seller_order.delivered_at=now
     db.add(ShipmentTrackingEvent(shipment_id=shipment.id,status=ShipmentStatus.delivered,location=f"{proof.delivery_latitude},{proof.delivery_longitude}",notes="Delivered after recipient OTP and GPS verification",created_by_id=actor_id))

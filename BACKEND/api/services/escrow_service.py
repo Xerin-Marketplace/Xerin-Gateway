@@ -1,12 +1,13 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
 from sqlalchemy.orm import Session
 
 from api.models import (
     FinanceSettings,
+    MarketplaceSettings,
     EscrowEvent,
     EscrowHold,
     Order,
@@ -15,6 +16,8 @@ from api.models import (
     ShipmentHandover,
     ShipmentItem,
     ShipmentPickupProof,
+    ShipmentDeliveryProof,
+    SettlementProtectionClaim,
 )
 from api.services.wallet_service import release_sale_credit_fraction
 from api.services.broker_finance_service import make_commission_available_for_hold
@@ -37,7 +40,7 @@ def _assert_trusted_pickup_evidence(db: Session, hold: EscrowHold) -> ShipmentPi
             ShipmentPickupProof.shipment_id == hold.seller_release_shipment_id,
             ShipmentPickupProof.handover_id == hold.seller_release_handover_id,
             ShipmentPickupProof.seller_id == hold.seller_id,
-            ShipmentPickupProof.status.in_(["approved", "auto_approved"]),
+            ShipmentPickupProof.status.in_(["pending", "approved", "auto_approved"]),
         )
         .first()
     )
@@ -63,6 +66,109 @@ def _assert_trusted_pickup_evidence(db: Session, hold: EscrowHold) -> ShipmentPi
     if proof is None or handover is None or item_link is None:
         raise ValueError("Seller settlement pickup evidence is incomplete or inconsistent")
     return proof
+
+
+def _assert_verified_delivery(db: Session, hold: EscrowHold) -> ShipmentDeliveryProof:
+    """Require recipient-verified delivery for any seller release under F6."""
+    if not hold.seller_release_shipment_id:
+        raise ValueError("Seller settlement requires a verified delivery shipment")
+    proof = (
+        db.query(ShipmentDeliveryProof)
+        .filter(
+            ShipmentDeliveryProof.shipment_id == hold.seller_release_shipment_id,
+            ShipmentDeliveryProof.order_id == hold.order_id,
+            ShipmentDeliveryProof.status == "verified",
+            ShipmentDeliveryProof.verified_at.is_not(None),
+        )
+        .first()
+    )
+    if proof is None:
+        raise ValueError("Seller settlement requires verified customer receipt")
+    return proof
+
+
+def _seller_grace_hours(db: Session) -> int:
+    row = db.query(MarketplaceSettings).filter(MarketplaceSettings.singleton_key == 1).first()
+    return int(getattr(row, "seller_release_grace_hours", None) or 144)
+
+
+def arm_shipment_seller_escrow_after_delivery(
+    db: Session,
+    *,
+    shipment_id,
+    order_id,
+    verified_at: datetime,
+    actor_id=None,
+) -> list[EscrowHold]:
+    """Start the seller protection clock only after verified delivery.
+
+    Pickup/handover evidence must already be attached to the hold. Disputed and
+    settled holds remain untouched. This is idempotent for webhook/OTP retries.
+    """
+    order_item_ids = [
+        row[0]
+        for row in db.query(ShipmentItem.order_item_id)
+        .filter(ShipmentItem.shipment_id == shipment_id)
+        .all()
+    ]
+    if not order_item_ids:
+        return []
+    proof = (
+        db.query(ShipmentPickupProof)
+        .filter(ShipmentPickupProof.shipment_id == shipment_id)
+        .with_for_update()
+        .first()
+    )
+    if proof is None or proof.status == "disputed":
+        raise ValueError("Verified delivery cannot arm seller settlement without undisputed pickup evidence")
+    handover = (
+        db.query(ShipmentHandover)
+        .filter(
+            ShipmentHandover.id == proof.handover_id,
+            ShipmentHandover.shipment_id == shipment_id,
+            ShipmentHandover.status == "seller_confirmed",
+            ShipmentHandover.seller_confirmed_at.is_not(None),
+        )
+        .with_for_update()
+        .first()
+    )
+    if handover is None:
+        raise ValueError("Verified delivery cannot arm seller settlement without seller-confirmed handover")
+    grace_hours = _seller_grace_hours(db)
+    deadline = verified_at + timedelta(hours=grace_hours)
+    holds = (
+        db.query(EscrowHold)
+        .filter(EscrowHold.order_id == order_id, EscrowHold.order_item_id.in_(order_item_ids))
+        .order_by(EscrowHold.created_at)
+        .with_for_update()
+        .all()
+    )
+    for hold in holds:
+        if hold.status in {"released", "refunded", "disputed"}:
+            continue
+        # Attach immutable custody evidence if the customer did not separately
+        # review the pickup photo before delivery. F6 treats pickup as evidence,
+        # not a settlement trigger.
+        hold.seller_release_shipment_id = shipment_id
+        hold.seller_release_handover_id = handover.id
+        hold.seller_release_proof_id = proof.id
+        _assert_trusted_pickup_evidence(db, hold)
+        hold.seller_release_verified_at = verified_at
+        hold.seller_release_trigger = "delivery_verified_waiting_customer"
+        hold.release_after = deadline
+        existing = db.query(EscrowEvent.id).filter(
+            EscrowEvent.escrow_hold_id == hold.id,
+            EscrowEvent.event_type == "delivery_verified_hold",
+        ).first()
+        if not existing:
+            db.add(EscrowEvent(
+                escrow_hold_id=hold.id,
+                event_type="delivery_verified_hold",
+                note=f"Verified delivery started the seller protection period ({grace_hours} hours)",
+                created_by_id=actor_id,
+            ))
+    db.flush()
+    return holds
 
 
 def create_order_escrow_holds(
@@ -155,6 +261,7 @@ def release_escrow_hold_funds(
     if hold.status == "released":
         return hold
     _assert_trusted_pickup_evidence(db, hold)
+    _assert_verified_delivery(db, hold)
     if hold.status == "disputed":
         raise ValueError("Disputed escrow cannot be released")
     if hold.status not in {"held", "release_pending", "partially_refunded"}:
@@ -221,6 +328,25 @@ def release_escrow_hold_funds(
     else:
         hold.status = "held"
 
+    # Notify the seller at the actual financial release milestone (not pickup).
+    if fully_released and hold.seller is not None and getattr(hold.seller, "user_id", None):
+        try:
+            from api.enums import NotificationEvent
+            from api.services.notification_service import notification_service
+            notification_service.notify(
+                db=db,
+                user_id=hold.seller.user_id,
+                event=NotificationEvent.payout_updated,
+                title="Seller funds released",
+                message="Xerin released the eligible seller entitlement after verified delivery and the customer-protection settlement rule was satisfied.",
+                data={"order_id": str(hold.order_id), "order_item_id": str(hold.order_item_id), "escrow_hold_id": str(hold.id)},
+                action_url="/seller/earnings",
+                commit=False,
+            )
+        except Exception:
+            # A notification failure must never roll back a valid financial release.
+            pass
+
     db.flush()
     # Broker entitlement follows the same trusted settlement milestone as this
     # order item. This only changes commission state; B6 owns wallet credit.
@@ -236,7 +362,7 @@ def release_shipment_seller_entitlement(
     actor_id=None,
     trigger: str,
 ) -> list[EscrowHold]:
-    """Release only the seller entitlement belonging to one verified shipment."""
+    """Record trusted pickup custody evidence without releasing seller money."""
     proof = (
         db.query(ShipmentPickupProof)
         .filter(ShipmentPickupProof.id == proof.id)
@@ -283,18 +409,23 @@ def release_shipment_seller_entitlement(
         hold.seller_release_shipment_id = proof.shipment_id
         hold.seller_release_handover_id = handover.id
         hold.seller_release_proof_id = proof.id
-        hold.seller_release_trigger = trigger
-        hold.seller_release_verified_at = proof.customer_reviewed_at or now
+        # F6: pickup proof is custody evidence only. It must never release seller
+        # funds before verified delivery. Delivery verification later starts the
+        # configurable customer-protection clock.
+        hold.seller_release_trigger = "pickup_verified_custody"
         if hold.status == "refunded":
             continue
-        if hold.status != "released":
-            release_escrow_hold_funds(
-                db,
-                hold=hold,
-                note="Seller entitlement released after trusted pickup verification",
+        existing = db.query(EscrowEvent.id).filter(
+            EscrowEvent.escrow_hold_id == hold.id,
+            EscrowEvent.event_type == "pickup_verified_custody",
+        ).first()
+        if not existing:
+            db.add(EscrowEvent(
+                escrow_hold_id=hold.id,
+                event_type="pickup_verified_custody",
+                note="Seller handover and pickup evidence verified; settlement remains held until verified delivery",
                 created_by_id=actor_id,
-                event_type=trigger,
-            )
+            ))
     db.flush()
     return holds
 
@@ -424,6 +555,36 @@ def record_escrow_refund(
     return hold
 
 
+def release_order_item_escrow(
+    db: Session,
+    *,
+    order: Order,
+    order_item_id,
+    created_by_id=None,
+    note: str | None = None,
+    event_type: str = "customer_item_accepted",
+) -> EscrowHold:
+    hold = (
+        db.query(EscrowHold)
+        .filter(EscrowHold.order_id == order.id, EscrowHold.order_item_id == order_item_id)
+        .with_for_update()
+        .first()
+    )
+    if hold is None:
+        raise ValueError("This order item has no escrow hold")
+    if hold.status == "disputed":
+        raise ValueError("This product is under dispute and cannot be accepted for settlement")
+    if hold.status != "released":
+        release_escrow_hold_funds(
+            db,
+            hold=hold,
+            note=note or "Customer accepted this delivered product",
+            created_by_id=created_by_id,
+            event_type=event_type,
+        )
+    return hold
+
+
 def release_order_escrow(
     db: Session,
     *,
@@ -458,6 +619,9 @@ def release_order_escrow(
 
 def order_escrow_summary(db: Session, order: Order) -> dict:
     holds = db.query(EscrowHold).filter(EscrowHold.order_id == order.id).all()
+    marketplace = db.query(MarketplaceSettings).filter(MarketplaceSettings.singleton_key == 1).first()
+    grace_hours = int(getattr(marketplace, "seller_release_grace_hours", None) or 144)
+    early_accept = bool(True if marketplace is None else getattr(marketplace, "allow_customer_early_acceptance", True))
     if not holds:
         return {
             "order_id": order.id,
@@ -470,7 +634,12 @@ def order_escrow_summary(db: Session, order: Order) -> dict:
             "released_amount": Decimal("0.00"),
             "remaining_amount": Decimal("0.00"),
             "release_after": None,
+            "delivery_verified_at": None,
+            "seller_release_grace_hours": grace_hours,
+            "allow_customer_early_acceptance": early_accept,
             "can_customer_approve": False,
+            "can_report_problem": False,
+            "items": [],
         }
 
     gross = sum((_money(h.gross_amount) for h in holds), Decimal("0.00"))
@@ -495,14 +664,32 @@ def order_escrow_summary(db: Session, order: Order) -> dict:
         status = "held"
 
     release_dates = [h.release_after for h in holds if h.release_after is not None]
+    verified_dates = [h.seller_release_verified_at for h in holds if h.seller_release_verified_at is not None]
     all_delivered = bool(order.shipments) and all(
         getattr(shipment.status, "value", shipment.status) == "delivered"
+        and shipment.delivery_proof is not None
+        and shipment.delivery_proof.status == "verified"
         for shipment in order.shipments
     )
     payment_completed = any(
         getattr(payment.status, "value", payment.status) == "completed"
         for payment in order.payments
     )
+    can_act = all_delivered and payment_completed
+    item_rows = []
+    for h in holds:
+        h_remaining = _money(_money(h.gross_amount) - _money(h.released_amount) - _money(h.refunded_amount))
+        item_rows.append({
+            "order_item_id": h.order_item_id,
+            "seller_id": h.seller_id,
+            "status": h.status,
+            "seller_amount": _money(h.seller_amount),
+            "released_amount": _money(h.released_amount),
+            "remaining_amount": h_remaining,
+            "release_after": h.release_after,
+            "can_customer_accept": bool(early_accept and can_act and h.status in {"held", "partially_refunded"} and h_remaining > 0),
+            "can_report_problem": bool(can_act and h.status in {"held", "partially_refunded", "disputed"} and h_remaining > 0),
+        })
 
     return {
         "order_id": order.id,
@@ -515,11 +702,12 @@ def order_escrow_summary(db: Session, order: Order) -> dict:
         "released_amount": released,
         "remaining_amount": remaining,
         "release_after": max(release_dates) if release_dates else None,
-        "can_customer_approve": (
-            status in {"held", "partially_released", "partially_refunded"}
-            and all_delivered
-            and payment_completed
-        ),
+        "delivery_verified_at": min(verified_dates) if verified_dates else None,
+        "seller_release_grace_hours": grace_hours,
+        "allow_customer_early_acceptance": early_accept,
+        "can_customer_approve": bool(early_accept and can_act and status in {"held", "partially_released", "partially_refunded"}),
+        "can_report_problem": bool(can_act and remaining > 0 and status != "released"),
+        "items": item_rows,
     }
 
 
@@ -540,7 +728,7 @@ def release_due_escrow_holds(db: Session, limit: int = 500) -> int:
         db.query(EscrowHold)
         .filter(
             EscrowHold.status.in_(["held", "release_pending", "partially_refunded"]),
-            EscrowHold.seller_release_proof_id.is_not(None),
+            EscrowHold.seller_release_verified_at.is_not(None),
             EscrowHold.release_after.is_not(None),
             EscrowHold.release_after <= now,
         )
@@ -554,8 +742,8 @@ def release_due_escrow_holds(db: Session, limit: int = 500) -> int:
         release_escrow_hold_funds(
             db,
             hold=hold,
-            note="Automatic escrow release period reached",
-            event_type="auto_released",
+            note="Automatic seller release after verified-delivery protection period expired with no active hold",
+            event_type="delivery_grace_auto_released",
         )
         count += 1
     return count

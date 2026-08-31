@@ -3292,6 +3292,54 @@ class EscrowEvent(Base):
     )
 
 
+class SettlementProtectionClaim(Base):
+    """Customer protection claim tied to one order or one order item.
+
+    F6 keeps the claim separate from provider chargebacks/refunds. Eligible
+    claims can freeze only the affected seller escrow hold while Xerin reviews
+    responsibility.
+    """
+    __tablename__ = "settlement_protection_claims"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    order_id = Column(UUID(as_uuid=True), ForeignKey("orders.id", ondelete="CASCADE"), nullable=False, index=True)
+    customer_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    order_item_id = Column(UUID(as_uuid=True), ForeignKey("order_items.id", ondelete="SET NULL"), nullable=True, index=True)
+    scope = Column(String(20), nullable=False, default="item", server_default="item", index=True)
+    reason = Column(String(60), nullable=False, index=True)
+    notes = Column(Text, nullable=True)
+    when_noticed = Column(String(40), nullable=True)
+    package_damaged = Column(Boolean, nullable=True)
+    product_used = Column(Boolean, nullable=True)
+    evidence_urls = Column(JSONB, nullable=False, default=list, server_default="[]")
+    likely_responsibility = Column(String(30), nullable=False, default="undetermined", server_default="undetermined", index=True)
+    status = Column(String(40), nullable=False, default="submitted", server_default="submitted", index=True)
+    hold_applied = Column(Boolean, nullable=False, default=False, server_default="false")
+    admin_resolution_note = Column(Text, nullable=True)
+    resolved_by_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    resolved_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now(), index=True)
+    updated_at = Column(DateTime(timezone=True), nullable=True, onupdate=func.now())
+
+    order = relationship("Order")
+    customer = relationship("User", foreign_keys=[customer_id])
+    order_item = relationship("OrderItem")
+    resolved_by = relationship("User", foreign_keys=[resolved_by_id])
+
+    __table_args__ = (
+        CheckConstraint("scope IN ('item','order')", name="ck_settlement_claim_scope"),
+        CheckConstraint(
+            "likely_responsibility IN ('undetermined','seller','logistics','customer','platform','shared')",
+            name="ck_settlement_claim_responsibility",
+        ),
+        CheckConstraint(
+            "status IN ('submitted','under_review','evidence_required','recorded_no_hold','post_settlement','seller_liable','logistics_liable','customer_liable','rejected','resolved')",
+            name="ck_settlement_claim_status",
+        ),
+        Index("ix_settlement_claim_order_status", "order_id", "status"),
+    )
+
+
 class PaymentProviderConfig(Base):
     __tablename__ = "payment_provider_configs"
 
@@ -3540,6 +3588,9 @@ class MarketplaceSettings(Base):
     )
     escrow_release_hours = Column(Integer, nullable=True)
     dispute_period_hours = Column(Integer, nullable=True)
+    # F6: seller escrow countdown begins only after verified delivery.
+    seller_release_grace_hours = Column(Integer, nullable=True, default=144, server_default="144")
+    allow_customer_early_acceptance = Column(Boolean, nullable=False, default=True, server_default="true")
     cod_allowed = Column(Boolean, nullable=True)
     international_delivery_allowed = Column(Boolean, nullable=True)
     # Global catalog moderation policy. False preserves the existing manual-review flow.
@@ -3565,6 +3616,10 @@ class MarketplaceSettings(Base):
         CheckConstraint(
             "dispute_period_hours IS NULL OR dispute_period_hours BETWEEN 1 AND 720",
             name="ck_marketplace_settings_dispute_period_hours",
+        ),
+        CheckConstraint(
+            "seller_release_grace_hours IS NULL OR seller_release_grace_hours BETWEEN 1 AND 720",
+            name="ck_marketplace_settings_seller_release_grace_hours",
         ),
     )
 
