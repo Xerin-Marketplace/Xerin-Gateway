@@ -168,6 +168,7 @@ BACKEND/UPDATED.md
 BACKEND/alembic.ini
 BACKEND/pytest.ini
 BACKEND/requirements.txt
+BACKEND/api/README.md
 
 MOBILE
 
