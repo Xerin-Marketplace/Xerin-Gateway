@@ -505,6 +505,8 @@ class SellerUpdate(BaseModel):
     business_country: str | None = None
     business_region: str | None = None
     business_city: str | None = None
+    business_district: str | None = None
+    business_ward: str | None = None
     business_address: str | None = None
     product_description: str | None = None
     years_in_business: str | None = None
@@ -625,6 +627,8 @@ class BrokerOnboardingRequest(BaseModel):
     country: str
     region: str
     city: str
+    district: str | None = None
+    ward: str | None = None
 
     _clean_location = field_validator("country", "region", "city")(_clean_required_text)
 

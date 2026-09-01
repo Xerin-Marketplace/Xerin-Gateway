@@ -812,6 +812,8 @@ def onboard_seller(
         business_country=data.business_country,
         business_region=data.business_region,
         business_city=data.business_city,
+        business_district=data.business_district,
+        business_ward=data.business_ward,
         business_address=data.business_address,
         product_description=data.product_description,
         years_in_business=data.years_in_business,
@@ -858,6 +860,8 @@ def onboard_broker(
         country=data.country.strip(),
         region=data.region.strip(),
         city=data.city.strip(),
+        district=(data.district or "").strip() or None,
+        ward=(data.ward or "").strip() or None,
         status=BrokerStatus.pending_kyc,
     )
     db.add(broker)
