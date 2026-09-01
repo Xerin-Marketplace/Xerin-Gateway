@@ -698,6 +698,27 @@ def build_auth_user_response(db: Session, user: User):
     }
 
 
+def _create_authenticated_session(db: Session, user: User) -> dict:
+    """Create an access/refresh session and return the normal auth payload."""
+    access_token = create_access_token({"sub": str(user.id)})
+    refresh_token = create_refresh_token({"sub": str(user.id)})
+    session = UserSession(
+        user_id=user.id,
+        token_hash=hash_token(refresh_token),
+        expires_at=datetime.now(timezone.utc)
+        + timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS),
+    )
+    user.last_login_at = datetime.now(timezone.utc)
+    db.add(session)
+    db.commit()
+    return {
+        "access_token": access_token,
+        "refresh_token": refresh_token,
+        "token_type": "bearer",
+        "user": build_auth_user_response(db, user),
+    }
+
+
 @router.post("/register-broker", response_model=BrokerRegistrationResponse)
 def register_broker(data: BrokerRegisterRequest, db: Session = Depends(get_db)):
     email = data.email.strip().lower()
@@ -749,18 +770,133 @@ def register_broker(data: BrokerRegisterRequest, db: Session = Depends(get_db)):
     return BrokerRegistrationResponse(message="Broker registration resumed. A fresh verification code has been sent." if resumed_registration else "Broker account created. Enter the verification code to continue.", user_id=user.id, broker_id=broker.id, broker_code=broker.broker_code, email=user.email, phone=user.phone, broker_status=broker.status.value if hasattr(broker.status, "value") else str(broker.status), resumed_registration=resumed_registration)
 
 
+@router.post("/onboard-seller")
+def onboard_seller(
+    data: SellerOnboardingRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    if not current_user.is_verified or current_user.status != UserStatus.active:
+        raise HTTPException(status_code=403, detail="Verify your account before seller onboarding")
+
+    existing = db.query(Seller).filter(Seller.user_id == current_user.id).first()
+    if existing is not None:
+        return {
+            "message": "Seller onboarding is already complete",
+            "seller_id": str(existing.id),
+            "user": build_auth_user_response(db, current_user),
+        }
+
+    categories = (
+        db.query(BusinessCategory)
+        .filter(BusinessCategory.id.in_(data.business_category_ids))
+        .all()
+    )
+    if len(categories) != len(set(data.business_category_ids)):
+        raise HTTPException(status_code=400, detail="One or more business categories are invalid")
+
+    seller = Seller(
+        user_id=current_user.id,
+        business_name=data.business_name.strip(),
+        contact_email=str(data.contact_email or current_user.email),
+        contact_phone=data.contact_phone or current_user.phone,
+        agreement_accepted=True,
+        status=SellerStatus.pending,
+    )
+    db.add(seller)
+    db.flush()
+
+    db.add(SellerProfile(
+        seller_id=seller.id,
+        business_description=data.business_description,
+        business_country=data.business_country,
+        business_region=data.business_region,
+        business_city=data.business_city,
+        business_address=data.business_address,
+        product_description=data.product_description,
+        years_in_business=data.years_in_business,
+        website_url=data.website_url,
+    ))
+    for category_id in set(data.business_category_ids):
+        db.add(SellerBusinessCategory(
+            seller_id=seller.id,
+            business_category_id=category_id,
+        ))
+    _assign_role(db, current_user.id, "seller")
+    db.commit()
+    db.refresh(seller)
+    return {
+        "message": "Seller onboarding completed. Continue in Seller Center.",
+        "seller_id": str(seller.id),
+        "seller_status": seller.status.value if hasattr(seller.status, "value") else str(seller.status),
+        "user": build_auth_user_response(db, current_user),
+    }
+
+
+@router.post("/onboard-broker")
+def onboard_broker(
+    data: BrokerOnboardingRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    if not current_user.is_verified or current_user.status != UserStatus.active:
+        raise HTTPException(status_code=403, detail="Verify your account before Winga onboarding")
+
+    existing = db.query(Broker).filter(Broker.user_id == current_user.id).first()
+    if existing is not None:
+        return {
+            "message": "Winga onboarding is already complete",
+            "broker_id": str(existing.id),
+            "broker_code": existing.broker_code,
+            "user": build_auth_user_response(db, current_user),
+        }
+
+    code = f"BRK-{str(current_user.id).replace('-', '')[:8].upper()}"
+    broker = Broker(
+        user_id=current_user.id,
+        broker_code=code,
+        country=data.country.strip(),
+        region=data.region.strip(),
+        city=data.city.strip(),
+        status=BrokerStatus.pending_kyc,
+    )
+    db.add(broker)
+    db.flush()
+    db.add(BrokerStatusHistory(
+        broker_id=broker.id,
+        from_status=None,
+        to_status=BrokerStatus.pending_kyc.value,
+        reason="Winga account created after basic registration",
+    ))
+    _assign_role(db, current_user.id, "broker")
+    db.commit()
+    db.refresh(broker)
+    return {
+        "message": "Winga onboarding completed. Continue with KYC from the Winga dashboard.",
+        "broker_id": str(broker.id),
+        "broker_code": broker.broker_code,
+        "broker_status": broker.status.value if hasattr(broker.status, "value") else str(broker.status),
+        "user": build_auth_user_response(db, current_user),
+    }
+
+
 @router.post("/login", response_model=TokenResponse)
 def login(request: Request, data: LoginRequest, db: Session = Depends(get_db)):
-    email = data.email.strip().lower()
+    identifier = data.email.strip()
+    normalized_identifier = identifier.lower() if "@" in identifier else identifier
     ip = _client_ip(request)
 
-    _rate_limit(f"login:email:{email}", max_calls=10, window_seconds=5 * 60)
+    _rate_limit(f"login:identifier:{normalized_identifier}", max_calls=10, window_seconds=5 * 60)
     _rate_limit(f"login:ip:{ip}", max_calls=30, window_seconds=5 * 60)
 
-    user = db.query(User).filter(User.email == email).first()
+    if "@" in identifier:
+        user = db.query(User).filter(User.email == identifier.lower()).first()
+    else:
+        variants = _phone_lookup_variants(identifier)
+        user = db.query(User).filter(User.phone.in_(variants)).first() if variants else None
 
     if not user or not verify_password(data.password, user.password_hash):
-        raise HTTPException(status_code=401, detail="Invalid email or password")
+        raise HTTPException(status_code=401, detail="Invalid email/phone or password")
 
     if user.status == UserStatus.suspended:
         raise HTTPException(status_code=403, detail="Account suspended")
@@ -772,27 +908,7 @@ def login(request: Request, data: LoginRequest, db: Session = Depends(get_db)):
     if user.status == UserStatus.pending_verification or not user.is_verified:
         raise HTTPException(status_code=403, detail="Account not verified")
 
-    access_token = create_access_token({"sub": str(user.id)})
-    refresh_token = create_refresh_token({"sub": str(user.id)})
-
-    session = UserSession(
-        user_id=user.id,
-        token_hash=hash_token(refresh_token),
-        expires_at=datetime.now(timezone.utc)
-        + timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS),
-    )
-
-    user.last_login_at = datetime.now(timezone.utc)
-
-    db.add(session)
-    db.commit()
-
-    return {
-        "access_token": access_token,
-        "refresh_token": refresh_token,
-        "token_type": "bearer",
-        "user": build_auth_user_response(db, user),
-    }
+    return _create_authenticated_session(db, user)
 
 
 @router.post("/logout")
@@ -979,6 +1095,12 @@ def verify_otp(data: VerifyOTPRequest, db: Session = Depends(get_db)):
 
     db.commit()
     _clear_otp_failures(phone)
+
+    # A newly-created basic account can continue directly to role selection
+    # without making the user sign in again. Legacy seller/broker registration
+    # purposes keep their existing message-only behavior.
+    if user is not None and purpose == "register":
+        return _create_authenticated_session(db, user)
 
     return {"message": "OTP verified successfully"}
 

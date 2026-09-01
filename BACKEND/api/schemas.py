@@ -181,7 +181,9 @@ class RegisterRequest(BaseModel):
 
 
 class LoginRequest(BaseModel):
-    email: EmailStr
+    # Keep the historical `email` field name for API compatibility, but allow
+    # either an email address or a phone number as the sign-in identifier.
+    email: str = Field(min_length=3, max_length=255)
     password: str
 
 
@@ -590,6 +592,42 @@ class SellerRegisterRequest(BaseModel):
         if not value:
             raise ValueError("At least one business category is required")
         return list(dict.fromkeys(value))
+
+
+
+class SellerOnboardingRequest(BaseModel):
+    business_name: str
+    business_category_ids: list[UUID]
+    business_description: str | None = None
+    business_country: str | None = None
+    business_region: str | None = None
+    business_city: str | None = None
+    business_address: str | None = None
+    product_description: str | None = None
+    years_in_business: str | None = None
+    website_url: str | None = None
+    contact_email: EmailStr | None = None
+    contact_phone: str | None = None
+    agreement_accepted: Literal[True]
+
+    _clean_business_name = field_validator("business_name")(_clean_required_text)
+    _clean_contact_phone = field_validator("contact_phone")(_normalise_phone)
+
+    @field_validator("business_category_ids")
+    @classmethod
+    def require_onboarding_categories(cls, value: list[UUID]) -> list[UUID]:
+        if not value:
+            raise ValueError("At least one business category is required")
+        return list(dict.fromkeys(value))
+
+
+class BrokerOnboardingRequest(BaseModel):
+    country: str
+    region: str
+    city: str
+
+    _clean_location = field_validator("country", "region", "city")(_clean_required_text)
+
 
 class BrokerRegisterRequest(BaseModel):
     first_name: str
