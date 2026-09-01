@@ -381,6 +381,8 @@ def register(data: RegisterRequest, db: Session = Depends(get_db)):
         user.first_name = data.first_name.strip()
         user.last_name = data.last_name.strip()
         user.password_hash = hash_password(data.password)
+        user.initial_role_choice = None
+        user.initial_role_choice_completed = False
         _assign_role(db, user.id, "customer")
         resumed_registration = True
     else:
@@ -392,6 +394,8 @@ def register(data: RegisterRequest, db: Session = Depends(get_db)):
             password_hash=hash_password(data.password),
             status=UserStatus.pending_verification,
             is_verified=False,
+            initial_role_choice=None,
+            initial_role_choice_completed=False,
         )
         db.add(user)
         db.flush()
@@ -687,6 +691,8 @@ def build_auth_user_response(db: Session, user: User):
         "phone": user.phone,
         "is_verified": user.is_verified,
         "status": user.status.value if user.status else None,
+        "initial_role_choice": user.initial_role_choice,
+        "initial_role_choice_completed": bool(user.initial_role_choice_completed),
         "account_type": account_type,
         "is_seller": seller is not None,
         "seller_status": seller.status.value if seller else None,
@@ -770,6 +776,38 @@ def register_broker(data: BrokerRegisterRequest, db: Session = Depends(get_db)):
     return BrokerRegistrationResponse(message="Broker registration resumed. A fresh verification code has been sent." if resumed_registration else "Broker account created. Enter the verification code to continue.", user_id=user.id, broker_id=broker.id, broker_code=broker.broker_code, email=user.email, phone=user.phone, broker_status=broker.status.value if hasattr(broker.status, "value") else str(broker.status), resumed_registration=resumed_registration)
 
 
+@router.post("/select-initial-role")
+def select_initial_role(
+    data: InitialRoleChoiceRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    if not current_user.is_verified or current_user.status != UserStatus.active:
+        raise HTTPException(status_code=403, detail="Verify your account before choosing how to use Xerin Market")
+
+    if current_user.initial_role_choice_completed:
+        return {
+            "message": "Initial role choice is already complete",
+            "selected_role": current_user.initial_role_choice,
+            "completed": True,
+            "user": build_auth_user_response(db, current_user),
+        }
+
+    current_user.initial_role_choice = data.role
+    # Customer needs no additional onboarding. Seller/Winga remain incomplete
+    # until their role-specific onboarding endpoint succeeds.
+    current_user.initial_role_choice_completed = data.role == "customer"
+    db.commit()
+    db.refresh(current_user)
+
+    return {
+        "message": "Role selected",
+        "selected_role": data.role,
+        "completed": bool(current_user.initial_role_choice_completed),
+        "user": build_auth_user_response(db, current_user),
+    }
+
+
 @router.post("/onboard-seller")
 def onboard_seller(
     data: SellerOnboardingRequest,
@@ -781,6 +819,10 @@ def onboard_seller(
 
     existing = db.query(Seller).filter(Seller.user_id == current_user.id).first()
     if existing is not None:
+        if not current_user.initial_role_choice_completed or current_user.initial_role_choice != "seller":
+            current_user.initial_role_choice = "seller"
+            current_user.initial_role_choice_completed = True
+            db.commit()
         return {
             "message": "Seller onboarding is already complete",
             "seller_id": str(existing.id),
@@ -825,6 +867,8 @@ def onboard_seller(
             business_category_id=category_id,
         ))
     _assign_role(db, current_user.id, "seller")
+    current_user.initial_role_choice = "seller"
+    current_user.initial_role_choice_completed = True
     db.commit()
     db.refresh(seller)
     return {
@@ -846,6 +890,10 @@ def onboard_broker(
 
     existing = db.query(Broker).filter(Broker.user_id == current_user.id).first()
     if existing is not None:
+        if not current_user.initial_role_choice_completed or current_user.initial_role_choice != "broker":
+            current_user.initial_role_choice = "broker"
+            current_user.initial_role_choice_completed = True
+            db.commit()
         return {
             "message": "Winga onboarding is already complete",
             "broker_id": str(existing.id),
@@ -873,6 +921,8 @@ def onboard_broker(
         reason="Winga account created after basic registration",
     ))
     _assign_role(db, current_user.id, "broker")
+    current_user.initial_role_choice = "broker"
+    current_user.initial_role_choice_completed = True
     db.commit()
     db.refresh(broker)
     return {

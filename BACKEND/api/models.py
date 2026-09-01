@@ -97,6 +97,10 @@ class User(Base):
     password_hash = Column(Text, nullable=False)
     status = Column(Enum(UserStatus), default=UserStatus.pending_verification)
     is_verified = Column(Boolean, default=False)
+    # F9 onboarding continuity: legacy users are backfilled as completed by the migration.
+    # New basic registrations explicitly start incomplete until the user chooses a role.
+    initial_role_choice = Column(String(20), nullable=True)
+    initial_role_choice_completed = Column(Boolean, nullable=False, default=True, server_default="true")
     last_login_at = Column(DateTime(timezone=True))
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())

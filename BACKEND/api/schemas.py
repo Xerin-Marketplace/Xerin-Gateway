@@ -187,6 +187,10 @@ class LoginRequest(BaseModel):
     password: str
 
 
+class InitialRoleChoiceRequest(BaseModel):
+    role: Literal["customer", "seller", "broker"]
+
+
 class TokenResponse(BaseModel):
     access_token: str
     refresh_token: str
