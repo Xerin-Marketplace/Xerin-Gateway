@@ -403,6 +403,18 @@ def dispatch(seller_order_id: UUID, data: SellerOrderDispatchRequest, db: Sessio
     shipment = _shipment(row)
     if not shipment:
         raise HTTPException(409, "Shipment has not been created")
+    if shipment.logistics_company_id is not None:
+        raise HTTPException(
+            409,
+            detail={
+                "code": "logistics_managed_dispatch",
+                "message": (
+                    "This shipment is managed by an assigned logistics company. "
+                    "The seller must complete physical handover; logistics will update "
+                    "dispatch and tracking after pickup proof."
+                ),
+            },
+        )
     duplicate = db.query(Shipment.id).filter(Shipment.tracking_number == data.tracking_number, Shipment.id != shipment.id).first()
     if duplicate:
         raise HTTPException(409, "Tracking number is already in use")
