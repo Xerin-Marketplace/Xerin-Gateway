@@ -160,6 +160,15 @@ BACKEND/api/Backup
 BACKEND/api/Backup/*
 BACKEND/api/Services
 BACKEND/api/Services/*
+BACKEND/ops
+BACKEND/.env.example
+BACKEND/.gitignore
+BACKEND/README.md
+BACKEND/UPDATED.md
+BACKEND/alembic.ini
+BACKEND/pytest.ini
+BACKEND/requirements.txt
+
 MOBILE
 
 # git rm -r --cached BACKEND/alembic
