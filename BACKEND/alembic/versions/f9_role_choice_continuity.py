@@ -11,7 +11,6 @@ down_revision = "f9_onboarding_locations"
 branch_labels = None
 depends_on = None
 
-
 def upgrade():
     op.add_column("users", sa.Column("initial_role_choice", sa.String(length=20), nullable=True))
     op.add_column(
@@ -25,7 +24,6 @@ def upgrade():
     )
     # Every account that existed before this deployment keeps its current login behavior.
     op.execute("UPDATE users SET initial_role_choice_completed = true")
-
 
 def downgrade():
     op.drop_column("users", "initial_role_choice_completed")

@@ -132,6 +132,38 @@ def list_product_reviews(
     return ReviewListResponse(total=total, page=page, page_size=page_size, average_rating=Decimal(str(round(float(average), 2))), results=[_review_response(row) for row in rows])
 
 
+
+@router.get("/reviews/my", response_model=ReviewListResponse)
+def list_my_product_reviews(
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=20, ge=1, le=100),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Return the signed-in customer's own product reviews, including pending moderation."""
+    query = db.query(ProductReview).filter(ProductReview.customer_id == current_user.id)
+    total = query.count()
+    rows = (
+        query.order_by(ProductReview.created_at.desc())
+        .offset((page - 1) * page_size)
+        .limit(page_size)
+        .all()
+    )
+    average = (
+        db.query(func.avg(ProductReview.rating))
+        .filter(ProductReview.customer_id == current_user.id)
+        .scalar()
+        or 0
+    )
+    return ReviewListResponse(
+        total=total,
+        page=page,
+        page_size=page_size,
+        average_rating=Decimal(str(round(float(average), 2))),
+        results=[_review_response(row) for row in rows],
+    )
+
+
 @router.patch("/reviews/{review_id}", response_model=ReviewResponse)
 def update_product_review(
     review_id: UUID,
