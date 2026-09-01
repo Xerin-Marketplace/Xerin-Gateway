@@ -70,6 +70,9 @@ fvm flutter clean
 fvm flutter pub get
 fvm flutter run -d chrome
 
+ du -sh -- */ | sort -hr
+
+
 
 
 
