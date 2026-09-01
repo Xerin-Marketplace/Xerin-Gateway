@@ -161,17 +161,6 @@ BACKEND/api/Backup/*
 BACKEND/api/Services
 BACKEND/api/Services/*
 
-git rm -r --cached BACKEND/alembic
-git rm -r --cached BACKEND/api/middleware
-git rm -r --cached BACKEND/api/Backup
-git rm -r --cached BACKEND/api/Services
-git rm --cached BACKEND/api/routers/admin.py
-git rm --cached BACKEND/api/routers/seller.py
-git rm --cached BACKEND/scripts/partner_webhook_worker.py
-git add .gitignore
-git commit -m "Remove cached backend files"
-git push origin main
-
 
 
 # Python virtual environment
