@@ -21,6 +21,9 @@ from api.services.logistics_wallet_service import release_verified_delivery_enti
 from api.services.escrow_service import arm_shipment_seller_escrow_after_delivery
 
 
+DELIVERY_OTP_RESEND_COOLDOWN_SECONDS = 30
+
+
 class DeliveryVerificationError(ValueError):
     def __init__(self, message, status_code=409):
         super().__init__(message); self.status_code = status_code
@@ -89,6 +92,58 @@ def initiate_delivery_proof(db: Session, *, shipment: Shipment, actor_id, recipi
         for key,value in values.items(): setattr(proof,key,value)
     db.add(ShipmentDeliveryProofEvent(proof=proof,action="otp_issued",note="POD evidence captured and recipient OTP issued",created_by_id=actor_id))
     db.flush(); return proof,otp
+
+
+def resend_delivery_otp(db: Session, *, proof: ShipmentDeliveryProof, actor_id):
+    """Rotate the recipient OTP without recapturing POD photo/GPS evidence."""
+    if proof.status not in {"pending_otp", "expired"}:
+        raise DeliveryVerificationError(
+            f"Delivery OTP cannot be resent from status {proof.status}"
+        )
+
+    now = datetime.now(timezone.utc)
+    latest_otp_event = (
+        db.query(ShipmentDeliveryProofEvent)
+        .filter(
+            ShipmentDeliveryProofEvent.proof_id == proof.id,
+            ShipmentDeliveryProofEvent.action.in_(["otp_issued", "otp_resent"]),
+        )
+        .order_by(ShipmentDeliveryProofEvent.created_at.desc())
+        .first()
+    )
+    if latest_otp_event and latest_otp_event.created_at:
+        created_at = latest_otp_event.created_at
+        if created_at.tzinfo is None:
+            created_at = created_at.replace(tzinfo=timezone.utc)
+        elapsed = (now - created_at).total_seconds()
+        if elapsed < DELIVERY_OTP_RESEND_COOLDOWN_SECONDS:
+            remaining = max(
+                1,
+                int(DELIVERY_OTP_RESEND_COOLDOWN_SECONDS - elapsed + 0.999),
+            )
+            raise DeliveryVerificationError(
+                f"Please wait {remaining} seconds before resending the delivery OTP",
+                429,
+            )
+
+    otp = generate_otp()
+    proof.status = "pending_otp"
+    proof.otp_hash = hash_otp(otp)
+    proof.otp_expires_at = now + timedelta(
+        minutes=settings.DELIVERY_OTP_EXPIRE_MINUTES
+    )
+    proof.otp_attempts = 0
+    db.add(
+        ShipmentDeliveryProofEvent(
+            proof=proof,
+            action="otp_resent",
+            note="Fresh recipient delivery OTP issued",
+            created_by_id=actor_id,
+        )
+    )
+    db.flush()
+    return proof, otp
+
 
 
 def verify_delivery_proof(db: Session, *, proof: ShipmentDeliveryProof, otp_code: str, actor_id):

@@ -12,7 +12,7 @@ from api.models import LogisticsCompanyUser, Order, Shipment, ShipmentDeliveryPr
 from api.routers.email import send_otp_email
 from api.routers.sms import send_sms
 from api.schemas import DeliveryProofDisputeRequest, DeliveryProofResponse, DeliveryProofStartResponse, DeliveryProofVerifyRequest
-from api.services.delivery_verification_service import DeliveryVerificationError, dispute_delivery_proof, initiate_delivery_proof, store_delivery_image, verify_delivery_proof
+from api.services.delivery_verification_service import DeliveryVerificationError, dispute_delivery_proof, initiate_delivery_proof, resend_delivery_otp, store_delivery_image, verify_delivery_proof
 
 router=APIRouter(prefix="/delivery-verification",tags=["Delivery Verification"])
 ROLE_PERMISSIONS={
@@ -34,6 +34,45 @@ def member(db,user):
     return row
 
 
+def _send_recipient_otp(*, shipment: Shipment, otp: str):
+    address = shipment.order.shipping_address
+    customer = shipment.order.user
+    phone = (address.recipient_phone if address else None) or customer.phone
+    channels = []
+
+    if phone:
+        try:
+            send_sms(
+                to=phone,
+                message=(
+                    f"Your Xerin delivery verification code is {otp}. "
+                    f"It expires in {settings.DELIVERY_OTP_EXPIRE_MINUTES} minutes."
+                ),
+            )
+            channels.append("sms")
+        except Exception:
+            pass
+
+    if customer.email:
+        try:
+            send_otp_email(
+                to=customer.email,
+                otp=otp,
+                recipient_name=address.recipient_name if address else None,
+                purpose="delivery_verification",
+                expires_minutes=settings.DELIVERY_OTP_EXPIRE_MINUTES,
+            )
+            channels.append("email")
+        except Exception:
+            pass
+
+    if not channels:
+        raise DeliveryVerificationError("Could not deliver recipient OTP", 503)
+
+    return channels
+
+
+
 def commit(db):
     try: db.commit()
     except IntegrityError as exc: db.rollback();raise HTTPException(409,"Conflicting delivery verification operation") from exc
@@ -47,19 +86,58 @@ async def start(shipment_id:UUID,recipient_name:str=Form(...,min_length=2,max_le
     try:
         image=await store_delivery_image(photo,shipment.id)
         proof,otp=initiate_delivery_proof(db,shipment=shipment,actor_id=user.id,recipient_name=recipient_name,latitude=latitude,longitude=longitude,notes=notes,image=image)
-        address=shipment.order.shipping_address;phone=(address.recipient_phone if address else None) or shipment.order.user.phone
-        channels=[]
-        if phone:
-            try: send_sms(to=phone,message=f"Your Xerin delivery verification code is {otp}. It expires in {settings.DELIVERY_OTP_EXPIRE_MINUTES} minutes.");channels.append("sms")
-            except Exception: pass
-        if shipment.order.user.email:
-            try: send_otp_email(to=shipment.order.user.email,otp=otp,recipient_name=address.recipient_name if address else None,purpose="delivery_verification",expires_minutes=settings.DELIVERY_OTP_EXPIRE_MINUTES);channels.append("email")
-            except Exception: pass
-        if not channels: raise DeliveryVerificationError("Could not deliver recipient OTP",503)
+        channels=_send_recipient_otp(shipment=shipment,otp=otp)
         commit(db);db.refresh(proof)
         return {"proof":proof,"otp_delivery_channels":channels,"dev_otp":otp if settings.DEBUG else None}
     except DeliveryVerificationError as exc:
         db.rollback();raise HTTPException(exc.status_code,str(exc)) from exc
+
+
+@router.post(
+    "/logistics/proofs/{proof_id}/resend-otp",
+    response_model=DeliveryProofStartResponse,
+)
+def resend_otp(
+    proof_id: UUID,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    membership = member(db, user)
+    proof = (
+        db.query(ShipmentDeliveryProof)
+        .options(
+            joinedload(ShipmentDeliveryProof.shipment)
+            .joinedload(Shipment.order)
+            .joinedload(Order.shipping_address),
+            joinedload(ShipmentDeliveryProof.shipment)
+            .joinedload(Shipment.order)
+            .joinedload(Order.user),
+            selectinload(ShipmentDeliveryProof.events),
+        )
+        .filter(
+            ShipmentDeliveryProof.id == proof_id,
+            ShipmentDeliveryProof.logistics_company_id
+            == membership.logistics_company_id,
+        )
+        .with_for_update(of=ShipmentDeliveryProof)
+        .first()
+    )
+    if proof is None:
+        raise HTTPException(404, "Delivery proof not found")
+
+    try:
+        proof, otp = resend_delivery_otp(db, proof=proof, actor_id=user.id)
+        channels = _send_recipient_otp(shipment=proof.shipment, otp=otp)
+        commit(db)
+        db.refresh(proof)
+        return {
+            "proof": proof,
+            "otp_delivery_channels": channels,
+            "dev_otp": otp if settings.DEBUG else None,
+        }
+    except DeliveryVerificationError as exc:
+        db.rollback()
+        raise HTTPException(exc.status_code, str(exc)) from exc
 
 
 @router.post("/logistics/proofs/{proof_id}/verify",response_model=DeliveryProofResponse)
