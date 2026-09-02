@@ -42,7 +42,7 @@ def commit(db):
 @router.post("/logistics/shipments/{shipment_id}/start",response_model=DeliveryProofStartResponse,status_code=201)
 async def start(shipment_id:UUID,recipient_name:str=Form(...,min_length=2,max_length=150),latitude:Decimal=Form(...,ge=-90,le=90),longitude:Decimal=Form(...,ge=-180,le=180),notes:str|None=Form(None,max_length=2000),photo:UploadFile=File(...),db:Session=Depends(get_db),user:User=Depends(get_current_user)):
     membership=member(db,user)
-    shipment=db.query(Shipment).options(joinedload(Shipment.order).joinedload(Order.shipping_address),joinedload(Shipment.order).joinedload(Order.user)).filter(Shipment.id==shipment_id,Shipment.logistics_company_id==membership.logistics_company_id).with_for_update().first()
+    shipment=db.query(Shipment).options(joinedload(Shipment.order).joinedload(Order.shipping_address),joinedload(Shipment.order).joinedload(Order.user)).filter(Shipment.id==shipment_id,Shipment.logistics_company_id==membership.logistics_company_id).with_for_update(of=Shipment).first()
     if shipment is None: raise HTTPException(404,"Shipment not found for this logistics company")
     try:
         image=await store_delivery_image(photo,shipment.id)
@@ -65,7 +65,7 @@ async def start(shipment_id:UUID,recipient_name:str=Form(...,min_length=2,max_le
 @router.post("/logistics/proofs/{proof_id}/verify",response_model=DeliveryProofResponse)
 def verify(proof_id:UUID,data:DeliveryProofVerifyRequest,db:Session=Depends(get_db),user:User=Depends(get_current_user)):
     membership=member(db,user)
-    proof=db.query(ShipmentDeliveryProof).options(joinedload(ShipmentDeliveryProof.shipment).joinedload(Shipment.order),selectinload(ShipmentDeliveryProof.events)).filter(ShipmentDeliveryProof.id==proof_id,ShipmentDeliveryProof.logistics_company_id==membership.logistics_company_id).with_for_update().first()
+    proof=db.query(ShipmentDeliveryProof).options(joinedload(ShipmentDeliveryProof.shipment).joinedload(Shipment.order),selectinload(ShipmentDeliveryProof.events)).filter(ShipmentDeliveryProof.id==proof_id,ShipmentDeliveryProof.logistics_company_id==membership.logistics_company_id).with_for_update(of=ShipmentDeliveryProof).first()
     if proof is None: raise HTTPException(404,"Delivery proof not found")
     try: verify_delivery_proof(db,proof=proof,otp_code=data.otp_code,actor_id=user.id);commit(db);db.refresh(proof);return proof
     except DeliveryVerificationError as exc:
@@ -80,7 +80,7 @@ def mine(db:Session=Depends(get_db),user:User=Depends(get_current_user)):
 
 @router.post("/customer/proofs/{proof_id}/dispute",response_model=DeliveryProofResponse)
 def dispute(proof_id:UUID,data:DeliveryProofDisputeRequest,db:Session=Depends(get_db),user:User=Depends(get_current_user)):
-    proof=db.query(ShipmentDeliveryProof).options(selectinload(ShipmentDeliveryProof.events)).filter(ShipmentDeliveryProof.id==proof_id).with_for_update().first()
+    proof=db.query(ShipmentDeliveryProof).options(selectinload(ShipmentDeliveryProof.events)).filter(ShipmentDeliveryProof.id==proof_id).with_for_update(of=ShipmentDeliveryProof).first()
     if proof is None: raise HTTPException(404,"Delivery proof not found")
     try: dispute_delivery_proof(db,proof=proof,customer_id=user.id,reason=data.reason,notes=data.notes);commit(db);db.refresh(proof);return proof
     except DeliveryVerificationError as exc: db.rollback();raise HTTPException(exc.status_code,str(exc)) from exc
