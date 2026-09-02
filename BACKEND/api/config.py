@@ -100,7 +100,7 @@ class Settings(BaseSettings):
     # Provider routing. Existing payments retain the provider recorded on the
     # payment row; this setting only selects the provider for new MNO attempts.
     MNO_PAYMENT_PROVIDER: Literal["azampay", "zenopay", "selcom"] = "selcom"
-    CARD_PAYMENT_PROVIDER: Literal["azampay"] = "azampay"
+    CARD_PAYMENT_PROVIDER: Literal["azampay", "selcom"] = "selcom"
 
     # ZenoPay (Tanzania mobile money)
     ZENOPAY_API_KEY: str | None = None
@@ -117,6 +117,7 @@ class Settings(BaseSettings):
     SELCOM_VENDOR_ID: str | None = None
     SELCOM_BASE_URL: str = "https://apigw.selcommobile.com"
     SELCOM_CREATE_ORDER_PATH: str = "/v1/checkout/create-order-minimal"
+    SELCOM_CARD_CREATE_ORDER_PATH: str = "/v1/checkout/create-order"
     SELCOM_WALLET_PAYMENT_PATH: str = "/v1/checkout/wallet-payment"
     SELCOM_ORDER_STATUS_PATH: str = "/v1/checkout/order-status"
     SELCOM_WEBHOOK_URL: str | None = None

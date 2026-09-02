@@ -199,6 +199,102 @@ class SelcomClient:
     def _encoded_url(value: str) -> str:
         return base64.b64encode(value.encode("utf-8")).decode("ascii")
 
+    @staticmethod
+    def _decode_gateway_url(value: Any) -> str | None:
+        raw = str(value or "").strip()
+        if not raw:
+            return None
+        if raw.startswith(("https://", "http://")):
+            return raw
+        try:
+            decoded = base64.b64decode(raw).decode("utf-8").strip()
+        except Exception:
+            return None
+        return decoded if decoded.startswith(("https://", "http://")) else None
+
+    def initiate_card_checkout(
+        self,
+        *,
+        external_order_id: str,
+        buyer_user_id: str,
+        buyer_email: str,
+        buyer_name: str,
+        buyer_phone: str,
+        amount: Decimal,
+        billing: Mapping[str, Any],
+        success_url: str,
+        failure_url: str,
+        item_count: int = 1,
+        webhook_url: str | None = None,
+    ) -> GatewayInitiationResult:
+        """Create Selcom's full hosted checkout order with CARD enabled.
+
+        Raw PAN/CVV never enters Xerin. Selcom's hosted payment_gateway_url owns
+        card entry and authentication. The full create-order endpoint is required
+        because create-order-minimal explicitly excludes card acceptance.
+        """
+        self._ensure_configured(require_webhook=webhook_url is None)
+        order_id = str(external_order_id).strip()
+        phone = self.normalize_phone(buyer_phone)
+        callback_url = webhook_url or settings.SELCOM_WEBHOOK_URL
+        if not success_url.lower().startswith("https://") and "localhost" not in success_url and "127.0.0.1" not in success_url:
+            raise ValueError("Selcom card success URL must use HTTPS")
+        if not failure_url.lower().startswith("https://") and "localhost" not in failure_url and "127.0.0.1" not in failure_url:
+            raise ValueError("Selcom card failure URL must use HTTPS")
+
+        first, _, last = buyer_name.strip().partition(" ")
+        last = last or first
+        fields: dict[str, Any] = {
+            "vendor": str(settings.SELCOM_VENDOR_ID),
+            "order_id": order_id,
+            "buyer_email": buyer_email.strip(),
+            "buyer_name": buyer_name.strip(),
+            "buyer_userid": buyer_user_id,
+            "buyer_phone": phone,
+            "gateway_buyer_uuid": "",
+            "amount": self._amount_tzs(amount),
+            "currency": "TZS",
+            "payment_methods": "CARD",
+            "redirect_url": self._encoded_url(success_url),
+            "cancel_url": self._encoded_url(failure_url),
+            "webhook": self._encoded_url(callback_url or ""),
+            "billing.firstname": str(billing.get("firstname") or first),
+            "billing.lastname": str(billing.get("lastname") or last),
+            "billing.address_1": str(billing.get("address_1") or "N/A"),
+            "billing.address_2": str(billing.get("address_2") or ""),
+            "billing.city": str(billing.get("city") or "N/A"),
+            "billing.state_or_region": str(billing.get("state_or_region") or "N/A"),
+            "billing.postcode_or_pobox": str(billing.get("postcode_or_pobox") or "N/A"),
+            "billing.country": str(billing.get("country") or "TZ"),
+            "billing.phone": phone,
+            "shipping.firstname": str(billing.get("firstname") or first),
+            "shipping.lastname": str(billing.get("lastname") or last),
+            "shipping.address_1": str(billing.get("address_1") or "N/A"),
+            "shipping.address_2": str(billing.get("address_2") or ""),
+            "shipping.city": str(billing.get("city") or "N/A"),
+            "shipping.state_or_region": str(billing.get("state_or_region") or "N/A"),
+            "shipping.postcode_or_pobox": str(billing.get("postcode_or_pobox") or "N/A"),
+            "shipping.country": str(billing.get("country") or "TZ"),
+            "shipping.phone": phone,
+            "buyer_remarks": f"Xerin card checkout {order_id}",
+            "merchant_remarks": f"Xerin payment {order_id}",
+            "no_of_items": max(1, int(item_count)),
+        }
+        created = self._request("POST", settings.SELCOM_CARD_CREATE_ORDER_PATH, fields=fields)
+        data = created.get("data") or []
+        first_data = data[0] if isinstance(data, list) and data and isinstance(data[0], dict) else {}
+        checkout_url = self._decode_gateway_url(first_data.get("payment_gateway_url"))
+        accepted = str(created.get("resultcode") or "") == "000" and str(created.get("result") or "").upper() == "SUCCESS"
+        raw = {"create_order": created, "checkout_url": checkout_url, "gateway_buyer_uuid": first_data.get("gateway_buyer_uuid"), "payment_token": first_data.get("payment_token")}
+        if accepted and not checkout_url:
+            raise SelcomAPIError("Selcom accepted the card order but did not return a valid payment gateway URL", status_code=502, payload=created, retryable=False)
+        return GatewayInitiationResult(
+            self.provider, accepted, order_id,
+            str(created.get("reference")) if created.get("reference") else None,
+            GatewayPaymentStatus.PENDING if accepted else self.normalize_status(created.get("result")),
+            str(created.get("message") or "Selcom card checkout created"), raw,
+        )
+
     def initiate_mobile_money(
         self,
         *,

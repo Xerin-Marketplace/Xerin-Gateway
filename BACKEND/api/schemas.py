@@ -2370,8 +2370,8 @@ class PaymentInitiateRequest(BaseModel):
             raise ValueError("Phone number is required for mobile-money payments")
         if self.method == PaymentMethod.mobile_money and not self.provider:
             raise ValueError("Provider is required for mobile-money payments")
-        if self.method == PaymentMethod.card and self.provider and self.provider.lower() != "azampay":
-            raise ValueError("Card payments currently support provider=azampay")
+        if self.method == PaymentMethod.card and self.provider and self.provider.lower() not in {"azampay", "selcom"}:
+            raise ValueError("Card payments support provider=selcom or provider=azampay")
         return self
 
 
