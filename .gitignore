@@ -143,30 +143,30 @@ xerin_before_phase1_task3_20260730.sql/*
 
 # Or ignore this specific backup
 xerin_before_phase1_task3_20260730.sql
-XERIM/#Frontend/xerin-marketplace/node_modules/
-XERIM/#Frontend/xerin-marketplace/node_modules/*
-#Frontend/xerin-marketplace/node_modules/
+XERIM/Frontend/xerin-marketplace/node_modules/
+XERIM/Frontend/xerin-marketplace/node_modules/*
+Frontend/xerin-marketplace/node_modules/
 azampay_path
 azampay_path/*
 errors
 errors/*
-#Frontend  
+Frontend  
 BACKEND/tests/
 BACKEND/backend.zip
 update.py
-BACKEND/alembic
-BACKEND/alembic/*
-BACKEND/api/Backup
-BACKEND/api/Backup/*
-BACKEND/api/Services
-BACKEND/api/Services/*
-BACKEND/ops
-BACKEND/.env.example
-BACKEND/.gitignore
-BACKEND/README.md
-BACKEND/UPDATED.md
-BACKEND/alembic.ini
-BACKEND/pytest.ini
+# BACKEND/alembic
+# BACKEND/alembic/*
+# BACKEND/api/Backup
+# BACKEND/api/Backup/*
+# BACKEND/api/Services
+# BACKEND/api/Services/*
+# BACKEND/ops
+# BACKEND/.env.example
+# BACKEND/.gitignore
+# BACKEND/README.md
+# BACKEND/UPDATED.md
+# BACKEND/alembic.ini
+# BACKEND/pytest.ini
 BACKEND/requirements.txt
 BACKEND/api/README.md
 
@@ -204,7 +204,7 @@ __pycache__/
 # Environment variables
 .env
 .env.* 
-#Frontend/xerin-marketplace/
+Frontend/xerin-marketplace/
 BACKEND/tests/
 BACKEND/backend.zip
 azampay_patch
