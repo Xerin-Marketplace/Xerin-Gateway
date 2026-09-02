@@ -257,6 +257,7 @@ DEFAULT_ROLE_PERMISSIONS: dict[str, set[str]] = {
         PermissionCode.STORE_ADMIN_VIEW.value,
         PermissionCode.can_create_brands.value,
         PermissionCode.can_create_product_categories.value,
+        PermissionCode.can_delete_product_categories,
     },
     "super_admin": {permission.value for permission in PermissionCode},
 }
