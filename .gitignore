@@ -154,19 +154,19 @@ Frontend
 BACKEND/tests/
 BACKEND/backend.zip
 update.py
-# BACKEND/alembic
-# BACKEND/alembic/*
-# BACKEND/api/Backup
-# BACKEND/api/Backup/*
-# BACKEND/api/Services
-# BACKEND/api/Services/*
-# BACKEND/ops
-# BACKEND/.env.example
-# BACKEND/.gitignore
-# BACKEND/README.md
-# BACKEND/UPDATED.md
-# BACKEND/alembic.ini
-# BACKEND/pytest.ini
+BACKEND/alembic
+BACKEND/alembic/*
+BACKEND/api/Backup
+BACKEND/api/Backup/*
+BACKEND/api/Services
+BACKEND/api/Services/*
+BACKEND/ops
+BACKEND/.env.example
+BACKEND/.gitignore
+BACKEND/README.md
+BACKEND/UPDATED.md
+BACKEND/alembic.ini
+BACKEND/pytest.ini
 BACKEND/requirements.txt
 BACKEND/api/README.md
 
