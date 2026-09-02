@@ -3,8 +3,10 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from decimal import Decimal
 from uuid import UUID
+from pathlib import Path
+import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
+from fastapi import APIRouter, Depends, File, HTTPException, Query, Response, UploadFile, status
 from sqlalchemy import func
 from sqlalchemy.orm import Session, selectinload
 
@@ -25,6 +27,15 @@ from api.schemas import (
 from api.services.seller_pricing import calculate_marketplace_price
 
 router = APIRouter(prefix="/seller", tags=["Seller Lifecycle"])
+
+PACKAGE_EVIDENCE_UPLOAD_DIR = Path("uploads/seller-order-packages")
+PACKAGE_EVIDENCE_UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+PACKAGE_EVIDENCE_ALLOWED_CONTENT_TYPES = {
+    "image/jpeg": ".jpg",
+    "image/png": ".png",
+    "image/webp": ".webp",
+}
+PACKAGE_EVIDENCE_MAX_BYTES = 10 * 1024 * 1024
 
 
 def seller(user: User) -> Seller:
@@ -100,7 +111,21 @@ def _replace_package_attachments(
     for raw_url in attachment_urls:
         url = raw_url.strip()
         if url:
-            db.add(SellerOrderPackageAttachment(package_id=package.id, file_url=url))
+            suffix = Path(url).suffix.lower()
+            mime_type = {
+                ".jpg": "image/jpeg",
+                ".jpeg": "image/jpeg",
+                ".png": "image/png",
+                ".webp": "image/webp",
+            }.get(suffix)
+            db.add(
+                SellerOrderPackageAttachment(
+                    package_id=package.id,
+                    file_url=url,
+                    file_name=Path(url).name or None,
+                    mime_type=mime_type,
+                )
+            )
 
 
 @router.post("/pricing/preview", response_model=SellerPricingPreviewResponse)
@@ -378,6 +403,49 @@ def delete_package(
     db.delete(package)
     db.commit()
     return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.post("/orders/{seller_order_id}/package/evidence-upload")
+async def upload_package_evidence(
+    seller_order_id: UUID,
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(
+        require_permission(PermissionCode.seller_packaging_manage.value)
+    ),
+):
+    """Upload packaging evidence directly from the seller's device."""
+    row = owned_seller_order(db, seller(current_user).id, seller_order_id)
+    _ensure_package_editable(row)
+
+    content_type = (file.content_type or "").lower().strip()
+    extension = PACKAGE_EVIDENCE_ALLOWED_CONTENT_TYPES.get(content_type)
+    if extension is None:
+        raise HTTPException(
+            status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
+            detail="Packaging evidence must be a JPG, PNG or WEBP image",
+        )
+
+    content = await file.read(PACKAGE_EVIDENCE_MAX_BYTES + 1)
+    if not content:
+        raise HTTPException(status_code=422, detail="Uploaded evidence image is empty")
+    if len(content) > PACKAGE_EVIDENCE_MAX_BYTES:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail="Packaging evidence image must not exceed 10 MB",
+        )
+
+    order_dir = PACKAGE_EVIDENCE_UPLOAD_DIR / str(row.id)
+    order_dir.mkdir(parents=True, exist_ok=True)
+    stored_name = f"{uuid.uuid4().hex}{extension}"
+    destination = order_dir / stored_name
+    destination.write_bytes(content)
+
+    return {
+        "file_url": f"/uploads/seller-order-packages/{row.id}/{stored_name}",
+        "file_name": (file.filename or "packaging-evidence").strip()[:255],
+        "mime_type": content_type,
+    }
 
 
 @router.get("/orders/{seller_order_id}/package", response_model=SellerOrderPackageResponse)
