@@ -9,6 +9,7 @@ from typing import Any, Mapping, Protocol, runtime_checkable
 class PaymentProvider(StrEnum):
     AZAMPAY = "azampay"
     ZENOPAY = "zenopay"
+    SELCOM = "selcom"
 
 
 class GatewayPaymentStatus(StrEnum):

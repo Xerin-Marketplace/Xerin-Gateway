@@ -2534,6 +2534,24 @@ class ZenoPayDiagnosticsResponse(BaseModel):
     errors: list[str] = Field(default_factory=list)
 
 
+class SelcomDiagnosticsResponse(BaseModel):
+    provider: Literal["selcom"] = "selcom"
+    configured: bool
+    active_for_mno: bool
+    base_url: str
+    create_order_path: str
+    wallet_payment_path: str
+    order_status_path: str
+    api_key_configured: bool
+    api_secret_configured: bool
+    vendor_configured: bool
+    webhook_configured: bool
+    webhook_uses_https: bool
+    timeout_seconds: int
+    max_amount_tzs: int
+    errors: list[str] = Field(default_factory=list)
+
+
 class CustomerEscrowItemSummary(BaseModel):
     order_item_id: UUID
     seller_id: Optional[UUID] = None

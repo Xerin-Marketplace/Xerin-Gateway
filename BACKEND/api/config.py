@@ -99,7 +99,7 @@ class Settings(BaseSettings):
 
     # Provider routing. Existing payments retain the provider recorded on the
     # payment row; this setting only selects the provider for new MNO attempts.
-    MNO_PAYMENT_PROVIDER: Literal["azampay", "zenopay"] = "azampay"
+    MNO_PAYMENT_PROVIDER: Literal["azampay", "zenopay", "selcom"] = "selcom"
     CARD_PAYMENT_PROVIDER: Literal["azampay"] = "azampay"
 
     # ZenoPay (Tanzania mobile money)
@@ -110,6 +110,18 @@ class Settings(BaseSettings):
     ZENOPAY_WEBHOOK_URL: str | None = None
     ZENOPAY_TIMEOUT_SECONDS: int = Field(default=30, ge=1, le=120)
     ZENOPAY_MAX_AMOUNT_TZS: int = Field(default=5_000_000, ge=1)
+
+    # Selcom Checkout API (Tanzania mobile money)
+    SELCOM_API_KEY: str | None = None
+    SELCOM_API_SECRET: str | None = None
+    SELCOM_VENDOR_ID: str | None = None
+    SELCOM_BASE_URL: str = "https://apigw.selcommobile.com"
+    SELCOM_CREATE_ORDER_PATH: str = "/v1/checkout/create-order-minimal"
+    SELCOM_WALLET_PAYMENT_PATH: str = "/v1/checkout/wallet-payment"
+    SELCOM_ORDER_STATUS_PATH: str = "/v1/checkout/order-status"
+    SELCOM_WEBHOOK_URL: str | None = None
+    SELCOM_TIMEOUT_SECONDS: int = Field(default=30, ge=1, le=120)
+    SELCOM_MAX_AMOUNT_TZS: int = Field(default=10_000_000, ge=1)
 
     # AzamPay (MNO push + hosted card checkout)
     AZAMPAY_SANDBOX: bool = True

@@ -43,6 +43,8 @@ from api.schemas import (
     OrderPaymentStateResponse,
     ZenoPayWebhookRequest,
     ZenoPayDiagnosticsResponse,
+    SelcomWebhookRequest,
+    SelcomDiagnosticsResponse,
 )
 from api.enums import InventoryReservationStatus, SellerOrderStatus
 from api.services.azampay_service import (
@@ -55,6 +57,11 @@ from api.services.zenopay_service import (
     ZenoPayAPIError,
     ZenoPayClient,
     ZenoPayConfigurationError,
+)
+from api.services.selcom_service import (
+    SelcomAPIError,
+    SelcomClient,
+    SelcomConfigurationError,
 )
 from api.services.inventory_reservations import (
     commit_order_reservations,
@@ -472,6 +479,57 @@ def zenopay_diagnostics(
     }
 
 
+@router.get("/selcom/diagnostics", response_model=SelcomDiagnosticsResponse)
+def selcom_diagnostics(
+    current_user: User = Depends(require_permission("payment_providers:read")),
+):
+    """Return safe Selcom rollout readiness without exposing credentials."""
+    del current_user
+    api_key_configured = bool(settings.SELCOM_API_KEY)
+    api_secret_configured = bool(settings.SELCOM_API_SECRET)
+    vendor_configured = bool(settings.SELCOM_VENDOR_ID)
+    webhook_configured = bool(settings.SELCOM_WEBHOOK_URL)
+    webhook_uses_https = bool(
+        settings.SELCOM_WEBHOOK_URL
+        and settings.SELCOM_WEBHOOK_URL.lower().startswith("https://")
+    )
+    errors: list[str] = []
+    if not api_key_configured:
+        errors.append("SELCOM_API_KEY is not configured")
+    if not api_secret_configured:
+        errors.append("SELCOM_API_SECRET is not configured")
+    if not vendor_configured:
+        errors.append("SELCOM_VENDOR_ID is not configured")
+    if not webhook_configured:
+        errors.append("SELCOM_WEBHOOK_URL is not configured")
+    elif not webhook_uses_https:
+        errors.append("SELCOM_WEBHOOK_URL must use HTTPS")
+    if settings.MNO_PAYMENT_PROVIDER != "selcom":
+        errors.append("MNO_PAYMENT_PROVIDER is not set to selcom")
+    return {
+        "provider": "selcom",
+        "configured": (
+            api_key_configured
+            and api_secret_configured
+            and vendor_configured
+            and webhook_uses_https
+        ),
+        "active_for_mno": settings.MNO_PAYMENT_PROVIDER == "selcom",
+        "base_url": settings.SELCOM_BASE_URL,
+        "create_order_path": settings.SELCOM_CREATE_ORDER_PATH,
+        "wallet_payment_path": settings.SELCOM_WALLET_PAYMENT_PATH,
+        "order_status_path": settings.SELCOM_ORDER_STATUS_PATH,
+        "api_key_configured": api_key_configured,
+        "api_secret_configured": api_secret_configured,
+        "vendor_configured": vendor_configured,
+        "webhook_configured": webhook_configured,
+        "webhook_uses_https": webhook_uses_https,
+        "timeout_seconds": settings.SELCOM_TIMEOUT_SECONDS,
+        "max_amount_tzs": settings.SELCOM_MAX_AMOUNT_TZS,
+        "errors": errors,
+    }
+
+
 def _execute_azampay_payment(
     *,
     client: AzamPayClient,
@@ -686,6 +744,156 @@ def initiate_payment(
         )
         _commit(db)
         db.refresh(payment)
+        return payment
+
+    if payment.provider == "selcom":
+        client = SelcomClient()
+        try:
+            result = client.initiate_mobile_money(
+                external_order_id=str(payment.id),
+                buyer_email=current_user.email,
+                buyer_name=(
+                    f"{current_user.first_name or ''} {current_user.last_name or ''}".strip()
+                    or "Xerin customer"
+                ),
+                buyer_phone=data.phone_number or "",
+                amount=Decimal(order.total),
+                metadata={"order_id": str(order.id), "payment_id": str(payment.id)},
+            )
+        except ValueError as exc:
+            payment.status = PaymentStatus.failed
+            payment.failure_reason = str(exc)
+            _record_transaction(
+                db,
+                payment,
+                "provider_rejected",
+                PaymentStatus.failed.value,
+                order.total,
+                {
+                    "provider": "selcom",
+                    "code": "invalid_payment_request",
+                    "message": str(exc),
+                    "retryable": False,
+                },
+            )
+            _commit(db)
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail=_payment_error_detail(
+                    code="INVALID_PAYMENT_REQUEST",
+                    message=str(exc),
+                    payment=payment,
+                    order=order,
+                    retryable=False,
+                ),
+            ) from exc
+        except SelcomConfigurationError as exc:
+            payment.status = PaymentStatus.failed
+            payment.failure_reason = str(exc)
+            _record_transaction(
+                db,
+                payment,
+                "provider_configuration_error",
+                PaymentStatus.failed.value,
+                order.total,
+                {"provider": "selcom", "message": str(exc), "retryable": False},
+            )
+            _commit(db)
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=_payment_error_detail(
+                    code="PAYMENT_PROVIDER_CONFIGURATION_ERROR",
+                    message=str(exc),
+                    payment=payment,
+                    order=order,
+                    retryable=False,
+                ),
+            ) from exc
+        except SelcomAPIError as exc:
+            payment.status = PaymentStatus.failed
+            payment.failure_reason = str(exc)
+            _record_transaction(
+                db,
+                payment,
+                "provider_error",
+                PaymentStatus.failed.value,
+                order.total,
+                {
+                    "provider": "selcom",
+                    "provider_status": exc.status_code,
+                    "message": str(exc),
+                    "retryable": exc.retryable,
+                },
+            )
+            _commit(db)
+            http_status = (
+                exc.status_code
+                if exc.status_code in {502, 503, 504}
+                else status.HTTP_502_BAD_GATEWAY
+            )
+            raise HTTPException(
+                status_code=http_status,
+                detail=_payment_error_detail(
+                    code="PAYMENT_PROVIDER_UNAVAILABLE"
+                    if exc.retryable
+                    else "PAYMENT_PROVIDER_ERROR",
+                    message=str(exc),
+                    payment=payment,
+                    order=order,
+                    retryable=exc.retryable,
+                    provider_status=exc.status_code,
+                ),
+            ) from exc
+
+        if not result.accepted:
+            payment.status = PaymentStatus.failed
+            payment.failure_reason = (
+                result.message or "Selcom rejected the payment request"
+            )
+            payment.provider_response = result.raw
+            _record_transaction(
+                db,
+                payment,
+                "provider_rejected",
+                PaymentStatus.failed.value,
+                order.total,
+                result.raw,
+            )
+            _commit(db)
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail=_payment_error_detail(
+                    code="PAYMENT_PROVIDER_REJECTED",
+                    message=payment.failure_reason,
+                    payment=payment,
+                    order=order,
+                    retryable=False,
+                ),
+            )
+
+        payment.status = PaymentStatus.processing
+        payment.provider_transaction_id = result.provider_reference
+        payment.provider_response = {
+            **result.raw,
+            "external_order_id": result.external_order_id,
+            "message": result.message,
+            "mno": data.provider,
+        }
+        _record_transaction(
+            db,
+            payment,
+            "provider_request",
+            payment.status.value,
+            order.total,
+            payment.provider_response,
+        )
+        _commit(db, conflict_detail="Selcom transaction conflict")
+        db.refresh(payment)
+
+        # Even if Selcom reports synchronous completion, finalize only through
+        # the authoritative order-status API so amount/reference are verified.
+        if result.status == GatewayPaymentStatus.COMPLETED:
+            return _verify_and_apply_selcom_status(payment, db)
         return payment
 
     if payment.provider == "zenopay":
@@ -1050,7 +1258,8 @@ def retry_payment(
         )
     retry_provider = (payment.provider or "").lower()
     provider_supported = retry_provider == "azampay" or (
-        retry_provider == "zenopay" and payment.method == PaymentMethod.mobile_money
+        retry_provider in {"zenopay", "selcom"}
+        and payment.method == PaymentMethod.mobile_money
     )
     if (
         payment.method not in {PaymentMethod.mobile_money, PaymentMethod.card}
@@ -1153,6 +1362,160 @@ def retry_payment(
             else None,
         },
     )
+
+    if retry_provider == "selcom":
+        client = SelcomClient()
+        try:
+            result = client.initiate_mobile_money(
+                external_order_id=str(attempt.id),
+                buyer_email=current_user.email,
+                buyer_name=(
+                    f"{current_user.first_name or ''} {current_user.last_name or ''}".strip()
+                    or "Xerin customer"
+                ),
+                buyer_phone=phone_number or "",
+                amount=Decimal(order.total),
+                metadata={
+                    "order_id": str(order.id),
+                    "payment_id": str(attempt.id),
+                    "previous_payment_id": str(payment.id),
+                },
+            )
+        except ValueError as exc:
+            attempt.status = PaymentStatus.failed
+            attempt.failure_reason = str(exc)
+            _record_transaction(
+                db,
+                attempt,
+                "provider_rejected",
+                PaymentStatus.failed.value,
+                order.total,
+                {
+                    "provider": "selcom",
+                    "message": str(exc),
+                    "retryable": False,
+                    "previous_payment_id": str(payment.id),
+                },
+            )
+            _commit(db)
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail=_payment_error_detail(
+                    code="INVALID_PAYMENT_REQUEST",
+                    message=str(exc),
+                    payment=attempt,
+                    order=order,
+                    retryable=False,
+                ),
+            ) from exc
+        except SelcomConfigurationError as exc:
+            attempt.status = PaymentStatus.failed
+            attempt.failure_reason = str(exc)
+            _record_transaction(
+                db,
+                attempt,
+                "provider_configuration_error",
+                PaymentStatus.failed.value,
+                order.total,
+                {
+                    "provider": "selcom",
+                    "message": str(exc),
+                    "retryable": False,
+                    "previous_payment_id": str(payment.id),
+                },
+            )
+            _commit(db)
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=_payment_error_detail(
+                    code="PAYMENT_PROVIDER_CONFIGURATION_ERROR",
+                    message=str(exc),
+                    payment=attempt,
+                    order=order,
+                    retryable=False,
+                ),
+            ) from exc
+        except SelcomAPIError as exc:
+            attempt.status = PaymentStatus.failed
+            attempt.failure_reason = str(exc)
+            _record_transaction(
+                db,
+                attempt,
+                "provider_error",
+                PaymentStatus.failed.value,
+                order.total,
+                {
+                    "provider": "selcom",
+                    "provider_status": exc.status_code,
+                    "message": str(exc),
+                    "retryable": exc.retryable,
+                    "previous_payment_id": str(payment.id),
+                },
+            )
+            _commit(db)
+            http_status = (
+                exc.status_code
+                if exc.status_code in {502, 503, 504}
+                else status.HTTP_502_BAD_GATEWAY
+            )
+            raise HTTPException(
+                status_code=http_status,
+                detail=_payment_error_detail(
+                    code="PAYMENT_PROVIDER_UNAVAILABLE"
+                    if exc.retryable
+                    else "PAYMENT_PROVIDER_ERROR",
+                    message=str(exc),
+                    payment=attempt,
+                    order=order,
+                    retryable=exc.retryable,
+                    provider_status=exc.status_code,
+                ),
+            ) from exc
+
+        if not result.accepted:
+            attempt.status = PaymentStatus.failed
+            attempt.failure_reason = result.message or "Selcom rejected the payment retry"
+            attempt.provider_response = result.raw
+            _record_transaction(
+                db,
+                attempt,
+                "provider_rejected",
+                PaymentStatus.failed.value,
+                order.total,
+                result.raw,
+            )
+            _commit(db)
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail=_payment_error_detail(
+                    code="PAYMENT_PROVIDER_REJECTED",
+                    message=attempt.failure_reason,
+                    payment=attempt,
+                    order=order,
+                    retryable=False,
+                ),
+            )
+
+        attempt.status = PaymentStatus.processing
+        attempt.provider_transaction_id = result.provider_reference
+        attempt.provider_response = {
+            **result.raw,
+            "external_order_id": result.external_order_id,
+            "message": result.message,
+            "mno": mno_provider,
+            "previous_payment_id": str(payment.id),
+        }
+        _record_transaction(
+            db,
+            attempt,
+            "provider_request",
+            PaymentStatus.processing.value,
+            order.total,
+            attempt.provider_response,
+        )
+        _commit(db, conflict_detail="Selcom retry transaction conflict")
+        db.refresh(attempt)
+        return attempt
 
     if retry_provider == "zenopay":
         client = ZenoPayClient()
@@ -1540,7 +1903,7 @@ def _apply_payment_callback(
         or incoming_status == PaymentStatus.completed.value
     ):
         verified_status_reconciliation = bool(
-            normalized_provider == "zenopay"
+            normalized_provider in {"zenopay", "selcom"}
             and (data.payload or {}).get("verified_by_status_api") is True
         )
         allowed_success_sources = {PaymentStatus.pending, PaymentStatus.processing}
@@ -1723,6 +2086,112 @@ def _expire_stale_payment_attempt(payment: Payment, db: Session) -> Payment:
     return payment
 
 
+def _verify_and_apply_selcom_status(payment: Payment, db: Session) -> Payment:
+    """Fetch authoritative Selcom order status before changing Xerin financial state."""
+    if (payment.provider or "").lower() != "selcom":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Payment is not a Selcom payment",
+        )
+    try:
+        result = SelcomClient().check_status(str(payment.id))
+    except SelcomConfigurationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Selcom verification is not configured",
+        ) from exc
+    except SelcomAPIError as exc:
+        http_status = (
+            exc.status_code
+            if exc.status_code in {502, 503, 504}
+            else status.HTTP_502_BAD_GATEWAY
+        )
+        raise HTTPException(
+            status_code=http_status,
+            detail={
+                "code": "PAYMENT_STATUS_VERIFICATION_FAILED",
+                "provider": "selcom",
+                "message": str(exc),
+                "retryable": exc.retryable,
+            },
+        ) from exc
+
+    if result.external_order_id != str(payment.id):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Selcom returned a mismatched payment reference",
+        )
+    if result.status == GatewayPaymentStatus.COMPLETED and result.amount is None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Selcom completed status did not include a verifiable amount",
+        )
+    if result.amount is not None and result.amount != Decimal(payment.amount):
+        rejection_key = _callback_idempotency_key(
+            "selcom",
+            payment.id,
+            result.provider_reference or str(payment.id),
+            "amount_mismatch",
+        )
+        if not _callback_already_processed(db, rejection_key):
+            _record_transaction(
+                db,
+                payment,
+                "callback_rejected",
+                "amount_mismatch",
+                payment.amount,
+                {
+                    "provider": "selcom",
+                    "expected_amount": str(payment.amount),
+                    "provider_amount": str(result.amount),
+                    "external_order_id": result.external_order_id,
+                },
+                idempotency_key=rejection_key,
+            )
+            _commit(db, conflict_detail="Duplicate Selcom verification event")
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Selcom payment amount does not match the order payment amount",
+        )
+
+    status_map = {
+        GatewayPaymentStatus.COMPLETED: PaymentStatus.completed,
+        GatewayPaymentStatus.FAILED: PaymentStatus.failed,
+        GatewayPaymentStatus.CANCELLED: PaymentStatus.cancelled,
+        GatewayPaymentStatus.PENDING: PaymentStatus.processing,
+        GatewayPaymentStatus.UNKNOWN: PaymentStatus.processing,
+    }
+    transaction_id = (
+        result.provider_reference or payment.provider_transaction_id or str(payment.id)
+    )
+    callback = PaymentCallbackRequest(
+        payment_id=payment.id,
+        provider="selcom",
+        transaction_id=transaction_id,
+        status=status_map[result.status],
+        payload={
+            "verified_by_status_api": True,
+            "external_order_id": result.external_order_id,
+            "provider_status": result.raw_status,
+            "reason": (
+                result.raw_status
+                if result.status in {
+                    GatewayPaymentStatus.FAILED,
+                    GatewayPaymentStatus.CANCELLED,
+                }
+                else None
+            ),
+            "channel": result.channel,
+            "msisdn": result.msisdn,
+            "provider_response": result.raw,
+        },
+    )
+    verified = _apply_payment_callback("selcom", callback, db)
+    if result.status in {GatewayPaymentStatus.PENDING, GatewayPaymentStatus.UNKNOWN}:
+        verified = _expire_stale_payment_attempt(verified, db)
+    return verified
+
+
 def _verify_and_apply_zenopay_status(payment: Payment, db: Session) -> Payment:
     """Fetch authoritative ZenoPay state before changing Xerin payment state."""
     if (payment.provider or "").lower() != "zenopay":
@@ -1873,6 +2342,46 @@ def _zenopay_failure_reason(payload: dict) -> str | None:
     return walk(payload)
 
 
+@router.post("/selcom/webhook", status_code=status.HTTP_200_OK)
+def selcom_webhook(
+    payload: SelcomWebhookRequest,
+    db: Session = Depends(get_db),
+):
+    """Receive Selcom checkout callbacks and verify them against Selcom status API."""
+    try:
+        payment_id = UUID(payload.order_id)
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Invalid Selcom order_id",
+        ) from exc
+
+    payment = (
+        db.query(Payment)
+        .filter(Payment.id == payment_id)
+        .with_for_update()
+        .first()
+    )
+    if not payment:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Payment referenced by Selcom was not found",
+        )
+    if (payment.provider or "").strip().lower() != "selcom":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Selcom webhook references a non-Selcom payment",
+        )
+
+    verified = _verify_and_apply_selcom_status(payment, db)
+    return {
+        "received": True,
+        "verified": True,
+        "payment_id": str(verified.id),
+        "status": verified.status.value,
+    }
+
+
 @router.post("/zenopay/webhook", status_code=status.HTTP_200_OK)
 def zenopay_webhook(
     payload: ZenoPayWebhookRequest,
@@ -1946,7 +2455,17 @@ def verify_payment_status(
         )
     if payment.status == PaymentStatus.completed:
         return payment
-    return _verify_and_apply_zenopay_status(payment, db)
+
+    provider = (payment.provider or "").strip().lower()
+    if provider == "selcom":
+        return _verify_and_apply_selcom_status(payment, db)
+    if provider == "zenopay":
+        return _verify_and_apply_zenopay_status(payment, db)
+
+    raise HTTPException(
+        status_code=status.HTTP_409_CONFLICT,
+        detail=f"Payment provider {provider or 'unknown'} does not support status verification here",
+    )
 
 
 @router.post("/azampay/callback", status_code=status.HTTP_200_OK)
@@ -2290,7 +2809,7 @@ def order_payment_state(
             failed
             and order.status == OrderStatus.pending
             and latest.method in {PaymentMethod.mobile_money, PaymentMethod.card}
-            and (latest.provider or "").lower() in {"azampay", "zenopay"}
+            and (latest.provider or "").lower() in {"azampay", "zenopay", "selcom"}
         ),
         "terminal": bool(completed or refunded or timed_out),
         "poll_after_seconds": 4 if active else None,
