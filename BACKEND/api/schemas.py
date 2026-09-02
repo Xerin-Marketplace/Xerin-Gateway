@@ -2427,6 +2427,28 @@ class ZenoPayWebhookRequest(BaseModel):
     model_config = ConfigDict(extra="allow")
 
 
+class SelcomWebhookRequest(BaseModel):
+    """Selcom Checkout webhook notification.
+
+    The callback is treated only as a notification that a Selcom payment may
+    have changed state. Xerin re-checks the payment against Selcom's
+    authenticated order-status API before changing any financial/order state.
+
+    Selcom may include additional callback fields depending on channel and
+    transaction outcome, so extra fields are intentionally accepted.
+    """
+
+    order_id: str = Field(min_length=1, max_length=128)
+    payment_status: Optional[str] = Field(default=None, max_length=100)
+    transid: Optional[str] = Field(default=None, max_length=255)
+    reference: Optional[str] = Field(default=None, max_length=255)
+    result: Optional[str] = Field(default=None, max_length=100)
+    resultcode: Optional[str] = Field(default=None, max_length=100)
+    message: Optional[str] = Field(default=None, max_length=500)
+
+    model_config = ConfigDict(extra="allow")
+
+
 class PaymentCallbackRequest(BaseModel):
     payment_id: UUID
     provider: str = Field(min_length=1, max_length=100)
