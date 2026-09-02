@@ -4101,6 +4101,7 @@ class MarketplaceSettingsUpdate(BaseModel):
     cod_allowed: bool
     international_delivery_allowed: bool
     auto_approve_products: bool = False
+    auto_verify_seller_payout_accounts: bool = False
 
 
 class MarketplaceSettingsResponse(BaseModel):
@@ -4113,6 +4114,7 @@ class MarketplaceSettingsResponse(BaseModel):
     cod_allowed: bool | None = None
     international_delivery_allowed: bool | None = None
     auto_approve_products: bool = False
+    auto_verify_seller_payout_accounts: bool = False
     configured: bool = False
     updated_by_id: UUID | None = None
     created_at: datetime | None = None

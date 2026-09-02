@@ -22,6 +22,7 @@ from api.models import (
     SellerProfile,
     SellerKYCDocument,
     SellerPayoutAccount,
+    MarketplaceSettings,
     SellerStatus,
     BusinessCategory,
     SellerBusinessCategory,
@@ -833,6 +834,26 @@ def get_my_kyc_status(
     }
 
 
+def _auto_verify_seller_payout_accounts(db: Session) -> bool:
+    settings = (
+        db.query(MarketplaceSettings)
+        .filter(MarketplaceSettings.singleton_key == 1)
+        .first()
+    )
+    return bool(settings and settings.auto_verify_seller_payout_accounts)
+
+
+def _apply_payout_verification_policy(db: Session, payout: SellerPayoutAccount) -> None:
+    if _auto_verify_seller_payout_accounts(db):
+        payout.verification_status = "verified"
+        payout.verified_at = datetime.now(timezone.utc)
+        payout.provider_reference = "automatic:marketplace_policy"
+    else:
+        payout.verification_status = "pending"
+        payout.verified_at = None
+        payout.provider_reference = None
+
+
 @router.post(
     "/payout-accounts",
     response_model=SellerPayoutResponse,
@@ -859,6 +880,7 @@ def create_payout_account(
         currency=data.currency,
         is_default=data.is_default,
     )
+    _apply_payout_verification_policy(db, payout)
 
     db.add(payout)
     db.commit()
@@ -895,6 +917,50 @@ def get_my_payout_accounts(
         "page_size": page_size,
         "results": accounts,
     }
+
+
+@router.put("/payout-accounts/{account_id}", response_model=SellerPayoutResponse)
+def update_payout_account(
+    account_id: UUID,
+    data: SellerPayoutCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    seller = get_my_seller(db, current_user)
+    payout = db.query(SellerPayoutAccount).filter(
+        SellerPayoutAccount.id == account_id,
+        SellerPayoutAccount.seller_id == seller.id,
+    ).first()
+    if not payout:
+        raise HTTPException(status_code=404, detail="Payout account not found")
+
+    settlement_details_changed = any((
+        payout.account_type != data.account_type,
+        payout.provider != data.provider,
+        payout.account_name != data.account_name,
+        payout.account_number != data.account_number,
+        payout.currency != data.currency,
+    ))
+
+    if data.is_default:
+        db.query(SellerPayoutAccount).filter(
+            SellerPayoutAccount.seller_id == seller.id,
+            SellerPayoutAccount.id != payout.id,
+        ).update({"is_default": False}, synchronize_session=False)
+
+    payout.account_type = data.account_type
+    payout.provider = data.provider
+    payout.account_name = data.account_name
+    payout.account_number = data.account_number
+    payout.currency = data.currency
+    payout.is_default = data.is_default
+
+    if settlement_details_changed:
+        _apply_payout_verification_policy(db, payout)
+
+    db.commit()
+    db.refresh(payout)
+    return payout
 
 
 @router.delete("/payout-accounts/{account_id}")

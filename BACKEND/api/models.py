@@ -3635,6 +3635,8 @@ class MarketplaceSettings(Base):
     international_delivery_allowed = Column(Boolean, nullable=True)
     # Global catalog moderation policy. False preserves the existing manual-review flow.
     auto_approve_products = Column(Boolean, nullable=False, default=False, server_default="false")
+    # F13: Admin policy for seller payout destination verification.
+    auto_verify_seller_payout_accounts = Column(Boolean, nullable=False, default=False, server_default="false")
     updated_by_id = Column(
         UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )

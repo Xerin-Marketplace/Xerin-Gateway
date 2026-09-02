@@ -61,6 +61,7 @@ def _settings_payload(settings: MarketplaceSettings | None) -> dict:
             "cod_allowed": None,
             "international_delivery_allowed": None,
             "auto_approve_products": False,
+            "auto_verify_seller_payout_accounts": False,
             "configured": False,
             "updated_by_id": None,
             "created_at": None,
@@ -75,6 +76,7 @@ def _settings_payload(settings: MarketplaceSettings | None) -> dict:
         "cod_allowed": settings.cod_allowed,
         "international_delivery_allowed": settings.international_delivery_allowed,
         "auto_approve_products": bool(settings.auto_approve_products),
+        "auto_verify_seller_payout_accounts": bool(settings.auto_verify_seller_payout_accounts),
         "configured": all(
             value is not None
             for value in (
