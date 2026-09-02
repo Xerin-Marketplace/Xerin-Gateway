@@ -2506,7 +2506,8 @@ def my_company_shipments(
 
 
 ALLOWED_LOGISTICS_TRANSITIONS = {
-    ShipmentStatus.ready_for_dispatch: {ShipmentStatus.dispatched, ShipmentStatus.cancelled},
+    # F14: dispatch is created by verified pickup-proof capture, never manually.
+    ShipmentStatus.ready_for_dispatch: {ShipmentStatus.cancelled},
     ShipmentStatus.dispatched: {ShipmentStatus.in_transit, ShipmentStatus.delivery_failed},
     ShipmentStatus.in_transit: {
         ShipmentStatus.out_for_delivery,
@@ -2796,6 +2797,66 @@ def update_company_shipment(
     )
     if not shipment:
         raise HTTPException(404, "Shipment not found for this logistics company")
+
+    # F14: shipment movement after pickup cannot bypass the physical custody chain.
+    # The pickup-proof service itself is responsible for moving Ready for Dispatch
+    # to Dispatched after seller-confirmed handover + proof capture.
+    if data.status == ShipmentStatus.dispatched:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "pickup_verification_required",
+                "message": (
+                    "Do not dispatch this shipment manually. Complete the Pickup Job, "
+                    "seller handover confirmation and pickup-proof photo first."
+                ),
+            },
+        )
+
+    if shipment.status in {
+        ShipmentStatus.dispatched,
+        ShipmentStatus.in_transit,
+        ShipmentStatus.out_for_delivery,
+        ShipmentStatus.delivery_failed,
+    }:
+        pickup_proof = (
+            db.query(ShipmentPickupProof)
+            .filter(ShipmentPickupProof.shipment_id == shipment.id)
+            .first()
+        )
+        if pickup_proof is None or pickup_proof.status == "disputed":
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "trusted_pickup_evidence_required",
+                    "message": (
+                        "Shipment movement is blocked until an undisputed pickup-proof "
+                        "photo is recorded after seller-confirmed handover."
+                    ),
+                },
+            )
+
+        handover = (
+            db.query(ShipmentHandover)
+            .filter(
+                ShipmentHandover.id == pickup_proof.handover_id,
+                ShipmentHandover.shipment_id == shipment.id,
+                ShipmentHandover.status == "seller_confirmed",
+                ShipmentHandover.seller_confirmed_at.is_not(None),
+            )
+            .first()
+        )
+        if handover is None:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "seller_handover_required",
+                    "message": (
+                        "Shipment movement is blocked until the seller confirms the "
+                        "physical handover to logistics."
+                    ),
+                },
+            )
 
     allowed = ALLOWED_LOGISTICS_TRANSITIONS.get(shipment.status, set())
     if data.status == ShipmentStatus.delivered:

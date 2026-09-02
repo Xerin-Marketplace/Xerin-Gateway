@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session, joinedload, selectinload
 from api.config import settings
 from api.deps import get_current_user, get_db
 from api.enums import LogisticsCompanyPermission, LogisticsMemberRole
-from api.models import LogisticsCompanyUser, Order, Shipment, ShipmentDeliveryProof, User
+from api.models import LogisticsCompanyUser, Order, Shipment, ShipmentDeliveryProof, User, ShipmentPickupProof, ShipmentHandover
 from api.routers.email import send_otp_email
 from api.routers.sms import send_sms
 from api.schemas import DeliveryProofDisputeRequest, DeliveryProofResponse, DeliveryProofStartResponse, DeliveryProofVerifyRequest
@@ -83,6 +83,47 @@ async def start(shipment_id:UUID,recipient_name:str=Form(...,min_length=2,max_le
     membership=member(db,user)
     shipment=db.query(Shipment).options(joinedload(Shipment.order).joinedload(Order.shipping_address),joinedload(Shipment.order).joinedload(Order.user)).filter(Shipment.id==shipment_id,Shipment.logistics_company_id==membership.logistics_company_id).with_for_update(of=Shipment).first()
     if shipment is None: raise HTTPException(404,"Shipment not found for this logistics company")
+
+    # F14: proof of delivery cannot begin unless pickup custody was captured first.
+    pickup_proof = (
+        db.query(ShipmentPickupProof)
+        .filter(ShipmentPickupProof.shipment_id == shipment.id)
+        .first()
+    )
+    if pickup_proof is None or pickup_proof.status == "disputed":
+        db.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "pickup_verification_required",
+                "message": (
+                    "Delivery verification cannot start until an undisputed pickup-proof "
+                    "photo has been recorded."
+                ),
+            },
+        )
+    handover = (
+        db.query(ShipmentHandover)
+        .filter(
+            ShipmentHandover.id == pickup_proof.handover_id,
+            ShipmentHandover.shipment_id == shipment.id,
+            ShipmentHandover.status == "seller_confirmed",
+            ShipmentHandover.seller_confirmed_at.is_not(None),
+        )
+        .first()
+    )
+    if handover is None:
+        db.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "seller_handover_required",
+                "message": (
+                    "Delivery verification cannot start until the seller-confirmed "
+                    "handover is recorded."
+                ),
+            },
+        )
     try:
         image=await store_delivery_image(photo,shipment.id)
         proof,otp=initiate_delivery_proof(db,shipment=shipment,actor_id=user.id,recipient_name=recipient_name,latitude=latitude,longitude=longitude,notes=notes,image=image)
