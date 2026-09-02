@@ -1466,6 +1466,40 @@ def _page_count(total: int, page_size: int) -> int:
     return (total + page_size - 1) // page_size
 
 
+@router.get("/my-orders/summary")
+def get_my_orders_summary(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Lightweight customer dashboard order counts.
+
+    This intentionally aggregates in PostgreSQL instead of serializing every
+    historical order. It keeps the dashboard fast and prevents one legacy
+    development order from blanking the entire dashboard summary.
+    """
+    base = db.query(Order).filter(Order.user_id == current_user.id)
+
+    total = base.count()
+    pending = base.filter(Order.status == OrderStatus.pending).count()
+    preparing = base.filter(
+        Order.status.in_([OrderStatus.paid, OrderStatus.processing])
+    ).count()
+    in_transit = base.filter(Order.status == OrderStatus.shipped).count()
+    delivered = base.filter(Order.status == OrderStatus.delivered).count()
+    cancelled = base.filter(Order.status == OrderStatus.cancelled).count()
+    refunded = base.filter(Order.status == OrderStatus.refunded).count()
+
+    return {
+        "total": total,
+        "awaiting_payment": pending,
+        "being_prepared": preparing,
+        "on_the_way": in_transit,
+        "delivered": delivered,
+        "cancelled": cancelled,
+        "refunded": refunded,
+    }
+
+
 @router.get("/my-orders", response_model=PaginatedOrderResponse)
 def get_my_orders(
     page: int = Query(1, ge=1),
