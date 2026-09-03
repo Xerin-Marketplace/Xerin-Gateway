@@ -154,42 +154,40 @@ Frontend
 BACKEND/tests/
 BACKEND/backend.zip
 update.py
-BACKEND/alembic
-BACKEND/alembic/*
-BACKEND/api/Backup
-BACKEND/api/Backup/*
-BACKEND/api/Services
-BACKEND/api/Services/*
-BACKEND/ops
-BACKEND/.env.example
-BACKEND/.gitignore
-BACKEND/README.md
-BACKEND/UPDATED.md
-BACKEND/alembic.ini
-BACKEND/pytest.ini
+# BACKEND/alembic
+# BACKEND/alembic/*
+# BACKEND/api/Backup
+# BACKEND/api/Backup/*
+# BACKEND/api/Services
+# BACKEND/api/Services/*
+# BACKEND/ops
+# BACKEND/.env.example
+# BACKEND/.gitignore
+# BACKEND/README.md
+# BACKEND/UPDATED.md
+# BACKEND/alembic.ini
+# BACKEND/pytest.ini
 BACKEND/requirements.txt
 BACKEND/api/README.md
 
 MOBILE
 
-git rm -r --cached BACKEND/alembic
-git rm -r --cached BACKEND/api/middleware
-git rm -r --cached BACKEND/api/Backup
-git rm -r --cached BACKEND/api/Services
-git rm --cached BACKEND/api/routers/admin.py
-git rm --cached BACKEND/api/routers/seller.py
-git rm --cached BACKEND/scripts/partner_webhook_worker.py
-git rm -r --cached BACKEND/ops
-git rm -r --cached BACKEND/.env.example
-git rm -r --cached BACKEND/.gitignore
-git rm -r --cached BACKEND/README.md
-git rm -r --cached BACKEND/alembic.ini
+# git rm -r --cached BACKEND/alembic
+# git rm -r --cached BACKEND/api/middleware
+# git rm -r --cached BACKEND/api/Backup
+# git rm -r --cached BACKEND/api/Services
+# git rm --cached BACKEND/api/routers/admin.py
+# git rm --cached BACKEND/api/routers/seller.py
+# git rm --cached BACKEND/scripts/partner_webhook_worker.py
+# git rm -r --cached BACKEND/ops
+# git rm -r --cached BACKEND/.env.example
+# git rm -r --cached BACKEND/.gitignore
+# git rm -r --cached BACKEND/README.md
+# git rm -r --cached BACKEND/alembic.ini
 
 # git add .gitignore
 # git commit -m "Remove cached backend files"
 # git push origin main
-
-
 
 # Python virtual environment
 BACKEND/.venv/

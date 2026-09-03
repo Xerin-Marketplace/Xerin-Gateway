@@ -22,7 +22,17 @@ def create_reservation(db: Session, *, inventory: Inventory, order: Order, order
         raise HTTPException(status_code=422, detail="Reservation quantity must be positive")
     inventory = db.query(Inventory).filter(Inventory.id == inventory.id).with_for_update().one()
     if inventory.available_quantity < quantity:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Insufficient stock for reservation")
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "code": "INSUFFICIENT_STOCK",
+                "message": "This item is no longer available in the requested quantity.",
+                "product_id": str(inventory.product_id),
+                "variant_id": str(inventory.variant_id) if inventory.variant_id is not None else None,
+                "requested_quantity": int(quantity),
+                "available_quantity": int(inventory.available_quantity),
+            },
+        )
     existing = db.query(InventoryReservation).filter(InventoryReservation.order_item_id == order_item_id).first()
     if existing:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Order item already has an inventory reservation")

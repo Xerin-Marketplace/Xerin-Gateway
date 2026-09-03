@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
-from api.deps import get_db
+from api.deps import get_current_user, get_db
 from api.enums import PermissionCode
 from api.models import Address, Seller, User, UserRole
 from api.permissions import require_permission
@@ -127,9 +127,7 @@ def update_my_profile(
 def create_address(
     data: AddressCreate,
     db: Session = Depends(get_db),
-    current_user: User = Depends(
-        require_permission(PermissionCode.manage_addresses.value)
-    ),
+    current_user: User = Depends(get_current_user),
 ):
     # First active address becomes default automatically.
     active_count = (
@@ -180,9 +178,7 @@ def create_address(
 @router.get("/addresses", response_model=PaginatedAddressResponse)
 def get_my_addresses(
     db: Session = Depends(get_db),
-    current_user: User = Depends(
-        require_permission(PermissionCode.manage_addresses.value)
-    ),
+    current_user: User = Depends(get_current_user),
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
     search: str | None = Query(default=None, min_length=1, max_length=150),
@@ -266,9 +262,7 @@ def get_my_addresses(
 def get_my_address(
     address_id: UUID,
     db: Session = Depends(get_db),
-    current_user: User = Depends(
-        require_permission(PermissionCode.manage_addresses.value)
-    ),
+    current_user: User = Depends(get_current_user),
 ):
     address = (
         db.query(Address)
@@ -291,9 +285,7 @@ def update_address(
     address_id: UUID,
     data: AddressUpdate,
     db: Session = Depends(get_db),
-    current_user: User = Depends(
-        require_permission(PermissionCode.manage_addresses.value)
-    ),
+    current_user: User = Depends(get_current_user),
 ):
     address = (
         db.query(Address)
@@ -403,9 +395,7 @@ def confirm_delivery_address_map_pin(
     address_id: UUID,
     data: CustomerMapPinConfirmationRequest,
     db: Session = Depends(get_db),
-    current_user: User = Depends(
-        require_permission(PermissionCode.manage_addresses.value)
-    ),
+    current_user: User = Depends(get_current_user),
 ):
     address = (
         db.query(Address)
@@ -458,9 +448,7 @@ def confirm_delivery_address_map_pin(
 def set_default_address(
     address_id: UUID,
     db: Session = Depends(get_db),
-    current_user: User = Depends(
-        require_permission(PermissionCode.manage_addresses.value)
-    ),
+    current_user: User = Depends(get_current_user),
 ):
     address = (
         db.query(Address)
@@ -494,9 +482,7 @@ def set_default_address(
 def delete_address(
     address_id: UUID,
     db: Session = Depends(get_db),
-    current_user: User = Depends(
-        require_permission(PermissionCode.manage_addresses.value)
-    ),
+    current_user: User = Depends(get_current_user),
 ):
     address = (
         db.query(Address)

@@ -963,9 +963,23 @@ def create_order(
                 .first()
             )
             if not inventory or inventory.available_quantity < cart_item.quantity:
+                available_quantity = int(inventory.available_quantity) if inventory else 0
                 raise HTTPException(
-                    status_code=409,
-                    detail=f"Insufficient stock for {product.name}",
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail={
+                        "code": "INSUFFICIENT_STOCK",
+                        "message": (
+                            f"{product.name} is no longer available in the requested quantity."
+                        ),
+                        "product_id": str(product.id),
+                        "variant_id": (
+                            str(cart_item.variant_id)
+                            if cart_item.variant_id is not None
+                            else None
+                        ),
+                        "requested_quantity": int(cart_item.quantity),
+                        "available_quantity": available_quantity,
+                    },
                 )
 
             listing_price = (
