@@ -692,6 +692,11 @@ class Product(Base):
     currency = Column(String(10), default="TZS")
     weight = Column(Numeric(10, 2), nullable=True)
 
+    # Public product-review aggregates. These are synchronized from approved
+    # ProductReview rows whenever moderation or review lifecycle changes.
+    rating = Column(Numeric(3, 2), nullable=False, default=0, server_default="0")
+    review_count = Column(Integer, nullable=False, default=0, server_default="0")
+
     status = Column(Enum(ProductStatus), default=ProductStatus.draft, nullable=False)
     rejection_reason = Column(Text, nullable=True)
     is_active = Column(Boolean, default=True)

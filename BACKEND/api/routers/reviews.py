@@ -66,6 +66,22 @@ def _recalculate_store_rating(db: Session, store_id: UUID) -> None:
         store.review_count = int(count or 0)
 
 
+def _recalculate_product_rating(db: Session, product_id: UUID) -> None:
+    """Synchronize cached public product rating fields from approved reviews."""
+    average, count = (
+        db.query(func.avg(ProductReview.rating), func.count(ProductReview.id))
+        .filter(
+            ProductReview.product_id == product_id,
+            ProductReview.status == ReviewStatus.approved,
+        )
+        .one()
+    )
+    product = db.query(Product).filter(Product.id == product_id).first()
+    if product:
+        product.rating = Decimal(str(round(float(average or 0), 2)))
+        product.review_count = int(count or 0)
+
+
 def _ensure_delivered_seller_order(seller_order: SellerOrder) -> None:
     if seller_order.status != SellerOrderStatus.delivered:
         raise HTTPException(status_code=409, detail="Reviews are allowed only after delivery")
@@ -128,8 +144,29 @@ def list_product_reviews(
         ProductReview.product_id == product_id,
         ProductReview.status == ReviewStatus.approved,
     ).scalar() or 0
+
+    rating_rows = (
+        db.query(ProductReview.rating, func.count(ProductReview.id))
+        .filter(
+            ProductReview.product_id == product_id,
+            ProductReview.status == ReviewStatus.approved,
+        )
+        .group_by(ProductReview.rating)
+        .all()
+    )
+    rating_breakdown = {star: 0 for star in range(1, 6)}
+    for rating, count in rating_rows:
+        rating_breakdown[int(rating)] = int(count or 0)
+
     rows = query.order_by(ProductReview.created_at.desc()).offset((page - 1) * page_size).limit(page_size).all()
-    return ReviewListResponse(total=total, page=page, page_size=page_size, average_rating=Decimal(str(round(float(average), 2))), results=[_review_response(row) for row in rows])
+    return ReviewListResponse(
+        total=total,
+        page=page,
+        page_size=page_size,
+        average_rating=Decimal(str(round(float(average), 2))),
+        rating_breakdown=rating_breakdown,
+        results=[_review_response(row) for row in rows],
+    )
 
 
 
@@ -174,9 +211,12 @@ def update_product_review(
     review = db.query(ProductReview).filter(ProductReview.id == review_id, ProductReview.customer_id == current_user.id).first()
     if not review:
         raise HTTPException(status_code=404, detail="Review not found")
+    product_id = review.product_id
     for field, value in data.model_dump(exclude_unset=True).items():
         setattr(review, field, value)
     review.status = ReviewStatus.pending
+    db.flush()
+    _recalculate_product_rating(db, product_id)
     _commit(db)
     db.refresh(review)
     return _review_response(review)
@@ -191,7 +231,10 @@ def delete_product_review(
     review = db.query(ProductReview).filter(ProductReview.id == review_id, ProductReview.customer_id == current_user.id).first()
     if not review:
         raise HTTPException(status_code=404, detail="Review not found")
+    product_id = review.product_id
     db.delete(review)
+    db.flush()
+    _recalculate_product_rating(db, product_id)
     _commit(db)
 
 
@@ -293,7 +336,10 @@ def report_review(
     if not review:
         raise HTTPException(status_code=404, detail="Review not found")
     db.add(ReviewReport(product_review_id=review.id, reported_by_id=current_user.id, reason=data.reason, details=data.details))
+    product_id = review.product_id
     review.status = ReviewStatus.reported
+    db.flush()
+    _recalculate_product_rating(db, product_id)
     _commit(db)
     return {"reported": True, "review_id": str(review.id)}
 
@@ -376,10 +422,15 @@ def admin_update_review(
     if not review:
         raise HTTPException(status_code=404, detail="Review not found")
 
+    status_changed = data.status is not None and data.status != review.status
     if data.status is not None:
         review.status = data.status
     if data.admin_reply is not None:
         review.admin_reply = data.admin_reply
+
+    if status_changed:
+        db.flush()
+        _recalculate_product_rating(db, review.product_id)
 
     _commit(db)
     db.refresh(review)
@@ -465,6 +516,8 @@ def moderate_review(
     if not review:
         raise HTTPException(status_code=404, detail="Review not found")
     review.status = data.status
+    db.flush()
+    _recalculate_product_rating(db, review.product_id)
     _commit(db)
     db.refresh(review)
     return _review_response(review)

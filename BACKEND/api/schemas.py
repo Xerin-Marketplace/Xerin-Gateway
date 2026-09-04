@@ -1361,6 +1361,8 @@ class ProductResponse(BaseModel):
     sale_price: Optional[Decimal]
     currency: str
     weight: Optional[Decimal]
+    rating: Decimal = Decimal("0")
+    review_count: int = 0
     status: ProductStatus
     rejection_reason: Optional[str]
     is_active: bool
@@ -5072,6 +5074,7 @@ class ReviewListResponse(BaseModel):
     page: int
     page_size: int
     average_rating: Decimal
+    rating_breakdown: dict[int, int] = Field(default_factory=dict)
     results: list[ReviewResponse]
 
 
