@@ -5640,6 +5640,16 @@ class RecommendationListResponse(BaseModel):
     results: list[SearchProductItem]
 
 
+class AlsoBoughtProductItem(SearchProductItem):
+    customer_count: int = Field(ge=1)
+    order_count: int = Field(ge=1)
+
+
+class AlsoBoughtResponse(BaseModel):
+    total: int
+    results: list[AlsoBoughtProductItem]
+
+
 class SellerSearchAnalyticsItem(BaseModel):
     query: str
     searches: int

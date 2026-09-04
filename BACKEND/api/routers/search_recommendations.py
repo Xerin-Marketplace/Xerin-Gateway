@@ -10,10 +10,10 @@ from sqlalchemy.orm import Session
 
 from api.deps import get_db
 from api.enums import PermissionCode
-from api.models import Product, ProductImage, ProductRecommendation, ProductView, RecommendationEvent, SearchHistory, SearchTerm, User
+from api.models import Order, OrderItem, OrderStatus, Product, ProductImage, ProductRecommendation, ProductView, RecommendationEvent, SearchHistory, SearchTerm, User
 from api.permissions import require_permission
 from api.schemas import (
-    ProductSearchResponse, ProductViewCreate, ProductViewResponse, RecommendationListResponse,
+    AlsoBoughtProductItem, AlsoBoughtResponse, ProductSearchResponse, ProductViewCreate, ProductViewResponse, RecommendationListResponse,
     SearchProductItem, SearchSuggestionResponse, SellerProductPerformanceItem,
     SellerSearchAnalyticsItem, TrendingSearchItem,
 )
@@ -21,15 +21,50 @@ from api.schemas import (
 router = APIRouter(tags=["Search & Recommendations"])
 
 
-def _item(product: Product) -> SearchProductItem:
-    primary = next((image for image in product.images if image.is_primary), None)
-    if primary is None and product.images:
-        primary = sorted(product.images, key=lambda image: image.display_order)[0]
+def _product_image_url(db: Session, product: Product) -> str | None:
+    """Return the best usable discovery image for a product.
+
+    Discovery cards must not depend on the relationship being pre-loaded.
+    Prefer the explicit primary image, then the lowest display-order image.
+    Prefer a thumbnail when one exists, otherwise use the original image URL.
+    """
+    images = list(product.images or [])
+    if not images:
+        images = (
+            db.query(ProductImage)
+            .filter(ProductImage.product_id == product.id)
+            .order_by(
+                ProductImage.is_primary.desc(),
+                ProductImage.display_order.asc(),
+                ProductImage.created_at.asc(),
+            )
+            .all()
+        )
+
+    if not images:
+        return None
+
+    images.sort(
+        key=lambda image: (
+            0 if image.is_primary else 1,
+            image.display_order if image.display_order is not None else 0,
+            image.created_at or datetime.min.replace(tzinfo=timezone.utc),
+        )
+    )
+    for image in images:
+        if image.thumbnail_url:
+            return image.thumbnail_url
+        if image.image_url:
+            return image.image_url
+    return None
+
+
+def _item(db: Session, product: Product) -> SearchProductItem:
     return SearchProductItem(
         id=product.id, seller_id=product.seller_id, category_id=product.category_id,
         brand_id=product.brand_id, name=product.name, slug=product.slug, price=product.price,
         sale_price=product.sale_price, currency=product.currency,
-        primary_image_url=primary.thumbnail_url or primary.image_url if primary else None,
+        primary_image_url=_product_image_url(db, product),
     )
 
 
@@ -75,7 +110,7 @@ def search_products(
             term.search_count += 1; term.last_searched_at = datetime.now(timezone.utc)
         db.add(SearchHistory(query=q, normalized_query=normalized, filters={"category_id": str(category_id) if category_id else None, "seller_id": str(seller_id) if seller_id else None}, result_count=total))
         db.commit()
-    return ProductSearchResponse(total=total, page=page, page_size=page_size, results=[_item(row) for row in rows])
+    return ProductSearchResponse(total=total, page=page, page_size=page_size, results=[_item(db, row) for row in rows])
 
 
 @router.get("/search/suggestions", response_model=SearchSuggestionResponse)
@@ -109,7 +144,91 @@ def related_products(product_id: UUID, limit: int = Query(default=12, ge=1, le=5
     product = _active_products(db).filter(Product.id == product_id).first()
     if product is None: raise HTTPException(status_code=404, detail="Product not found")
     rows = _active_products(db).filter(Product.id != product.id, or_(Product.category_id == product.category_id, Product.brand_id == product.brand_id)).order_by(Product.created_at.desc()).limit(limit).all()
-    return RecommendationListResponse(total=len(rows), results=[_item(row) for row in rows])
+    return RecommendationListResponse(total=len(rows), results=[_item(db, row) for row in rows])
+
+
+@router.get("/products/{product_id}/also-bought", response_model=AlsoBoughtResponse)
+def also_bought_products(
+    product_id: UUID,
+    limit: int = Query(default=8, ge=1, le=24),
+    db: Session = Depends(get_db),
+):
+    """Products genuinely purchased by customers who purchased this product.
+
+    Only successful/non-refunded order states participate. Results are
+    aggregated; no customer identity is exposed.
+    """
+    product = _active_products(db).filter(Product.id == product_id).first()
+    if product is None:
+        raise HTTPException(status_code=404, detail="Product not found")
+
+    successful_statuses = (
+        OrderStatus.paid,
+        OrderStatus.processing,
+        OrderStatus.shipped,
+        OrderStatus.delivered,
+    )
+
+    buyer_ids = (
+        db.query(Order.user_id.label("user_id"))
+        .join(OrderItem, OrderItem.order_id == Order.id)
+        .filter(
+            OrderItem.product_id == product_id,
+            Order.status.in_(successful_statuses),
+        )
+        .distinct()
+        .subquery()
+    )
+
+    ranked = (
+        db.query(
+            OrderItem.product_id.label("product_id"),
+            func.count(func.distinct(Order.user_id)).label("customer_count"),
+            func.count(func.distinct(Order.id)).label("order_count"),
+        )
+        .join(Order, Order.id == OrderItem.order_id)
+        .join(buyer_ids, buyer_ids.c.user_id == Order.user_id)
+        .join(Product, Product.id == OrderItem.product_id)
+        .filter(
+            OrderItem.product_id != product_id,
+            Order.status.in_(successful_statuses),
+            Product.is_active.is_(True),
+            Product.status == "approved",
+        )
+        .group_by(OrderItem.product_id)
+        .order_by(
+            desc("customer_count"),
+            desc("order_count"),
+            func.max(Order.created_at).desc(),
+        )
+        .limit(limit)
+        .all()
+    )
+
+    if not ranked:
+        return AlsoBoughtResponse(total=0, results=[])
+
+    ids = [row.product_id for row in ranked]
+    products_by_id = {
+        row.id: row
+        for row in _active_products(db).filter(Product.id.in_(ids)).all()
+    }
+
+    results: list[AlsoBoughtProductItem] = []
+    for row in ranked:
+        candidate = products_by_id.get(row.product_id)
+        if candidate is None:
+            continue
+        base = _item(db, candidate)
+        results.append(
+            AlsoBoughtProductItem(
+                **base.model_dump(),
+                customer_count=int(row.customer_count or 0),
+                order_count=int(row.order_count or 0),
+            )
+        )
+
+    return AlsoBoughtResponse(total=len(results), results=results)
 
 
 @router.get("/recommendations", response_model=RecommendationListResponse)
@@ -122,7 +241,7 @@ def recommendations(limit: int = Query(default=20, ge=1, le=50), db: Session = D
         query=_active_products(db)
         if categories: query=query.filter(Product.category_id.in_(categories))
         rows=query.order_by(Product.created_at.desc()).limit(limit).all()
-    return RecommendationListResponse(total=len(rows), results=[_item(row) for row in rows])
+    return RecommendationListResponse(total=len(rows), results=[_item(db, row) for row in rows])
 
 
 @router.get("/recommendations/recently-viewed", response_model=RecommendationListResponse)
@@ -131,7 +250,7 @@ def recently_viewed(limit: int = Query(default=20, ge=1, le=50), db: Session = D
     ids=[row[0] for row in recent]
     by_id={row.id: row for row in _active_products(db).filter(Product.id.in_(ids)).all()} if ids else {}
     rows=[by_id[item] for item in ids if item in by_id]
-    return RecommendationListResponse(total=len(rows), results=[_item(row) for row in rows])
+    return RecommendationListResponse(total=len(rows), results=[_item(db, row) for row in rows])
 
 
 @router.get("/seller/search-analytics", response_model=list[SellerSearchAnalyticsItem])
