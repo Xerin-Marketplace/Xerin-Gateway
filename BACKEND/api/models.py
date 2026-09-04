@@ -670,7 +670,7 @@ class Product(Base):
     )
     brand_id = Column(UUID(as_uuid=True), ForeignKey("brands.id"), nullable=True)
 
-    sku = Column(String(100), unique=True, index=True, nullable=False)
+    sku = Column(String(100), index=True, nullable=False)
     name = Column(String(255), nullable=False)
     slug = Column(String(255), unique=True, index=True, nullable=False)
     description = Column(Text)
@@ -746,6 +746,13 @@ class Product(Base):
         CheckConstraint(
             "sale_price IS NULL OR sale_price <= price",
             name="ck_product_sale_price_lte_price",
+        ),
+        Index(
+            "uq_products_seller_sku",
+            "seller_id",
+            "sku",
+            unique=True,
+            postgresql_where=text("seller_id IS NOT NULL"),
         ),
     )
 
@@ -1213,7 +1220,7 @@ class ProductVariant(Base):
         index=True,
     )
     variant_name = Column(String(255), nullable=False)
-    sku = Column(String(100), unique=True, index=True, nullable=False)
+    sku = Column(String(100), index=True, nullable=False)
     barcode = Column(String(100), unique=True, nullable=True, index=True)
     seller_base_price = Column(Numeric(18, 2), nullable=True)
     seller_sale_price = Column(Numeric(18, 2), nullable=True)

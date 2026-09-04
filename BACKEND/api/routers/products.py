@@ -128,6 +128,49 @@ def get_seller_product(db: Session, product_id: UUID, seller_id: UUID) -> Produc
     return product
 
 
+def _unique_product_slug(
+    db: Session,
+    requested_slug: str,
+    *,
+    store: Store,
+    product_id: UUID | None = None,
+) -> str:
+    """Return a globally unique public slug without blocking duplicate product names.
+
+    Different sellers are expected to list the same catalog product. Keep the first
+    human-friendly slug when available, then qualify collisions with the store slug
+    and finally a numeric suffix.
+    """
+    raw = (requested_slug or "").strip().lower()
+    base = "-".join(
+        part for part in "".join(ch if ch.isalnum() else " " for ch in raw).split()
+        if part
+    ) or "product"
+    base = base[:240]
+
+    def exists(candidate: str) -> bool:
+        query = db.query(Product.id).filter(Product.slug == candidate)
+        if product_id is not None:
+            query = query.filter(Product.id != product_id)
+        return query.first() is not None
+
+    if not exists(base):
+        return base
+
+    store_part = (getattr(store, "slug", None) or str(store.id)[:8]).strip().lower().strip("-")
+    qualified_base = f"{base[: max(1, 239 - len(store_part))]}-{store_part}"[:255].strip("-")
+    if not exists(qualified_base):
+        return qualified_base
+
+    counter = 2
+    while True:
+        suffix = f"-{counter}"
+        candidate = f"{qualified_base[:255 - len(suffix)]}{suffix}"
+        if not exists(candidate):
+            return candidate
+        counter += 1
+
+
 def _ensure_editable(product: Product) -> None:
     if product.status == ProductStatus.pending_review:
         raise HTTPException(status_code=409, detail="Product is under review. Wait for the review result before editing it")
@@ -313,10 +356,13 @@ def create_product(
         raise HTTPException(status_code=404, detail="Category not found")
     if data.brand_id and not db.query(Brand).filter(Brand.id == data.brand_id).first():
         raise HTTPException(status_code=404, detail="Brand not found")
-    if db.query(Product).filter(Product.sku == data.sku).first():
-        raise HTTPException(status_code=409, detail="Product SKU already exists")
-    if db.query(Product).filter(Product.slug == data.slug).first():
-        raise HTTPException(status_code=409, detail="Product slug already exists")
+    normalized_sku = data.sku.strip()
+    if db.query(Product).filter(Product.seller_id == seller.id, Product.sku == normalized_sku).first():
+        raise HTTPException(
+            status_code=409,
+            detail="You already use this SKU on another product. SKU only needs to be unique inside your seller catalog.",
+        )
+    resolved_slug = _unique_product_slug(db, data.slug, store=store)
 
     listing_currency = _require_active_listing_currency(db, data.currency)
 
@@ -325,9 +371,9 @@ def create_product(
         store_id=store.id,
         category_id=data.category_id,
         brand_id=data.brand_id,
-        sku=data.sku,
+        sku=normalized_sku,
         name=data.name,
-        slug=data.slug,
+        slug=resolved_slug,
         description=data.description,
         seller_base_price=data.price,
         seller_sale_price=data.sale_price,
@@ -341,7 +387,7 @@ def create_product(
     db.add(product)
     db.flush()
     apply_product_pricing(db, product, data.price, data.sale_price)
-    _commit(db, conflict_detail="Product SKU or slug already exists")
+    _commit(db, conflict_detail="A product identifier conflicts with another listing")
     db.refresh(product)
     return product
 
@@ -751,10 +797,27 @@ def update_product(
         raise HTTPException(status_code=404, detail="Category not found")
     if update_data.get("brand_id") and not db.query(Brand).filter(Brand.id == update_data["brand_id"]).first():
         raise HTTPException(status_code=404, detail="Brand not found")
-    if "sku" in update_data and db.query(Product).filter(Product.sku == update_data["sku"], Product.id != product.id).first():
-        raise HTTPException(status_code=409, detail="SKU already exists")
-    if "slug" in update_data and db.query(Product).filter(Product.slug == update_data["slug"], Product.id != product.id).first():
-        raise HTTPException(status_code=409, detail="Slug already exists")
+    if "sku" in update_data:
+        update_data["sku"] = update_data["sku"].strip()
+        if db.query(Product).filter(
+            Product.seller_id == seller.id,
+            Product.sku == update_data["sku"],
+            Product.id != product.id,
+        ).first():
+            raise HTTPException(
+                status_code=409,
+                detail="You already use this SKU on another product. SKU only needs to be unique inside your seller catalog.",
+            )
+
+    if "slug" in update_data:
+        slug_store = store if "store_id" in update_data else product.store
+        update_data["slug"] = _unique_product_slug(
+            db,
+            update_data["slug"],
+            store=slug_store,
+            product_id=product.id,
+        )
+
     if "currency" in update_data:
         update_data["currency"] = _require_active_listing_currency(db, update_data["currency"]).code
 
@@ -770,7 +833,7 @@ def update_product(
     base_sale = data.sale_price if "sale_price" in data.model_fields_set else product.seller_sale_price
     if base_price is not None:
         apply_product_pricing(db, product, base_price, base_sale)
-    _commit(db, conflict_detail="Product SKU or slug already exists")
+    _commit(db, conflict_detail="A product identifier conflicts with another listing")
     db.refresh(product)
     return product
 
