@@ -15,7 +15,7 @@ from fastapi import (
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 from api.schemas import SellerProfileUpdate, SellerProfileResponse
-from api.services.seller_compliance import enforce_seller_license_status
+from api.services.seller_compliance import enforce_seller_license_status, LICENSE_EXPIRED_REASON
 from api.deps import get_db, get_current_user
 from api.models import (
     User,
@@ -354,13 +354,24 @@ def _current_kyc_query(db: Session, seller_id: UUID):
 
 
 def _ensure_kyc_is_editable(seller: Seller) -> None:
-    """Prevent approved sellers from changing documents used for approval."""
+    """Protect approved/compliance-held documents from the general KYC editor."""
     if seller.status == SellerStatus.approved:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=(
                 "KYC documents cannot be changed after seller approval. "
                 "Contact an administrator if a correction is required."
+            ),
+        )
+    if (
+        seller.status == SellerStatus.suspended
+        and seller.suspension_reason == LICENSE_EXPIRED_REASON
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "Use the Business Licence renewal flow while selling is suspended "
+                "for an expired licence."
             ),
         )
 
@@ -601,6 +612,88 @@ async def upload_kyc_document(
         _delete_kyc_file(old_document_url)
 
     return document
+
+
+@router.post(
+    "/business-license/renew",
+    response_model=SellerKYCResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def renew_business_license(
+    business_license_number: str = Form(...),
+    business_license_expiry_date: date = Form(...),
+    business_license_file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Submit a new Business Licence while the seller is on an expiry compliance hold.
+
+    The expired licence remains archived for audit. The seller stays suspended until
+    Marketplace Admin explicitly approves the new licence.
+    """
+    seller = get_my_seller(db, current_user)
+    enforce_seller_license_status(db, seller, commit=True)
+
+    if not (
+        seller.status == SellerStatus.suspended
+        and seller.suspension_reason == LICENSE_EXPIRED_REASON
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "Business Licence renewal is available only while selling is suspended "
+                "because the previous Business Licence expired."
+            ),
+        )
+
+    number, expiry_date = _validate_business_license_metadata(
+        BUSINESS_LICENSE_DOCUMENT_TYPE,
+        business_license_number,
+        business_license_expiry_date,
+    )
+
+    current_license = (
+        _current_kyc_query(db, seller.id)
+        .filter(SellerKYCDocument.document_type == BUSINESS_LICENSE_DOCUMENT_TYPE)
+        .first()
+    )
+    _ensure_document_is_not_under_admin_review(current_license)
+
+    new_document_url = await _save_kyc_upload(
+        seller_id=seller.id,
+        document_type=BUSINESS_LICENSE_DOCUMENT_TYPE,
+        file=business_license_file,
+    )
+
+    try:
+        previous_version = current_license.version if current_license is not None else 0
+        if current_license is not None:
+            current_license.is_current = False
+
+        renewal = SellerKYCDocument(
+            seller_id=seller.id,
+            document_type=BUSINESS_LICENSE_DOCUMENT_TYPE,
+            document_url=new_document_url,
+            document_number=number,
+            expiry_date=expiry_date,
+            version=(previous_version or 0) + 1,
+            is_current=True,
+            status="pending",
+        )
+        db.add(renewal)
+
+        # Keep the compliance hold in place while Marketplace Admin reviews renewal.
+        seller.status = SellerStatus.suspended
+        seller.suspension_reason = LICENSE_EXPIRED_REASON
+        db.add(seller)
+
+        db.commit()
+        db.refresh(renewal)
+        return renewal
+    except Exception:
+        db.rollback()
+        _delete_kyc_file(new_document_url)
+        raise
 
 
 @router.get("/kyc-documents", response_model=PaginatedKYCResponse)
@@ -944,6 +1037,8 @@ def get_my_kyc_status(
         "uploaded_documents": uploaded_documents,
         "missing_documents": missing_documents,
         "can_submit_for_review": len(missing_documents) == 0,
+        "suspension_reason": seller.suspension_reason,
+        "suspended_at": seller.suspended_at,
     }
 
 

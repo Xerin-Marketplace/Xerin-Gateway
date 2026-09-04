@@ -76,6 +76,7 @@ from api.services.category_image_service import (
     store_category_image,
 )
 from api.services.product_specifications import attribute_payload, effective_category_attributes
+from api.services.seller_compliance import LICENSE_EXPIRED_REASON
 
 
 router = APIRouter(prefix="/admin", tags=["Admin"])
@@ -1644,6 +1645,121 @@ def view_seller_document(
     return FileResponse(path=file_path, media_type=media_type or "application/pdf", filename=file_path.name, content_disposition_type="inline")
 
 
+def _get_pending_license_renewal(db: Session, seller: Seller) -> SellerKYCDocument:
+    if not (
+        seller.status == SellerStatus.suspended
+        and seller.suspension_reason == LICENSE_EXPIRED_REASON
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail="Seller is not on a Business Licence expiry hold",
+        )
+
+    renewal = (
+        db.query(SellerKYCDocument)
+        .filter(
+            SellerKYCDocument.seller_id == seller.id,
+            SellerKYCDocument.document_type == "business_license",
+            SellerKYCDocument.is_current.is_(True),
+        )
+        .order_by(SellerKYCDocument.version.desc(), SellerKYCDocument.uploaded_at.desc())
+        .first()
+    )
+    if renewal is None:
+        raise HTTPException(status_code=409, detail="No Business Licence renewal has been submitted")
+    return renewal
+
+
+@router.post("/sellers/{seller_id}/license-renewal/start-review", response_model=SellerResponse)
+def start_business_license_renewal_review(
+    seller_id: UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permission(PermissionCode.can_view_seller_documents.value)),
+):
+    seller = db.query(Seller).filter(Seller.id == seller_id).first()
+    if not seller:
+        raise HTTPException(status_code=404, detail="Seller not found")
+
+    renewal = _get_pending_license_renewal(db, seller)
+    if renewal.status == "approved":
+        raise HTTPException(status_code=409, detail="Business Licence renewal is already approved")
+    if renewal.status != "under_review":
+        renewal.status = "under_review"
+        renewal.rejection_reason = None
+        db.commit()
+        db.refresh(seller)
+    return seller
+
+
+@router.post("/sellers/{seller_id}/license-renewal/approve", response_model=SellerResponse)
+def approve_business_license_renewal(
+    seller_id: UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permission(PermissionCode.can_approve_sellers.value)),
+):
+    seller = db.query(Seller).filter(Seller.id == seller_id).first()
+    if not seller:
+        raise HTTPException(status_code=404, detail="Seller not found")
+
+    renewal = _get_pending_license_renewal(db, seller)
+    if renewal.status != "under_review":
+        raise HTTPException(
+            status_code=409,
+            detail="Start Business Licence renewal review before approval",
+        )
+    if not (renewal.document_number or "").strip():
+        raise HTTPException(status_code=409, detail="Business Licence number is required")
+    if renewal.expiry_date is None:
+        raise HTTPException(status_code=409, detail="Business Licence expiry date is required")
+    if renewal.expiry_date < datetime.now(timezone.utc).date():
+        raise HTTPException(status_code=409, detail="Business Licence renewal is already expired")
+
+    approved_at = datetime.now(timezone.utc)
+    renewal.status = "approved"
+    renewal.rejection_reason = None
+    renewal.approved_at = approved_at
+    renewal.approved_by_user_id = current_user.id
+
+    seller.status = SellerStatus.approved
+    seller.suspension_reason = None
+    seller.suspended_at = None
+    seller.approved_at = approved_at
+
+    db.commit()
+    db.refresh(seller)
+    return seller
+
+
+@router.post("/sellers/{seller_id}/license-renewal/reject", response_model=SellerResponse)
+def reject_business_license_renewal(
+    seller_id: UUID,
+    reason: str = Form(...),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permission(PermissionCode.can_reject_sellers.value)),
+):
+    reason = reason.strip()
+    if not reason:
+        raise HTTPException(status_code=422, detail="Rejection reason is required")
+
+    seller = db.query(Seller).filter(Seller.id == seller_id).first()
+    if not seller:
+        raise HTTPException(status_code=404, detail="Seller not found")
+
+    renewal = _get_pending_license_renewal(db, seller)
+    renewal.status = "rejected"
+    renewal.rejection_reason = reason
+    renewal.approved_at = None
+    renewal.approved_by_user_id = None
+
+    # The seller remains on compliance hold until another renewal is approved.
+    seller.status = SellerStatus.suspended
+    seller.suspension_reason = LICENSE_EXPIRED_REASON
+
+    db.commit()
+    db.refresh(seller)
+    return seller
+
+
 @router.post("/sellers/{seller_id}/start-review", response_model=SellerResponse)
 def start_seller_review(
     seller_id: UUID,
@@ -1653,6 +1769,14 @@ def start_seller_review(
     seller = db.query(Seller).filter(Seller.id == seller_id).first()
     if not seller:
         raise HTTPException(status_code=404, detail="Seller not found")
+    if (
+        seller.status == SellerStatus.suspended
+        and seller.suspension_reason == LICENSE_EXPIRED_REASON
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail="Use the Business Licence renewal review flow for this seller",
+        )
     if seller.status == SellerStatus.approved:
         raise HTTPException(status_code=409, detail="Seller is already approved")
 
@@ -1689,6 +1813,14 @@ def approve_seller(
 
     if not seller:
         raise HTTPException(status_code=404, detail="Seller not found")
+    if (
+        seller.status == SellerStatus.suspended
+        and seller.suspension_reason == LICENSE_EXPIRED_REASON
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail="Use the Business Licence renewal approval flow for this seller",
+        )
 
     required_docs = ["tin", "business_registration", "business_license", "business_profile"]
 
@@ -1761,6 +1893,14 @@ def reject_seller(
 
     if not seller:
         raise HTTPException(status_code=404, detail="Seller not found")
+    if (
+        seller.status == SellerStatus.suspended
+        and seller.suspension_reason == LICENSE_EXPIRED_REASON
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail="Use the Business Licence renewal rejection flow for this seller",
+        )
 
     seller.status = SellerStatus.rejected
 
