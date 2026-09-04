@@ -603,6 +603,48 @@ class Category(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
 
+class CategoryAttribute(Base):
+    __tablename__ = "category_attributes"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    category_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("categories.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    key = Column(String(100), nullable=False)
+    name = Column(String(150), nullable=False)
+    description = Column(Text, nullable=True)
+    input_type = Column(String(30), nullable=False, default="text", server_default="text")
+    unit = Column(String(50), nullable=True)
+    allowed_values = Column(JSONB, nullable=False, default=list, server_default=text("'[]'::jsonb"))
+    settings = Column(JSONB, nullable=False, default=dict, server_default=text("'{}'::jsonb"))
+    is_required = Column(Boolean, nullable=False, default=False, server_default="false")
+    is_filterable = Column(Boolean, nullable=False, default=False, server_default="false")
+    is_comparable = Column(Boolean, nullable=False, default=True, server_default="true")
+    use_for_similarity = Column(Boolean, nullable=False, default=True, server_default="true")
+    similarity_weight = Column(Numeric(6, 2), nullable=False, default=1, server_default="1")
+    is_variant_attribute = Column(Boolean, nullable=False, default=False, server_default="false")
+    inherit_to_children = Column(Boolean, nullable=False, default=True, server_default="true")
+    display_order = Column(Integer, nullable=False, default=0, server_default="0")
+    is_active = Column(Boolean, nullable=False, default=True, server_default="true")
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), nullable=True, onupdate=func.now())
+
+    category = relationship("Category")
+
+    __table_args__ = (
+        UniqueConstraint("category_id", "key", name="uq_category_attribute_key"),
+        CheckConstraint("similarity_weight >= 0", name="ck_category_attribute_similarity_weight_nonnegative"),
+        CheckConstraint(
+            "input_type IN ('text','textarea','number','boolean','select','multiselect','date')",
+            name="ck_category_attribute_input_type",
+        ),
+        Index("ix_category_attributes_category_active_order", "category_id", "is_active", "display_order"),
+    )
+
+
 class Brand(Base):
     __tablename__ = "brands"
 
@@ -689,6 +731,9 @@ class Product(Base):
     wishlist_entries = relationship(
         "WishlistProduct", back_populates="product", cascade="all, delete-orphan"
     )
+    specifications = relationship(
+        "ProductSpecification", back_populates="product", cascade="all, delete-orphan"
+    )
 
     __table_args__ = (
         CheckConstraint("price >= 0", name="ck_product_price_nonnegative"),
@@ -702,6 +747,36 @@ class Product(Base):
             "sale_price IS NULL OR sale_price <= price",
             name="ck_product_sale_price_lte_price",
         ),
+    )
+
+
+class ProductSpecification(Base):
+    __tablename__ = "product_specifications"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    product_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("products.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    attribute_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("category_attributes.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    value = Column(JSONB, nullable=False)
+    normalized_value = Column(Text, nullable=True, index=True)
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), nullable=True, onupdate=func.now())
+
+    product = relationship("Product", back_populates="specifications")
+    attribute = relationship("CategoryAttribute")
+
+    __table_args__ = (
+        UniqueConstraint("product_id", "attribute_id", name="uq_product_specification_attribute"),
+        Index("ix_product_specifications_attribute_normalized", "attribute_id", "normalized_value"),
     )
 
 

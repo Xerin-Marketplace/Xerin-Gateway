@@ -72,6 +72,9 @@ fvm flutter run -d chrome
 
  du -sh -- */ | sort -hr
 
+ sudo journalctl -u xerin-api -f
+
+
 
 
 

@@ -15,7 +15,9 @@ from api.enums import PermissionCode
 from api.models import (
     Brand,
     Category,
+    CategoryAttribute,
     Product,
+    ProductSpecification,
     PaymentCurrency,
     PaymentFxRate,
     ProductImage,
@@ -40,6 +42,9 @@ from api.schemas import (
     BrandResponse,
     CategoryCreate,
     CategoryResponse,
+    CategoryAttributeResponse,
+    ProductSpecificationsUpsert,
+    ProductSpecificationResponse,
     ProductCreate,
     ProductImageCreate,
     ProductImageReorderRequest,
@@ -63,6 +68,13 @@ from api.services.broker_listing_expiry import expire_broker_listings
 from api.services.category_image_service import delete_category_image_files, store_category_image
 from api.services.seller_pricing import apply_product_pricing, apply_variant_pricing
 from api.services.inventory_catalog import inventory_configuration_errors
+from api.services.product_specifications import (
+    attribute_payload,
+    effective_category_attributes,
+    required_specification_errors,
+    specification_payload,
+    validate_specification_value,
+)
 from api.services.product_image_service import (
     MAX_PRODUCT_IMAGES,
     delete_product_image_files,
@@ -248,6 +260,12 @@ def get_category(category_id: UUID, db: Session = Depends(get_db)):
     if not category:
         raise HTTPException(status_code=404, detail="Category not found")
     return category
+
+
+@router.get("/categories/{category_id}/attributes", response_model=list[CategoryAttributeResponse])
+def get_category_attributes(category_id: UUID, db: Session = Depends(get_db)):
+    attrs = effective_category_attributes(db, category_id, active_only=True)
+    return [attribute_payload(item, requested_category_id=category_id) for item in attrs]
 
 
 @router.post("/brands", response_model=BrandResponse, status_code=status.HTTP_201_CREATED)
@@ -474,6 +492,51 @@ def get_my_product(
     return get_seller_product(db, product_id, seller.id)
 
 
+@router.get("/my-products/{product_id}/specifications", response_model=list[ProductSpecificationResponse])
+def get_my_product_specifications(
+    product_id: UUID, db: Session = Depends(get_db),
+    current_user: User = Depends(require_permission(PermissionCode.seller_products_read.value)),
+):
+    seller = get_my_seller(db, current_user, require_approved=False)
+    product = get_seller_product(db, product_id, seller.id)
+    rows = db.query(ProductSpecification).filter(ProductSpecification.product_id == product.id).all()
+    return [specification_payload(row) for row in sorted(rows, key=lambda row: (row.attribute.display_order, row.attribute.name.casefold()))]
+
+
+@router.put("/my-products/{product_id}/specifications", response_model=list[ProductSpecificationResponse])
+def replace_my_product_specifications(
+    product_id: UUID, data: ProductSpecificationsUpsert, db: Session = Depends(get_db),
+    current_user: User = Depends(require_permission(PermissionCode.seller_products_update.value)),
+):
+    seller = get_my_seller(db, current_user, require_approved=False)
+    product = get_seller_product(db, product_id, seller.id)
+    _ensure_editable(product)
+    effective = {item.id: item for item in effective_category_attributes(db, product.category_id, active_only=True)}
+    supplied = {item.attribute_id: item.value for item in data.specifications}
+    unknown = [str(attr_id) for attr_id in supplied if attr_id not in effective]
+    if unknown:
+        raise HTTPException(status_code=422, detail={"code": "ATTRIBUTE_NOT_AVAILABLE_FOR_CATEGORY", "attribute_ids": unknown})
+    existing = {row.attribute_id: row for row in db.query(ProductSpecification).filter(ProductSpecification.product_id == product.id).all()}
+    for attr_id, row in list(existing.items()):
+        if attr_id not in supplied:
+            db.delete(row)
+    for attr_id, raw_value in supplied.items():
+        attribute = effective[attr_id]
+        value, normalized = validate_specification_value(attribute, raw_value)
+        if value is None or value == "" or value == []:
+            if attr_id in existing: db.delete(existing[attr_id])
+            continue
+        row = existing.get(attr_id)
+        if row is None:
+            row = ProductSpecification(product_id=product.id, attribute_id=attr_id, value=value, normalized_value=normalized)
+            db.add(row)
+        else:
+            row.value = value; row.normalized_value = normalized
+    _commit(db); db.expire_all()
+    rows = db.query(ProductSpecification).filter(ProductSpecification.product_id == product.id).all()
+    return [specification_payload(row) for row in sorted(rows, key=lambda row: (row.attribute.display_order, row.attribute.name.casefold()))]
+
+
 @router.post("/{product_id}/submit", response_model=ProductResponse)
 def submit_product_for_review(
     product_id: UUID,
@@ -494,6 +557,16 @@ def submit_product_for_review(
             detail={
                 "message": "Product inventory is not ready for review",
                 "errors": inventory_errors,
+            },
+        )
+    specification_errors = required_specification_errors(db, product)
+    if specification_errors:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "code": "PRODUCT_SPECIFICATIONS_INCOMPLETE",
+                "message": "Complete the required product specifications before submitting for review",
+                "errors": specification_errors,
             },
         )
     if not db.query(ProductImage).filter(ProductImage.product_id == product.id, ProductImage.is_primary.is_(True)).first():
@@ -609,6 +682,19 @@ def get_display_currencies(db: Session = Depends(get_db)):
             }
         )
     return result
+
+
+@router.get("/{product_id}/specifications", response_model=list[ProductSpecificationResponse])
+def get_product_specifications(product_id: UUID, db: Session = Depends(get_db)):
+    product = db.query(Product).filter(
+        Product.id == product_id,
+        Product.is_active.is_(True),
+        Product.status == ProductStatus.approved,
+    ).first()
+    if not product:
+        raise HTTPException(status_code=404, detail="Product not found")
+    rows = db.query(ProductSpecification).filter(ProductSpecification.product_id == product.id).all()
+    return [specification_payload(row) for row in sorted(rows, key=lambda row: (row.attribute.display_order, row.attribute.name.casefold()))]
 
 
 @router.get("/{product_id}", response_model=ProductResponse)

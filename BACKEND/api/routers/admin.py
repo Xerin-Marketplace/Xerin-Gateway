@@ -18,6 +18,7 @@ from api.models import (
     User,
     BusinessCategory,
     Category,
+    CategoryAttribute,
     Brand,
     Seller,
     SellerStatus,
@@ -33,6 +34,9 @@ from api.schemas import (
     CategoryCreate,
     CategoryUpdate,
     CategoryResponse,
+    CategoryAttributeCreate,
+    CategoryAttributeUpdate,
+    CategoryAttributeResponse,
     BrandCreate,
     BrandUpdate,
     BrandResponse,
@@ -71,6 +75,7 @@ from api.services.category_image_service import (
     delete_category_image_files,
     store_category_image,
 )
+from api.services.product_specifications import attribute_payload, effective_category_attributes
 
 
 router = APIRouter(prefix="/admin", tags=["Admin"])
@@ -1403,6 +1408,75 @@ def delete_product_category(
    
 
 
+
+
+@router.post("/product-categories/{category_id}/attributes", response_model=CategoryAttributeResponse, status_code=status.HTTP_201_CREATED)
+def create_product_category_attribute(
+    category_id: UUID,
+    data: CategoryAttributeCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permission(PermissionCode.can_create_product_categories.value)),
+):
+    del current_user
+    if not db.query(Category).filter(Category.id == category_id).first():
+        raise HTTPException(status_code=404, detail="Product category not found")
+    if db.query(CategoryAttribute).filter(CategoryAttribute.category_id == category_id, CategoryAttribute.key == data.key).first():
+        raise HTTPException(status_code=409, detail="This attribute key already exists for the category")
+    item = CategoryAttribute(category_id=category_id, **data.model_dump())
+    db.add(item); db.commit(); db.refresh(item)
+    return attribute_payload(item, requested_category_id=category_id)
+
+
+@router.get("/product-categories/{category_id}/attributes", response_model=list[CategoryAttributeResponse])
+def list_product_category_attributes(
+    category_id: UUID,
+    include_inherited: bool = Query(default=True),
+    include_inactive: bool = Query(default=False),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permission(PermissionCode.can_view_product_categories.value)),
+):
+    del current_user
+    if include_inherited:
+        attrs = effective_category_attributes(db, category_id, active_only=not include_inactive)
+    else:
+        query = db.query(CategoryAttribute).filter(CategoryAttribute.category_id == category_id)
+        if not include_inactive: query = query.filter(CategoryAttribute.is_active.is_(True))
+        attrs = query.order_by(CategoryAttribute.display_order.asc(), CategoryAttribute.name.asc()).all()
+    return [attribute_payload(item, requested_category_id=category_id) for item in attrs]
+
+
+@router.patch("/product-categories/{category_id}/attributes/{attribute_id}", response_model=CategoryAttributeResponse)
+def update_product_category_attribute(
+    category_id: UUID, attribute_id: UUID, data: CategoryAttributeUpdate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permission(PermissionCode.can_create_product_categories.value)),
+):
+    del current_user
+    item = db.query(CategoryAttribute).filter(CategoryAttribute.id == attribute_id, CategoryAttribute.category_id == category_id).first()
+    if not item: raise HTTPException(status_code=404, detail="Category attribute not found")
+    values = data.model_dump(exclude_unset=True)
+    candidate_type = values.get("input_type", item.input_type)
+    candidate_allowed = values.get("allowed_values", item.allowed_values or [])
+    if candidate_type in {"select", "multiselect"} and not candidate_allowed:
+        raise HTTPException(status_code=422, detail="Select and multiselect attributes require allowed_values")
+    if "key" in values:
+        duplicate = db.query(CategoryAttribute).filter(CategoryAttribute.category_id == category_id, CategoryAttribute.key == values["key"], CategoryAttribute.id != item.id).first()
+        if duplicate: raise HTTPException(status_code=409, detail="This attribute key already exists for the category")
+    for key, value in values.items(): setattr(item, key, value)
+    db.commit(); db.refresh(item)
+    return attribute_payload(item, requested_category_id=category_id)
+
+
+@router.delete("/product-categories/{category_id}/attributes/{attribute_id}")
+def delete_product_category_attribute(
+    category_id: UUID, attribute_id: UUID, db: Session = Depends(get_db),
+    current_user: User = Depends(require_permission(PermissionCode.can_delete_product_categories.value)),
+):
+    del current_user
+    item = db.query(CategoryAttribute).filter(CategoryAttribute.id == attribute_id, CategoryAttribute.category_id == category_id).first()
+    if not item: raise HTTPException(status_code=404, detail="Category attribute not found")
+    db.delete(item); db.commit()
+    return {"message": "Category attribute deleted successfully"}
 @router.post("/brands", response_model=BrandResponse)
 def create_brand(
     data: BrandCreate,

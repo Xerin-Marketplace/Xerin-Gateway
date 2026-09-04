@@ -1139,6 +1139,127 @@ class CategoryResponse(BaseModel):
     model_config = ORM_CONFIG
 
 
+class CategoryAttributeCreate(BaseModel):
+    key: str = Field(min_length=1, max_length=100, pattern=r"^[a-z0-9][a-z0-9_\-]*$")
+    name: str = Field(min_length=1, max_length=150)
+    description: Optional[str] = None
+    input_type: Literal["text", "textarea", "number", "boolean", "select", "multiselect", "date"] = "text"
+    unit: Optional[str] = Field(default=None, max_length=50)
+    allowed_values: list[str] = Field(default_factory=list)
+    settings: Dict[str, Any] = Field(default_factory=dict)
+    is_required: bool = False
+    is_filterable: bool = False
+    is_comparable: bool = True
+    use_for_similarity: bool = True
+    similarity_weight: Decimal = Field(default=Decimal("1"), ge=0, max_digits=6, decimal_places=2)
+    is_variant_attribute: bool = False
+    inherit_to_children: bool = True
+    display_order: int = Field(default=0, ge=0)
+    is_active: bool = True
+
+    @field_validator("key", mode="before")
+    @classmethod
+    def normalize_key(cls, value):
+        return str(value).strip().lower().replace(" ", "_")
+
+    @model_validator(mode="after")
+    def validate_allowed_values(self):
+        cleaned = []
+        seen = set()
+        for raw in self.allowed_values:
+            value = str(raw).strip()
+            if value and value.casefold() not in seen:
+                seen.add(value.casefold()); cleaned.append(value)
+        self.allowed_values = cleaned
+        if self.input_type in {"select", "multiselect"} and not self.allowed_values:
+            raise ValueError("Select and multiselect attributes require allowed_values")
+        return self
+
+
+class CategoryAttributeUpdate(BaseModel):
+    key: Optional[str] = Field(default=None, min_length=1, max_length=100, pattern=r"^[a-z0-9][a-z0-9_\-]*$")
+    name: Optional[str] = Field(default=None, min_length=1, max_length=150)
+    description: Optional[str] = None
+    input_type: Optional[Literal["text", "textarea", "number", "boolean", "select", "multiselect", "date"]] = None
+    unit: Optional[str] = Field(default=None, max_length=50)
+    allowed_values: Optional[list[str]] = None
+    settings: Optional[Dict[str, Any]] = None
+    is_required: Optional[bool] = None
+    is_filterable: Optional[bool] = None
+    is_comparable: Optional[bool] = None
+    use_for_similarity: Optional[bool] = None
+    similarity_weight: Optional[Decimal] = Field(default=None, ge=0, max_digits=6, decimal_places=2)
+    is_variant_attribute: Optional[bool] = None
+    inherit_to_children: Optional[bool] = None
+    display_order: Optional[int] = Field(default=None, ge=0)
+    is_active: Optional[bool] = None
+
+    @field_validator("key", mode="before")
+    @classmethod
+    def normalize_key(cls, value):
+        if value is None: return None
+        return str(value).strip().lower().replace(" ", "_")
+
+
+class CategoryAttributeResponse(BaseModel):
+    id: UUID
+    category_id: UUID
+    key: str
+    name: str
+    description: Optional[str] = None
+    input_type: str
+    unit: Optional[str] = None
+    allowed_values: list[str] = Field(default_factory=list)
+    settings: Dict[str, Any] = Field(default_factory=dict)
+    is_required: bool
+    is_filterable: bool
+    is_comparable: bool
+    use_for_similarity: bool
+    similarity_weight: Decimal
+    is_variant_attribute: bool
+    inherit_to_children: bool
+    display_order: int
+    is_active: bool
+    source_category_id: Optional[UUID] = None
+    inherited: bool = False
+    created_at: datetime
+    updated_at: Optional[datetime] = None
+
+    model_config = ORM_CONFIG
+
+
+class ProductSpecificationInput(BaseModel):
+    attribute_id: UUID
+    value: Any
+
+
+class ProductSpecificationsUpsert(BaseModel):
+    specifications: list[ProductSpecificationInput] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def unique_attributes(self):
+        ids = [item.attribute_id for item in self.specifications]
+        if len(ids) != len(set(ids)):
+            raise ValueError("Each attribute may be supplied only once")
+        return self
+
+
+class ProductSpecificationResponse(BaseModel):
+    id: UUID
+    product_id: UUID
+    attribute_id: UUID
+    key: str
+    name: str
+    input_type: str
+    unit: Optional[str] = None
+    value: Any
+    normalized_value: Optional[str] = None
+    is_comparable: bool = True
+    use_for_similarity: bool = True
+    similarity_weight: Decimal = Decimal("1")
+    display_order: int = 0
+
+
 class BrandCreate(BaseModel):
     name: str
     slug: str
