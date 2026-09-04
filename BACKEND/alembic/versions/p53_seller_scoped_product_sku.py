@@ -33,7 +33,7 @@ def upgrade():
                       JOIN pg_attribute att
                         ON att.attrelid = rel.oid
                        AND att.attnum = cols.attnum
-               ) = ARRAY['sku']::text[]
+               ) = ARRAY['sku']::name[]
              LIMIT 1;
 
             IF constraint_name IS NOT NULL THEN
