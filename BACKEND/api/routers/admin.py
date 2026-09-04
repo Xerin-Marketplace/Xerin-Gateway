@@ -1656,8 +1656,11 @@ def start_seller_review(
     if seller.status == SellerStatus.approved:
         raise HTTPException(status_code=409, detail="Seller is already approved")
 
-    documents = db.query(SellerKYCDocument).filter(SellerKYCDocument.seller_id == seller.id).all()
-    required = {"tin", "business_profile", "business_registration"}
+    documents = db.query(SellerKYCDocument).filter(
+        SellerKYCDocument.seller_id == seller.id,
+        SellerKYCDocument.is_current.is_(True),
+    ).all()
+    required = {"tin", "business_registration", "business_license", "business_profile"}
     uploaded = {doc.document_type for doc in documents}
     missing = sorted(required - uploaded)
     if missing:
@@ -1687,11 +1690,14 @@ def approve_seller(
     if not seller:
         raise HTTPException(status_code=404, detail="Seller not found")
 
-    required_docs = ["tin", "business_profile", "business_registration"]
+    required_docs = ["tin", "business_registration", "business_license", "business_profile"]
 
     documents = (
         db.query(SellerKYCDocument)
-        .filter(SellerKYCDocument.seller_id == seller.id)
+        .filter(
+            SellerKYCDocument.seller_id == seller.id,
+            SellerKYCDocument.is_current.is_(True),
+        )
         .all()
     )
 
@@ -1704,6 +1710,17 @@ def approve_seller(
             status_code=400, detail=f"Seller is missing documents: {missing}"
         )
 
+    business_license = next(
+        (doc for doc in documents if doc.document_type == "business_license"),
+        None,
+    )
+    if business_license is None or not (business_license.document_number or "").strip():
+        raise HTTPException(status_code=409, detail="Business licence number is required before seller approval")
+    if business_license.expiry_date is None:
+        raise HTTPException(status_code=409, detail="Business licence expiry date is required before seller approval")
+    if business_license.expiry_date < datetime.now(timezone.utc).date():
+        raise HTTPException(status_code=409, detail="Business licence is expired and cannot be approved")
+
     not_reviewed = [
         doc.document_type for doc in documents
         if doc.document_type in required_docs and doc.status not in {"under_review", "approved"}
@@ -1714,12 +1731,15 @@ def approve_seller(
             detail=f"Start review before approval. Documents not under review: {not_reviewed}",
         )
 
+    approved_at = datetime.now(timezone.utc)
     for document in documents:
         document.status = "approved"
         document.rejection_reason = None
+        document.approved_at = approved_at
+        document.approved_by_user_id = current_user.id
 
     seller.status = SellerStatus.approved
-    seller.approved_at = datetime.now(timezone.utc)
+    seller.approved_at = approved_at
 
     db.commit()
     db.refresh(seller)
@@ -1744,7 +1764,10 @@ def reject_seller(
 
     seller.status = SellerStatus.rejected
 
-    db.query(SellerKYCDocument).filter(SellerKYCDocument.seller_id == seller.id).update(
+    db.query(SellerKYCDocument).filter(
+        SellerKYCDocument.seller_id == seller.id,
+        SellerKYCDocument.is_current.is_(True),
+    ).update(
         {
             "status": "rejected",
             "rejection_reason": reason,

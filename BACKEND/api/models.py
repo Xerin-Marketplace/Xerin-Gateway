@@ -6,6 +6,7 @@ from sqlalchemy import (
     String,
     Boolean,
     DateTime,
+    Date,
     ForeignKey,
     Enum,
     Text,
@@ -295,6 +296,8 @@ class Seller(Base):
     status = Column(Enum(SellerStatus), default=SellerStatus.pending)
     agreement_accepted = Column(Boolean, default=False)
     approved_at = Column(DateTime(timezone=True), nullable=True)
+    suspended_at = Column(DateTime(timezone=True), nullable=True)
+    suspension_reason = Column(String(120), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
     user = relationship("User", back_populates="seller_profile")
@@ -500,8 +503,15 @@ class SellerKYCDocument(Base):
 
     document_type = Column(String(100), nullable=False)
     document_url = Column(Text, nullable=False)
+    document_number = Column(String(180), nullable=True)
+    issued_date = Column(Date, nullable=True)
+    expiry_date = Column(Date, nullable=True, index=True)
+    version = Column(Integer, nullable=False, default=1, server_default="1")
+    is_current = Column(Boolean, nullable=False, default=True, server_default="true", index=True)
     status = Column(String(50), default="pending")
     rejection_reason = Column(Text, nullable=True)
+    approved_at = Column(DateTime(timezone=True), nullable=True)
+    approved_by_user_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
 
     uploaded_at = Column(DateTime(timezone=True), server_default=func.now())
 
@@ -714,6 +724,31 @@ class Product(Base):
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
 
     seller = relationship("Seller")
+
+    @property
+    def seller_compliance_status(self):
+        if self.seller is None:
+            return None
+        return self.seller.status.value if hasattr(self.seller.status, "value") else str(self.seller.status)
+
+    @property
+    def marketplace_available(self):
+        if not self.is_active or self.status != ProductStatus.approved:
+            return False
+        if self.seller is None:
+            return True
+        return self.seller.status == SellerStatus.approved
+
+    @property
+    def marketplace_unavailable_reason(self):
+        if self.marketplace_available:
+            return None
+        if self.seller is not None and self.seller.suspension_reason == "business_license_expired":
+            return "seller_business_license_expired"
+        if self.seller is not None and self.seller.status != SellerStatus.approved:
+            return "seller_unavailable"
+        return "product_unavailable"
+
     broker = relationship("Broker")
     store = relationship("Store", back_populates="products")
     category = relationship("Category")

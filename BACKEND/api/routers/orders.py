@@ -90,6 +90,7 @@ from api.services.checkout_delivery_quote import (
 from api.services.order_workflow import build_order_workflow, reconcile_order_workflow
 from api.services.order_invoice import build_order_invoice_pdf
 from api.services.payment_receipt import build_payment_receipt_pdf
+from api.services.seller_compliance import ensure_product_seller_available
 
 router = APIRouter(prefix="/orders", tags=["Orders"])
 
@@ -942,6 +943,8 @@ def create_order(
                     status_code=409,
                     detail=f"Product {cart_item.product_id} is no longer available",
                 )
+
+            ensure_product_seller_available(db, product)
 
             if cart_item.variant_id is not None and (
                 cart_item.variant is None

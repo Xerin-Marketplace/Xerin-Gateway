@@ -37,6 +37,7 @@ from api.models import (
     BrokerOfferAcceptance,
 )
 from api.permissions import require_permission
+from api.services.seller_compliance import enforce_seller_license_status, sweep_expired_seller_licenses
 from api.schemas import (
     BrandCreate,
     BrandResponse,
@@ -116,8 +117,12 @@ def get_my_seller(db: Session, current_user: User, *, require_approved: bool = T
     seller = db.query(Seller).filter(Seller.user_id == current_user.id).first()
     if not seller:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="You must register as a seller first")
+    enforce_seller_license_status(db, seller)
     if require_approved and seller.status != SellerStatus.approved:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Seller account is not approved")
+        message = "Seller account is not approved"
+        if seller.suspension_reason == "business_license_expired":
+            message = "Seller operations are suspended because the Business Licence expired"
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=message)
     return seller
 
 
@@ -494,6 +499,7 @@ def list_products(
     limit: int = Query(default=20, ge=1, le=100),
 ):
     expire_broker_listings(db)
+    sweep_expired_seller_licenses(db)
     query = db.query(Product).filter(Product.is_active.is_(True), Product.status == ProductStatus.approved)
     if search and search.strip():
         term = search.strip()
@@ -771,6 +777,7 @@ def get_product_specifications(product_id: UUID, db: Session = Depends(get_db)):
 @router.get("/{product_id}", response_model=ProductResponse)
 def get_product(product_id: UUID, db: Session = Depends(get_db)):
     expire_broker_listings(db)
+    sweep_expired_seller_licenses(db)
     product = db.query(Product).filter(Product.id == product_id, Product.is_active.is_(True), Product.status == ProductStatus.approved).first()
     if not product:
         raise HTTPException(status_code=404, detail="Product not found")

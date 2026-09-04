@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import asyncio
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, status
@@ -13,6 +14,7 @@ from sqlalchemy import text
 from api.config import settings
 from api.database import SessionLocal
 from api.errors import install_exception_handlers
+from api.services.seller_compliance import sweep_expired_seller_licenses
 from api.routers import (
     analytics,
     audit_logs,
@@ -66,6 +68,25 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+def _run_seller_compliance_sweep() -> None:
+    db = SessionLocal()
+    try:
+        count = sweep_expired_seller_licenses(db)
+        if count:
+            logger.warning("Suspended %s seller(s) with expired Business Licences", count)
+    except Exception:
+        db.rollback()
+        logger.exception("Seller licence compliance sweep failed")
+    finally:
+        db.close()
+
+
+async def _seller_compliance_loop() -> None:
+    while True:
+        await asyncio.sleep(3600)
+        await asyncio.to_thread(_run_seller_compliance_sweep)
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI):
 
@@ -77,8 +98,22 @@ async def lifespan(_: FastAPI):
         settings.APP_NAME,
         settings.APP_ENV,
     )
-    yield
-    logger.info("Stopping %s", settings.APP_NAME)
+
+    # Run once at application start, then hourly. The operation is idempotent,
+    # and request-time checks still protect checkout if this background task
+    # is ever delayed.
+    await asyncio.to_thread(_run_seller_compliance_sweep)
+    compliance_task = asyncio.create_task(_seller_compliance_loop())
+
+    try:
+        yield
+    finally:
+        compliance_task.cancel()
+        try:
+            await compliance_task
+        except asyncio.CancelledError:
+            pass
+        logger.info("Stopping %s", settings.APP_NAME)
 
 
 api = FastAPI(

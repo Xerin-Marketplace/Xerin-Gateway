@@ -29,6 +29,7 @@ from api.models import (
 )
 from api.services.fx_service import FxRateUnavailableError, convert_amount_to_tzs
 from api.services.broker_risk_service import record_broker_risk
+from api.services.seller_compliance import ensure_product_seller_available
 from api.schemas import (
     ApplyCartPromotionRequest,
     ApplyCouponRequest,
@@ -518,6 +519,8 @@ def add_cart_item(
                 detail="Product is not available",
             )
 
+        ensure_product_seller_available(db, product)
+
         variant = None
         if data.variant_id is not None:
             variant = (
@@ -950,6 +953,16 @@ def validate_cart(
                 )
                 continue
 
+            try:
+                ensure_product_seller_available(db, product)
+            except HTTPException as exc:
+                detail = exc.detail if isinstance(exc.detail, dict) else {}
+                messages.append(
+                    detail.get("message")
+                    or f"{product.name} is temporarily unavailable because the seller cannot accept new sales"
+                )
+                continue
+
             if item.variant_id is not None and (
                 item.variant is None or not item.variant.is_active
             ):
@@ -1026,6 +1039,18 @@ def merge_guest_cart(
                     {
                         "product_id": incoming.product_id,
                         "reason": "Product is not available",
+                    }
+                )
+                continue
+
+            try:
+                ensure_product_seller_available(db, product)
+            except HTTPException as exc:
+                detail = exc.detail if isinstance(exc.detail, dict) else {}
+                rejected.append(
+                    {
+                        "product_id": incoming.product_id,
+                        "reason": detail.get("message") or "Seller is temporarily unavailable",
                     }
                 )
                 continue

@@ -1,5 +1,5 @@
 from uuid import UUID, uuid4
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 import mimetypes
 from fastapi import (
@@ -15,6 +15,7 @@ from fastapi import (
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 from api.schemas import SellerProfileUpdate, SellerProfileResponse
+from api.services.seller_compliance import enforce_seller_license_status
 from api.deps import get_db, get_current_user
 from api.models import (
     User,
@@ -49,9 +50,12 @@ UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
 REQUIRED_KYC_DOCUMENTS = [
     "tin",
-    "business_profile",
     "business_registration",
+    "business_license",
+    "business_profile",
 ]
+
+BUSINESS_LICENSE_DOCUMENT_TYPE = "business_license"
 
 
 def _assign_role(db: Session, user_id: UUID, role_name: str) -> None:
@@ -95,6 +99,7 @@ def get_my_seller(db: Session, current_user: User) -> Seller:
     if not seller:
         raise HTTPException(status_code=404, detail="Seller profile not found")
 
+    enforce_seller_license_status(db, seller)
     return seller
 
 
@@ -308,10 +313,44 @@ def _normalize_document_type(document_type: str) -> str:
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=(
                 "Invalid document type. Use: "
-                "tin, business_profile, business_registration"
+                "tin, business_registration, business_license, business_profile"
             ),
         )
     return normalized
+
+
+def _validate_business_license_metadata(
+    document_type: str,
+    document_number: str | None,
+    expiry_date: date | None,
+) -> tuple[str | None, date | None]:
+    if document_type != BUSINESS_LICENSE_DOCUMENT_TYPE:
+        return (document_number.strip() if document_number else None, expiry_date)
+
+    number = (document_number or "").strip()
+    if not number:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="Business licence number is required",
+        )
+    if expiry_date is None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="Business licence expiry date is required",
+        )
+    if expiry_date < date.today():
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="Business licence is already expired",
+        )
+    return number, expiry_date
+
+
+def _current_kyc_query(db: Session, seller_id: UUID):
+    return db.query(SellerKYCDocument).filter(
+        SellerKYCDocument.seller_id == seller_id,
+        SellerKYCDocument.is_current.is_(True),
+    )
 
 
 def _ensure_kyc_is_editable(seller: Seller) -> None:
@@ -344,6 +383,7 @@ def _ensure_no_documents_are_under_admin_review(db: Session, seller_id: UUID) ->
         db.query(SellerKYCDocument)
         .filter(
             SellerKYCDocument.seller_id == seller_id,
+            SellerKYCDocument.is_current.is_(True),
             SellerKYCDocument.status == "under_review",
         )
         .first()
@@ -462,9 +502,7 @@ async def _save_kyc_upload(
 def _synchronize_seller_kyc_status(db: Session, seller: Seller) -> None:
     uploaded_types = {
         row.document_type
-        for row in db.query(SellerKYCDocument)
-        .filter(SellerKYCDocument.seller_id == seller.id)
-        .all()
+        for row in _current_kyc_query(db, seller.id).all()
     }
 
     has_all_required_documents = all(
@@ -486,6 +524,8 @@ def _synchronize_seller_kyc_status(db: Session, seller: Seller) -> None:
 )
 async def upload_kyc_document(
     document_type: str = Form(...),
+    document_number: str | None = Form(default=None),
+    expiry_date: date | None = Form(default=None),
     file: UploadFile = File(...),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
@@ -495,12 +535,12 @@ async def upload_kyc_document(
     _ensure_kyc_is_editable(seller)
 
     normalized_type = _normalize_document_type(document_type)
+    document_number, expiry_date = _validate_business_license_metadata(
+        normalized_type, document_number, expiry_date
+    )
     existing_document = (
-        db.query(SellerKYCDocument)
-        .filter(
-            SellerKYCDocument.seller_id == seller.id,
-            SellerKYCDocument.document_type == normalized_type,
-        )
+        _current_kyc_query(db, seller.id)
+        .filter(SellerKYCDocument.document_type == normalized_type)
         .first()
     )
     _ensure_document_is_not_under_admin_review(existing_document)
@@ -514,17 +554,36 @@ async def upload_kyc_document(
     old_document_url = None
 
     try:
-        if existing_document is not None:
+        if existing_document is not None and normalized_type == BUSINESS_LICENSE_DOCUMENT_TYPE:
+            existing_document.is_current = False
+            document = SellerKYCDocument(
+                seller_id=seller.id,
+                document_type=normalized_type,
+                document_url=new_document_url,
+                document_number=document_number,
+                expiry_date=expiry_date,
+                version=(existing_document.version or 1) + 1,
+                is_current=True,
+                status="pending",
+            )
+            db.add(document)
+        elif existing_document is not None:
             old_document_url = existing_document.document_url
             existing_document.document_url = new_document_url
             existing_document.status = "pending"
             existing_document.rejection_reason = None
+            existing_document.approved_at = None
+            existing_document.approved_by_user_id = None
             document = existing_document
         else:
             document = SellerKYCDocument(
                 seller_id=seller.id,
                 document_type=normalized_type,
                 document_url=new_document_url,
+                document_number=document_number,
+                expiry_date=expiry_date,
+                version=1,
+                is_current=True,
                 status="pending",
             )
             db.add(document)
@@ -591,18 +650,28 @@ async def upload_bulk_kyc_documents(
     tin_file: UploadFile = File(...),
     business_profile_file: UploadFile = File(...),
     business_registration_file: UploadFile = File(...),
+    business_license_file: UploadFile = File(...),
+    business_license_number: str = Form(...),
+    business_license_expiry_date: date = Form(...),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """Create or replace all three required KYC documents in one request."""
+    """Create or replace all four required KYC documents in one request."""
     seller = get_my_seller(db, current_user)
     _ensure_kyc_is_editable(seller)
     _ensure_no_documents_are_under_admin_review(db, seller.id)
 
+    business_license_number, business_license_expiry_date = _validate_business_license_metadata(
+        BUSINESS_LICENSE_DOCUMENT_TYPE,
+        business_license_number,
+        business_license_expiry_date,
+    )
+
     files_map = {
         "tin": tin_file,
-        "business_profile": business_profile_file,
         "business_registration": business_registration_file,
+        "business_license": business_license_file,
+        "business_profile": business_profile_file,
     }
 
     saved_urls: dict[str, str] = {}
@@ -620,26 +689,42 @@ async def upload_bulk_kyc_documents(
 
         for document_type, document_url in saved_urls.items():
             existing_document = (
-                db.query(SellerKYCDocument)
-                .filter(
-                    SellerKYCDocument.seller_id == seller.id,
-                    SellerKYCDocument.document_type == document_type,
-                )
+                _current_kyc_query(db, seller.id)
+                .filter(SellerKYCDocument.document_type == document_type)
                 .first()
             )
 
-            if existing_document is not None:
+            if existing_document is not None and document_type == BUSINESS_LICENSE_DOCUMENT_TYPE:
+                existing_document.is_current = False
+                document = SellerKYCDocument(
+                    seller_id=seller.id,
+                    document_type=document_type,
+                    document_url=document_url,
+                    document_number=business_license_number,
+                    expiry_date=business_license_expiry_date,
+                    version=(existing_document.version or 1) + 1,
+                    is_current=True,
+                    status="pending",
+                )
+                db.add(document)
+            elif existing_document is not None:
                 if existing_document.document_url:
                     old_urls.append(existing_document.document_url)
                 existing_document.document_url = document_url
                 existing_document.status = "pending"
                 existing_document.rejection_reason = None
+                existing_document.approved_at = None
+                existing_document.approved_by_user_id = None
                 document = existing_document
             else:
                 document = SellerKYCDocument(
                     seller_id=seller.id,
                     document_type=document_type,
                     document_url=document_url,
+                    document_number=business_license_number if document_type == BUSINESS_LICENSE_DOCUMENT_TYPE else None,
+                    expiry_date=business_license_expiry_date if document_type == BUSINESS_LICENSE_DOCUMENT_TYPE else None,
+                    version=1,
+                    is_current=True,
                     status="pending",
                 )
                 db.add(document)
@@ -707,6 +792,8 @@ def view_my_kyc_document(
 async def update_my_kyc_document(
     document_id: UUID,
     document_type: str | None = Form(default=None),
+    document_number: str | None = Form(default=None),
+    expiry_date: date | None = Form(default=None),
     file: UploadFile | None = File(default=None),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
@@ -716,12 +803,14 @@ async def update_my_kyc_document(
     _ensure_kyc_is_editable(seller)
 
     document = _get_owned_kyc_document(db, seller.id, document_id)
+    if document.is_current is False:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Archived KYC document versions are read-only")
     _ensure_document_is_not_under_admin_review(document)
 
-    if document_type is None and file is None:
+    if document_type is None and document_number is None and expiry_date is None and file is None:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Provide document_type, file, or both",
+            detail="Provide document_type, document metadata, file, or a combination",
         )
 
     new_document_type = document.document_type
@@ -729,9 +818,8 @@ async def update_my_kyc_document(
         new_document_type = _normalize_document_type(document_type)
 
         duplicate = (
-            db.query(SellerKYCDocument)
+            _current_kyc_query(db, seller.id)
             .filter(
-                SellerKYCDocument.seller_id == seller.id,
                 SellerKYCDocument.document_type == new_document_type,
                 SellerKYCDocument.id != document.id,
             )
@@ -744,6 +832,12 @@ async def update_my_kyc_document(
                 detail=f"A {new_document_type} document already exists",
             )
 
+    effective_number = document_number if document_number is not None else document.document_number
+    effective_expiry = expiry_date if expiry_date is not None else document.expiry_date
+    effective_number, effective_expiry = _validate_business_license_metadata(
+        new_document_type, effective_number, effective_expiry
+    )
+
     old_document_url = document.document_url
     new_document_url = old_document_url
 
@@ -755,10 +849,29 @@ async def update_my_kyc_document(
         )
 
     try:
-        document.document_type = new_document_type
-        document.document_url = new_document_url
-        document.status = "pending"
-        document.rejection_reason = None
+        if file is not None and new_document_type == BUSINESS_LICENSE_DOCUMENT_TYPE:
+            document.is_current = False
+            replacement = SellerKYCDocument(
+                seller_id=seller.id,
+                document_type=new_document_type,
+                document_url=new_document_url,
+                document_number=effective_number,
+                expiry_date=effective_expiry,
+                version=(document.version or 1) + 1,
+                is_current=True,
+                status="pending",
+            )
+            db.add(replacement)
+            document = replacement
+        else:
+            document.document_type = new_document_type
+            document.document_url = new_document_url
+            document.document_number = effective_number if new_document_type == BUSINESS_LICENSE_DOCUMENT_TYPE else None
+            document.expiry_date = effective_expiry if new_document_type == BUSINESS_LICENSE_DOCUMENT_TYPE else None
+            document.status = "pending"
+            document.rejection_reason = None
+            document.approved_at = None
+            document.approved_by_user_id = None
 
         _synchronize_seller_kyc_status(db, seller)
         db.commit()
@@ -769,7 +882,7 @@ async def update_my_kyc_document(
             _delete_kyc_file(new_document_url)
         raise
 
-    if new_document_url != old_document_url:
+    if new_document_url != old_document_url and new_document_type != BUSINESS_LICENSE_DOCUMENT_TYPE:
         _delete_kyc_file(old_document_url)
 
     return document
@@ -789,6 +902,8 @@ def delete_my_kyc_document(
     _ensure_kyc_is_editable(seller)
 
     document = _get_owned_kyc_document(db, seller.id, document_id)
+    if document.is_current is False:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Archived KYC document versions cannot be deleted")
     _ensure_document_is_not_under_admin_review(document)
     document_url = document.document_url
 
@@ -813,9 +928,7 @@ def get_my_kyc_status(
     seller = get_my_seller(db, current_user)
 
     documents = (
-        db.query(SellerKYCDocument)
-        .filter(SellerKYCDocument.seller_id == seller.id)
-        .all()
+        _current_kyc_query(db, seller.id).all()
     )
 
     uploaded_documents = [doc.document_type for doc in documents]

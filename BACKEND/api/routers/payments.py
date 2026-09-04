@@ -71,6 +71,7 @@ from api.services.inventory_reservations import (
 from api.services.commission_engine import calculate_order_commissions
 from api.services.escrow_service import create_order_escrow_holds
 from api.services.logistics_wallet_service import credit_order_delivery_entitlement
+from api.services.seller_compliance import ensure_order_sellers_available
 from api.services.broker_finance_service import (
     create_order_broker_commissions,
     attach_commissions_to_escrow,
@@ -626,6 +627,7 @@ def initiate_payment(
             status_code=status.HTTP_409_CONFLICT,
             detail="Only pending orders can be paid",
         )
+    ensure_order_sellers_available(db, order.id)
     ensure_order_reservations_active(db, order)
 
     method = (
@@ -1241,6 +1243,7 @@ def retry_payment(
             status_code=status.HTTP_409_CONFLICT,
             detail="Only pending orders can retry payment",
         )
+    ensure_order_sellers_available(db, order.id)
     if payment.status == PaymentStatus.completed:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,

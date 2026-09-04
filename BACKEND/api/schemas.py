@@ -15,7 +15,7 @@ from pydantic import (
     model_validator,
 )
 from uuid import UUID
-from datetime import datetime, time as Time
+from datetime import date, datetime, time as Time
 from decimal import Decimal
 from typing import Optional, List, Dict, Any, Literal
 import enum
@@ -536,6 +536,8 @@ class SellerResponse(BaseModel):
     contact_phone: str | None
     status: str
     agreement_accepted: bool
+    suspended_at: datetime | None = None
+    suspension_reason: str | None = None
     created_at: datetime
 
     model_config = ORM_CONFIG
@@ -554,6 +556,8 @@ class SellerResponse(BaseModel):
             "contact_phone": getattr(value, "contact_phone", None),
             "status": getattr(value, "status", None),
             "agreement_accepted": getattr(value, "agreement_accepted", False),
+            "suspended_at": getattr(value, "suspended_at", None),
+            "suspension_reason": getattr(value, "suspension_reason", None),
             "created_at": getattr(value, "created_at", None),
         }
         for name in (
@@ -784,6 +788,8 @@ class SellerApplicationStatusResponse(BaseModel):
     can_upload_kyc: bool = False
     submitted_at: datetime | None = None
     approved_at: datetime | None = None
+    suspended_at: datetime | None = None
+    suspension_reason: str | None = None
 
 
 class SellerKYCCreate(BaseModel):
@@ -796,8 +802,15 @@ class SellerKYCResponse(BaseModel):
     seller_id: UUID
     document_type: str
     document_url: str
+    document_number: str | None = None
+    issued_date: date | None = None
+    expiry_date: date | None = None
+    version: int = 1
+    is_current: bool = True
     status: str
     rejection_reason: str | None
+    approved_at: datetime | None = None
+    approved_by_user_id: UUID | None = None
     uploaded_at: datetime
     
     model_config = ORM_CONFIG
@@ -1370,6 +1383,9 @@ class ProductResponse(BaseModel):
     approved_at: Optional[datetime] = None
     approved_by_user_id: Optional[UUID] = None
     approval_method: Optional[str] = None
+    seller_compliance_status: Optional[str] = None
+    marketplace_available: bool = True
+    marketplace_unavailable_reason: Optional[str] = None
     images: list["ProductImageResponse"] = Field(default_factory=list)
     created_at: datetime
 
