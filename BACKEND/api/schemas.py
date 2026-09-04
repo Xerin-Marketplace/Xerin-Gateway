@@ -1376,6 +1376,23 @@ class ProductResponse(BaseModel):
 
 
 
+class SimilarProductMatchedAttribute(BaseModel):
+    key: str
+    name: str
+    source_value: Any
+    candidate_value: Any
+    unit: Optional[str] = None
+    match_strength: float = Field(ge=0, le=1)
+
+
+class SimilarProductMatchResponse(BaseModel):
+    product: ProductResponse
+    similarity_score: float = Field(ge=0, le=100)
+    matched_attributes: list[SimilarProductMatchedAttribute] = Field(default_factory=list)
+    in_stock: bool = False
+    available_quantity: int = 0
+
+
 class BrokerProductCreate(BaseModel):
     category_id: UUID
     brand_id: Optional[UUID] = None

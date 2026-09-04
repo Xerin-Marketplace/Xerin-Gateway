@@ -45,6 +45,7 @@ from api.schemas import (
     CategoryAttributeResponse,
     ProductSpecificationsUpsert,
     ProductSpecificationResponse,
+    SimilarProductMatchResponse,
     ProductCreate,
     ProductImageCreate,
     ProductImageReorderRequest,
@@ -68,6 +69,7 @@ from api.services.broker_listing_expiry import expire_broker_listings
 from api.services.category_image_service import delete_category_image_files, store_category_image
 from api.services.seller_pricing import apply_product_pricing, apply_variant_pricing
 from api.services.inventory_catalog import inventory_configuration_errors
+from api.services.product_similarity import DEFAULT_SIMILARITY_THRESHOLD, similar_product_matches
 from api.services.product_specifications import (
     attribute_payload,
     effective_category_attributes,
@@ -682,6 +684,29 @@ def get_display_currencies(db: Session = Depends(get_db)):
             }
         )
     return result
+
+
+@router.get("/{product_id}/similar", response_model=list[SimilarProductMatchResponse])
+def get_similar_products(
+    product_id: UUID,
+    min_score: float = Query(default=float(DEFAULT_SIMILARITY_THRESHOLD), ge=0, le=100),
+    limit: int = Query(default=8, ge=1, le=24),
+    db: Session = Depends(get_db),
+):
+    source = (
+        db.query(Product)
+        .filter(
+            Product.id == product_id,
+            Product.status == ProductStatus.approved,
+            Product.is_active.is_(True),
+        )
+        .first()
+    )
+    if not source:
+        raise HTTPException(status_code=404, detail="Product not found")
+    return similar_product_matches(
+        db, source, threshold=Decimal(str(min_score)), limit=limit
+    )
 
 
 @router.get("/{product_id}/specifications", response_model=list[ProductSpecificationResponse])
