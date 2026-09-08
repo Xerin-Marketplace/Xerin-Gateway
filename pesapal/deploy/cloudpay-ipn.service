@@ -1,0 +1,15 @@
+[Unit]
+Description=CloudPay Pesapal IPN Demo Service
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=__PROJECT_DIR__
+EnvironmentFile=__PROJECT_DIR__/.env
+ExecStart=__PROJECT_DIR__/.venv/bin/uvicorn ipn_server:app --host 127.0.0.1 --port 8502
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
