@@ -13,14 +13,14 @@ from pesapal_client import base_url as pesapal_base_url, token as pesapal_token,
 
 load_dotenv()
 
-st.set_page_config(page_title="CloudPay Tanzania", page_icon="☁️", layout="centered")
+st.set_page_config(page_title="COLAB Package Subscriptions", page_icon="☁️", layout="centered")
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DB_FILE = os.getenv("CLOUDPAY_DB_FILE", os.path.join(BASE_DIR, "cloudpay.db"))
 
 PACKAGES = {
     "Starter": {
-        "price": 10000,
+        "price": 2500,
         "cpu": "1 vCPU",
         "ram": "1 GB RAM",
         "storage": "20 GB SSD",
@@ -144,17 +144,17 @@ def submit_order(user, package_name):
     if not callback_url:
         raise RuntimeError("Missing PESAPAL_CALLBACK_URL in .env.")
 
-    merchant_reference = f"CLOUD-{uuid.uuid4().hex[:20].upper()}"
+    merchant_reference = f"COLAB-{uuid.uuid4().hex[:20].upper()}"
 
     payload = {
         "id": merchant_reference,
         "currency": "TZS",
         "amount": float(package["price"]),
-        "description": f"{package_name} cloud computing package",
+        "description": f"COLAB {package_name} Package Subscription",
         "callback_url": callback_url,
         "redirect_mode": "",
         "notification_id": notification_id,
-        "branch": "CloudPay Tanzania",
+        "branch": "COLAB",
         "billing_address": {
             "email_address": user["email"],
             "phone_number": user["phone"],
@@ -264,21 +264,21 @@ if "user" not in st.session_state:
 if "page" not in st.session_state:
     st.session_state.page = "Login"
 
-st.title("☁️ CloudPay Tanzania")
-st.caption("Streamlit + Pesapal API 3.0 demo")
+st.title("☁️ COLAB Package Subscriptions")
+st.caption("Choose and manage your COLAB subscription package")
 
 # Handle Pesapal redirect back to this Streamlit URL.
 params = st.query_params
 tracking_from_callback = params.get("OrderTrackingId")
 
 if tracking_from_callback:
-    st.info("Pesapal returned you to the app. Verifying the payment with Pesapal...")
+    st.info("Your payment was received. Verifying your COLAB subscription payment...")
     try:
         status = verify_transaction(tracking_from_callback)
         payment_status = (status.get("payment_status_description") or "UNKNOWN").upper()
 
         if payment_status == "COMPLETED":
-            st.success("✅ Payment verified successfully. Your package is active.")
+            st.success("✅ Payment verified successfully. Your COLAB subscription is now active.")
             st.balloons()
         elif payment_status == "FAILED":
             st.error("Payment failed.")
@@ -352,8 +352,8 @@ else:
             logout()
 
     if page == "Packages":
-        st.subheader("Choose your cloud package")
-        st.write("Select a package, create a Pesapal order, then pay on Pesapal's secure checkout.")
+        st.subheader("Choose your COLAB package")
+        st.write("Select the COLAB package that best fits your needs and continue to secure payment.")
 
         package_name = st.selectbox("Package", list(PACKAGES.keys()))
         p = PACKAGES[package_name]
@@ -363,32 +363,32 @@ else:
         st.write(f"**Memory:** {p['ram']}")
         st.write(f"**Storage:** {p['storage']}")
 
-        if st.button("Pay securely with Pesapal", type="primary", use_container_width=True):
+        if st.button("Subscribe to COLAB", type="primary", use_container_width=True):
             try:
-                with st.spinner("Creating secure Pesapal checkout..."):
+                with st.spinner("Preparing your COLAB subscription payment..."):
                     result, ref = submit_order(user, package_name)
 
                 st.session_state.checkout_url = result["redirect_url"]
                 st.session_state.checkout_ref = ref
-                st.success("Checkout created.")
+                st.success("Your COLAB subscription checkout is ready.")
             except Exception as exc:
                 st.error(str(exc))
 
         if st.session_state.get("checkout_url"):
             st.link_button(
-                "Continue to card / payment checkout →",
+                "Continue to secure payment →",
                 st.session_state.checkout_url,
                 use_container_width=True,
                 type="primary",
             )
-            st.caption(f"Order reference: {st.session_state.get('checkout_ref')}")
+            st.caption(f"COLAB Order Reference: {st.session_state.get('checkout_ref')}")
 
     else:
-        st.subheader("My payments")
+        st.subheader("My COLAB payments")
         orders = user_orders(user["id"])
 
         if not orders:
-            st.info("You have no payment orders yet.")
+            st.info("You have no COLAB subscription payments yet.")
         else:
             for order in orders:
                 with st.container(border=True):
@@ -414,6 +414,5 @@ else:
                                 st.error(str(exc))
 
         st.caption(
-            "Only a server-side Pesapal verification result marked COMPLETED "
-            "should activate real cloud resources."
+            "Your COLAB subscription is activated only after the payment provider confirms the transaction as COMPLETED."
         )
