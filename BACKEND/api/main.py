@@ -150,7 +150,15 @@ api.add_middleware(
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allow_headers=["Authorization", "Content-Type", "Accept", "Origin", "X-Request-ID"],
-    expose_headers=["X-Request-ID"],
+    expose_headers=[
+        "X-Request-ID",
+        "X-Xerin-AI-Model",
+        "X-Xerin-Image-Width",
+        "X-Xerin-Image-Height",
+        "X-Xerin-Quality-Passed",
+        "X-Xerin-Quality-Score",
+        "X-Xerin-Quality",
+    ],
 )
 
 
