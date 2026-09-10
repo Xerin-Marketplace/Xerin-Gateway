@@ -1,0 +1,17 @@
+[Unit]
+Description=Xerin Partner Webhook Worker
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/var/Xerin-Gateway/BACKEND
+EnvironmentFile=/var/Xerin-Gateway/BACKEND/.env
+ExecStart=/var/Xerin-Gateway/BACKEND/.venv/bin/python -m scripts.partner_webhook_worker
+Restart=always
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
