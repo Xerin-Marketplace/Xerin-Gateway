@@ -5,7 +5,8 @@ from collections import defaultdict, deque
 from datetime import datetime, timedelta, timezone
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
-from jose import jwt, JWTError
+import jwt
+from jwt import PyJWTError as JWTError
 import logging
 
 from api.database import SessionLocal

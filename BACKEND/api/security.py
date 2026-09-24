@@ -8,7 +8,7 @@ from typing import Any
 from uuid import uuid4
 
 import bcrypt
-from jose import jwt
+import jwt
 
 from api.config import settings
 
