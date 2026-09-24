@@ -1,13 +1,17 @@
+import secrets
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
-from api.deps import get_db
+from api.deps import get_db, get_current_user
 from api.enums import PermissionCode
-from api.models import Address, Seller, User, UserRole
+from api.models import Address, Seller, SellerStatus, User, UserRole, UserStatus
+from api.models import Session as UserSession
 from api.permissions import require_permission
+from api.security import hash_password, verify_password
 from api.schemas import (
+    DeleteMyAccountRequest,
     AddressCreate,
     AddressUpdate,
     AddressResponse,
@@ -249,3 +253,56 @@ def delete_address(
     db.commit()
 
     return {"message": "Address deleted successfully"}
+
+@router.delete("/users/me")
+def delete_my_account(
+    data: DeleteMyAccountRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Delete the currently authenticated user's account safely.
+
+    The users row is retained as an anonymised tombstone so existing orders,
+    payments, settlements and audit records can keep their foreign-key
+    relationships. Authentication data is revoked immediately.
+    """
+    if (data.confirmation or "").strip().upper() != "DELETE":
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Type DELETE to confirm account deletion",
+        )
+
+    user = (
+        db.query(User)
+        .filter(User.id == current_user.id)
+        .with_for_update()
+        .first()
+    )
+    if not user:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+
+    if not verify_password(data.current_password, user.password_hash):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Current password is incorrect",
+        )
+
+    # Suspend a linked seller profile so it can no longer trade.
+    seller = db.query(Seller).filter(Seller.user_id == user.id).first()
+    if seller is not None:
+        seller.status = SellerStatus.suspended
+
+    # Tombstone: strip PII, scramble credentials, deactivate.
+    user.first_name = "Deleted"
+    user.last_name = "User"
+    user.email = f"deleted-{user.id}@deleted.xerin.local"
+    user.phone = None
+    user.is_verified = False
+    user.status = UserStatus.inactive
+    user.password_hash = hash_password(secrets.token_urlsafe(48))
+
+    # Revoke every refresh session immediately — no path back in.
+    db.query(UserSession).filter(UserSession.user_id == user.id).delete()
+
+    db.commit()
+    return {"message": "Account deleted successfully"}

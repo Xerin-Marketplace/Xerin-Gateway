@@ -1,4 +1,5 @@
 import time
+from uuid import UUID
 import threading
 from collections import defaultdict, deque
 from datetime import datetime, timedelta, timezone
@@ -940,3 +941,60 @@ def change_password(
 
     db.commit()
     return {"message": "Password changed successfully. Please log in again."}
+
+
+# ---------------------------------------------------------------------------
+# Session management
+# ---------------------------------------------------------------------------
+
+@router.get("/sessions", response_model=list[AuthSessionResponse])
+def list_my_sessions(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    now = datetime.now(timezone.utc)
+    sessions = (
+        db.query(UserSession)
+        .filter(
+            UserSession.user_id == current_user.id,
+            UserSession.expires_at > now,
+        )
+        .order_by(UserSession.created_at.desc())
+        .all()
+    )
+    return sessions
+
+
+@router.delete("/sessions/{session_id}")
+def revoke_my_session(
+    session_id: UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    session = (
+        db.query(UserSession)
+        .filter(
+            UserSession.id == session_id,
+            UserSession.user_id == current_user.id,
+        )
+        .first()
+    )
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    db.delete(session)
+    db.commit()
+    return {"message": "Session revoked"}
+
+
+@router.post("/sessions/revoke-others")
+def revoke_other_sessions(
+    data: RevokeSessionsRequest | None = None,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    query = db.query(UserSession).filter(UserSession.user_id == current_user.id)
+    if data and data.refresh_token:
+        query = query.filter(UserSession.token_hash != hash_token(data.refresh_token))
+    revoked = query.delete(synchronize_session=False)
+    db.commit()
+    return {"message": f"{revoked} session(s) revoked", "revoked": revoked}

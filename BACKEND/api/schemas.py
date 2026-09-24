@@ -3778,3 +3778,19 @@ class FareCalculationResponse(BaseModel):
     total_fare: Decimal
     currency: str
     zone_name: str | None = None
+
+
+class AuthSessionResponse(BaseModel):
+    id: UUID
+    created_at: datetime
+    expires_at: datetime
+
+
+class RevokeSessionsRequest(BaseModel):
+    # Optional: keep the session holding this refresh token alive.
+    refresh_token: str | None = None
+
+
+class DeleteMyAccountRequest(BaseModel):
+    current_password: str
+    confirmation: str
