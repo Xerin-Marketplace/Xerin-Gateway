@@ -7,6 +7,7 @@ from fastapi import FastAPI, HTTPException, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from api.middleware.audit import AuditMiddleware
+from api.middleware.security import AuthRateLimitMiddleware, SecurityHeadersMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import text
@@ -102,6 +103,8 @@ if settings.trusted_hosts:
 
 
 api.add_middleware(AuditMiddleware)
+api.add_middleware(SecurityHeadersMiddleware)
+api.add_middleware(AuthRateLimitMiddleware)
 
 api.add_middleware(
     CORSMiddleware,

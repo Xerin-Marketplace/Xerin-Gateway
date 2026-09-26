@@ -22,9 +22,13 @@ SKIPPED_PATHS = {"/health/live", "/health/ready", "/docs", "/redoc", "/openapi.j
 
 
 def _client_ip(request: Request) -> str | None:
-    forwarded = request.headers.get("x-forwarded-for")
-    if forwarded:
-        return forwarded.split(",", 1)[0].strip()[:64]
+    # Trust X-Forwarded-For only behind a real trusted proxy — otherwise
+    # clients could spoof it and poison the audit trail (same rule the
+    # auth router applies to rate limiting).
+    if getattr(settings, "TRUST_PROXY_HEADERS", False):
+        forwarded = request.headers.get("x-forwarded-for")
+        if forwarded:
+            return forwarded.split(",", 1)[0].strip()[:64]
     return request.client.host[:64] if request.client else None
 
 
