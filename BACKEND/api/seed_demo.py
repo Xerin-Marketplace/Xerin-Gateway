@@ -22,6 +22,7 @@ from api.models import (
     Inventory,
     Product,
     ProductImage,
+    ProductStatus,
     Role,
     Seller,
     SellerStatus,
@@ -33,7 +34,7 @@ from api.models import (
     WarehouseBin,
     WarehouseInventory,
 )
-from api.enums import ProductStatus, WarehouseStatus
+from api.enums import WarehouseStatus
 from api.security import hash_password
 
 DEMO_SELLER_EMAIL = "seller@xerin.dev"
