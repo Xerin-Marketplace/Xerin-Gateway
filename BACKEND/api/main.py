@@ -94,15 +94,7 @@ api = FastAPI(
 if settings.trusted_hosts:
     api.add_middleware(
         TrustedHostMiddleware,
-        allowed_hosts=[
-        "127.0.0.1",
-        "testserver",
-        "localhost",
-        "api.xerinmarketplace.com",
-        "169.58.54.110",
-        "169.58.54.110:8080",
-        "https://frontend-new-five-puce.vercel.app",
-    ],
+        allowed_hosts=["testserver", *settings.trusted_hosts],
 )
 
 
