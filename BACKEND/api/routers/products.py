@@ -14,6 +14,8 @@ from api.enums import PermissionCode
 from api.models import (
     Brand,
     Category,
+    Currency,
+    FxRate,
     Product,
     ProductImage,
     ProductOption,
@@ -63,18 +65,44 @@ router = APIRouter(prefix="/products", tags=["Products"])
 # Public display-currency list. Must be declared before "/{product_id}" routes —
 # otherwise "display-currencies" is captured as a product id and returns 422.
 @router.get("/display-currencies")
-def list_display_currencies():
-    return [
-        {
-            "id": "tzs",
-            "code": "TZS",
-            "name": "Tanzanian Shilling",
-            "symbol": "TSh",
-            "decimal_places": 0,
-            "is_base": True,
-            "rate_to_tzs": "1",
-        }
-    ]
+def list_display_currencies(db: Session = Depends(get_db)):
+    currencies = db.query(Currency).filter(Currency.is_active.is_(True)).all()
+    if not currencies:
+        return [
+            {
+                "id": "tzs",
+                "code": "TZS",
+                "name": "Tanzanian Shilling",
+                "symbol": "TSh",
+                "decimal_places": 0,
+                "is_base": True,
+                "rate_to_tzs": "1",
+            }
+        ]
+
+    results = []
+    for c in currencies:
+        rate = "1" if c.is_base else None
+        if rate is None:
+            fx = (
+                db.query(FxRate)
+                .filter(FxRate.base_currency == c.code, FxRate.is_active.is_(True))
+                .order_by(FxRate.effective_at.desc())
+                .first()
+            )
+            rate = str(fx.rate) if fx else "0"
+        results.append(
+            {
+                "id": str(c.id),
+                "code": c.code,
+                "name": c.name,
+                "symbol": c.symbol,
+                "decimal_places": c.decimal_places,
+                "is_base": bool(c.is_base),
+                "rate_to_tzs": rate,
+            }
+        )
+    return results
 
 
 def _commit(db: Session, *, conflict_detail: str = "Database conflict") -> None:

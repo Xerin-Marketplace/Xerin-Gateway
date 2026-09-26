@@ -2690,3 +2690,33 @@ class SystemSetting(Base):
     updated_by_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+
+# =========================================================
+# CURRENCIES & FX RATES
+# =========================================================
+
+class Currency(Base):
+    __tablename__ = "currencies"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    code = Column(String(10), unique=True, index=True, nullable=False)
+    name = Column(String(100), nullable=False)
+    symbol = Column(String(20), nullable=False)
+    is_base = Column(Boolean, nullable=False, default=False, server_default="false")
+    is_active = Column(Boolean, nullable=False, default=True, server_default="true")
+    decimal_places = Column(Integer, nullable=False, default=2, server_default="2")
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class FxRate(Base):
+    __tablename__ = "fx_rates"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    base_currency = Column(String(10), nullable=False, index=True)
+    quote_currency = Column(String(10), nullable=False, default="TZS")
+    rate = Column(Numeric(18, 6), nullable=False)
+    source = Column(String(100), nullable=True)
+    effective_at = Column(DateTime(timezone=True), server_default=func.now())
+    is_active = Column(Boolean, nullable=False, default=True, server_default="true")
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
