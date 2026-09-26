@@ -86,7 +86,11 @@ def seed_demo() -> None:
     db = SessionLocal()
     try:
         # --- demo seller user ---
-        user = db.query(User).filter(User.email == DEMO_SELLER_EMAIL).first()
+        # Match by email OR phone — a user sharing the demo phone with a
+        # different email must not cause a unique-constraint crash.
+        user = db.query(User).filter(
+            (User.email == DEMO_SELLER_EMAIL) | (User.phone == "+255700000001")
+        ).first()
         if not user:
             user = User(
                 first_name="Demo",
