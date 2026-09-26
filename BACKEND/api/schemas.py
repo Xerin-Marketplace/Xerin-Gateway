@@ -1260,7 +1260,7 @@ class OrderResponse(BaseModel):
     notes: Optional[str]
     items: list[OrderItemResponse]
     status_history: list[OrderStatusHistoryResponse]
-    shipments: list[ShipmentResponse] = Field(default_factory=list)
+    shipments: list["ShipmentResponse"] = Field(default_factory=list)
     seller_orders: list["SellerOrderSummary"] = Field(default_factory=list)
     created_at: datetime
     updated_at: Optional[datetime]
@@ -3794,3 +3794,7 @@ class RevokeSessionsRequest(BaseModel):
 class DeleteMyAccountRequest(BaseModel):
     current_password: str
     confirmation: str
+
+
+# Resolve forward references declared before their targets are defined.
+OrderResponse.model_rebuild()
