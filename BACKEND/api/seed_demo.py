@@ -29,8 +29,11 @@ from api.models import (
     User,
     UserRole,
     UserStatus,
+    Warehouse,
+    WarehouseBin,
+    WarehouseInventory,
 )
-from api.enums import ProductStatus
+from api.enums import ProductStatus, WarehouseStatus
 from api.security import hash_password
 
 DEMO_SELLER_EMAIL = "seller@xerin.dev"
@@ -142,6 +145,33 @@ def seed_demo() -> None:
                 db.flush()
             category_ids[slug] = cat.id
 
+        # --- warehouse + bins ---
+        warehouse = db.query(Warehouse).filter(Warehouse.code == "DAR-01").first()
+        if not warehouse:
+            warehouse = Warehouse(
+                name="Dar es Salaam Hub",
+                code="DAR-01",
+                country="Tanzania",
+                region="Dar es Salaam",
+                district="Ilala",
+                ward="Kariakoo",
+                street="Msimbazi St",
+                total_capacity=5000,
+                status=WarehouseStatus.active,
+            )
+            db.add(warehouse)
+            db.flush()
+
+        bins = db.query(WarehouseBin).filter(WarehouseBin.warehouse_id == warehouse.id).all()
+        if not bins:
+            bins = [
+                WarehouseBin(warehouse_id=warehouse.id, aisle="A1", shelf="S1", bin=f"B{i}",
+                             zone="general", capacity=100)
+                for i in range(1, 5)
+            ]
+            db.add_all(bins)
+            db.flush()
+
         # --- products + inventory ---
         created = 0
         for name, price, sale_price, cat_slug, desc in PRODUCTS:
@@ -173,6 +203,16 @@ def seed_demo() -> None:
                 reserved_quantity=0,
                 available_quantity=qty,
                 low_stock_threshold=5,
+            ))
+            db.add(WarehouseInventory(
+                warehouse_id=warehouse.id,
+                product_id=product.id,
+                seller_id=seller.id,
+                quantity=qty,
+                reserved_quantity=0,
+                available_quantity=qty,
+                low_stock_threshold=5,
+                warehouse_bin_id=random.choice(bins).id,
             ))
             created += 1
 
