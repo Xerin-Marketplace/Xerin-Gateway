@@ -980,8 +980,8 @@ class CommissionRule(Base):
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     name = Column(String(150), nullable=False)
-    scope = Column(Enum(CommissionScope), nullable=False, index=True)
-    rule_type = Column(Enum(CommissionRuleType), nullable=False, default=CommissionRuleType.percentage)
+    scope = Column(Enum(CommissionScope, values_callable=lambda e: [m.value for m in e]), nullable=False, index=True)
+    rule_type = Column(Enum(CommissionRuleType, values_callable=lambda e: [m.value for m in e]), nullable=False, default=CommissionRuleType.percentage)
     rate = Column(Numeric(10, 4), nullable=False)
     seller_id = Column(UUID(as_uuid=True), ForeignKey("sellers.id", ondelete="CASCADE"), nullable=True, index=True)
     category_id = Column(UUID(as_uuid=True), ForeignKey("categories.id", ondelete="CASCADE"), nullable=True, index=True)
