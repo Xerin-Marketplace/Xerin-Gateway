@@ -898,7 +898,7 @@ def get_pending_sellers(
 
     return (
         db.query(Seller)
-        .filter(Seller.status == SellerStatus.under_recan_view)
+        .filter(Seller.status.in_([SellerStatus.pending, SellerStatus.under_review]))
         .order_by(Seller.created_at.desc())
         .all()
     )
