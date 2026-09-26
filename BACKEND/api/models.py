@@ -120,6 +120,25 @@ class Session(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
 
+class UserAuthProvider(Base):
+    """External identity provider links (Google, Apple, ...) keyed by the
+    provider's stable user id — never by email alone."""
+    __tablename__ = "user_auth_providers"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    provider = Column(String(30), nullable=False, index=True)
+    provider_user_id = Column(String(255), nullable=False)
+    email = Column(String(255), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    __table_args__ = (
+        UniqueConstraint("provider", "provider_user_id", name="uq_auth_provider_identity"),
+    )
+
+    user = relationship("User")
+
+
 class OTPRequest(Base):
     __tablename__ = "otp_requests"
 

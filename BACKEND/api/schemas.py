@@ -166,6 +166,10 @@ class RefreshRequest(BaseModel):
     refresh_token: str
 
 
+class GoogleAuthRequest(BaseModel):
+    credential: str = Field(min_length=20, max_length=8000)
+
+
 OtpPurpose = Literal["generic", "register", "register_seller", "password_reset"]
 
 

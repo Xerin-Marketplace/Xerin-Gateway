@@ -68,6 +68,10 @@ class Settings(BaseSettings):
     AT_USERNAME: str | None = None
     AT_API_KEY: str | None = None
     AT_SENDER_ID: str | None = None
+
+    # Google OAuth (server-side ID token verification). Feature is disabled
+    # when unset — the frontend should not render the Google button.
+    GOOGLE_CLIENT_ID: str | None = None
     SMS_API_URL: str | None = None
 
     # Payment webhook security
