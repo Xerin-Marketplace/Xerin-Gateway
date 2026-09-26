@@ -17,6 +17,7 @@ from api.deps import get_db
 from api.enums import PermissionCode
 from api.models import Currency, FxRate
 from api.permissions import require_permission
+from api.services.fx import rate_to_tzs
 
 router = APIRouter(prefix="/admin", tags=["Admin Finance"])
 
@@ -100,6 +101,9 @@ def create_currency(data: CurrencyCreate, db: Session = Depends(get_db), _=Depen
     db.add(c)
     db.commit()
     db.refresh(c)
+
+    # Fetch a live TZS rate immediately so the currency is usable at once.
+    rate_to_tzs(db, code)
     return _currency_row(c)
 
 

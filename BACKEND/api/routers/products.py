@@ -10,6 +10,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from api.deps import get_current_user, get_db
+from api.services.fx import rate_to_tzs
 from api.enums import PermissionCode
 from api.models import (
     Brand,
@@ -82,15 +83,11 @@ def list_display_currencies(db: Session = Depends(get_db)):
 
     results = []
     for c in currencies:
-        rate = "1" if c.is_base else None
-        if rate is None:
-            fx = (
-                db.query(FxRate)
-                .filter(FxRate.base_currency == c.code, FxRate.is_active.is_(True))
-                .order_by(FxRate.effective_at.desc())
-                .first()
-            )
-            rate = str(fx.rate) if fx else "0"
+        if c.is_base:
+            rate = "1"
+        else:
+            live = rate_to_tzs(db, c.code)  # auto-fetch/cache live FX rate
+            rate = str(live) if live is not None else "0"
         results.append(
             {
                 "id": str(c.id),
