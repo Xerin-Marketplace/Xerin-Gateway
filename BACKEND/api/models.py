@@ -2739,3 +2739,54 @@ class FxRate(Base):
     effective_at = Column(DateTime(timezone=True), server_default=func.now())
     is_active = Column(Boolean, nullable=False, default=True, server_default="true")
     created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class Advertisement(Base):
+    """Sponsored placement shown on the storefront (hero rail, homepage
+    banner, category/search banners). Tracked via AdvertisementEvent."""
+    __tablename__ = "advertisements"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    advertiser_name = Column(String(150), nullable=False)
+    title = Column(String(200), nullable=False)
+    description = Column(Text, nullable=True)
+    image_url = Column(String(500), nullable=False)
+    mobile_image_url = Column(String(500), nullable=True)
+    alt_text = Column(String(255), nullable=True)
+    target_url = Column(String(500), nullable=True)
+    cta_label = Column(String(60), nullable=True)
+    placement = Column(String(40), nullable=False, index=True)
+    status = Column(String(20), nullable=False, default="draft", server_default="draft")
+    starts_at = Column(DateTime(timezone=True), nullable=False)
+    ends_at = Column(DateTime(timezone=True), nullable=False)
+    priority = Column(Integer, nullable=False, default=0, server_default="0")
+    billing_type = Column(String(10), nullable=False, default="fixed", server_default="fixed")
+    price = Column(Numeric(14, 2), nullable=True)
+    currency = Column(String(10), nullable=False, default="TZS", server_default="TZS")
+    impression_count = Column(Integer, nullable=False, default=0, server_default="0")
+    click_count = Column(Integer, nullable=False, default=0, server_default="0")
+    metadata_json = Column(JSONB, nullable=False, default=dict, server_default="{}")
+    created_by_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    updated_by_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+
+class AdvertisementEvent(Base):
+    """Deduplicated impression/click events per (ad, session, type)."""
+    __tablename__ = "advertisement_events"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    advertisement_id = Column(UUID(as_uuid=True), ForeignKey("advertisements.id", ondelete="CASCADE"), nullable=False, index=True)
+    event_type = Column(String(15), nullable=False)  # impression | click
+    session_id = Column(String(80), nullable=False)
+    client_event_id = Column(String(80), nullable=True)
+    page_path = Column(String(255), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), index=True)
+
+    __table_args__ = (
+        UniqueConstraint(
+            "advertisement_id", "session_id", "event_type",
+            name="uq_ad_event_dedupe",
+        ),
+    )

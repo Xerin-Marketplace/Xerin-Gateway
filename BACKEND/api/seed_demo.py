@@ -12,12 +12,13 @@ from __future__ import annotations
 import random
 import uuid
 from decimal import Decimal
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import func
 
 from api.database import SessionLocal
 from api.models import (
+    Advertisement,
     Category,
     Inventory,
     Product,
@@ -218,7 +219,70 @@ def seed_demo() -> None:
             created += 1
 
         db.commit()
-        print(f"Demo seed complete: {created} new products, "
+
+        # --- advertisements (public slots) ---
+        now = datetime.now(timezone.utc)
+        seed_products = {
+            p.slug: p for p in db.query(Product).filter(Product.is_active.is_(True)).all()
+        }
+        featured_slug = next(iter(seed_products), None)
+
+        demo_ads = [
+            dict(
+                advertiser_name="Xerin Marketplace",
+                title="This Week's Top Deals",
+                description="Hand-picked products from verified sellers with protected checkout and tracked delivery.",
+                image_url="/images/hero/headphone.png",
+                alt_text="Featured headphones on sale at Xerin",
+                target_url=f"/products/{featured_slug}" if featured_slug else "/shop-with-sidebar",
+                cta_label="Shop Now",
+                placement="hero_side_top",
+                priority=10,
+            ),
+            dict(
+                advertiser_name="Xerin Marketplace",
+                title="New Seller Arrivals",
+                description="Fresh stock from sellers near you — delivered and tracked.",
+                image_url="/images/hero/Tshirtremove.png",
+                alt_text="New fashion arrivals at Xerin",
+                target_url="/shop-with-sidebar",
+                cta_label="Explore",
+                placement="hero_side_bottom",
+                priority=5,
+            ),
+            dict(
+                advertiser_name="Xerin Marketplace",
+                title="Sell on Xerin",
+                description="Open your store, reach thousands of buyers, and get paid through protected checkout.",
+                image_url="/images/hero/hero-01.png",
+                alt_text="Become a Xerin seller",
+                target_url="/seller/register",
+                cta_label="Start Selling",
+                placement="homepage_banner",
+                priority=5,
+            ),
+        ]
+
+        ads_created = 0
+        for spec in demo_ads:
+            exists = db.query(Advertisement).filter(
+                Advertisement.placement == spec["placement"],
+                Advertisement.title == spec["title"],
+            ).first()
+            if exists:
+                continue
+            db.add(Advertisement(
+                **spec,
+                status="active",
+                starts_at=now - timedelta(days=1),
+                ends_at=now + timedelta(days=60),
+                billing_type="fixed",
+                currency="TZS",
+            ))
+            ads_created += 1
+
+        db.commit()
+        print(f"Demo seed complete: {created} new products, {ads_created} ads, "
               f"seller login {DEMO_SELLER_EMAIL} / {DEMO_SELLER_PASSWORD}")
     except Exception:
         db.rollback()

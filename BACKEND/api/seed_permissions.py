@@ -196,6 +196,9 @@ DEFAULT_ROLE_PERMISSIONS: dict[str, set[str]] = {
         # Settings
         PermissionCode.settings_read.value,
         PermissionCode.settings_manage.value,
+        # Advertising
+        PermissionCode.advertisements_read.value,
+        PermissionCode.advertisements_manage.value,
     },
     "super_admin": {permission.value for permission in PermissionCode},
 }
