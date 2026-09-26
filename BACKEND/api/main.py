@@ -14,6 +14,7 @@ from sqlalchemy import text
 from api.config import settings
 from api.database import SessionLocal
 from api.routers import (
+    advertisements,
     analytics,
     audit_logs,
     admin,
@@ -169,6 +170,7 @@ if settings.SERVE_LOCAL_UPLOADS:
 
 
 for router in (
+    advertisements.router,
     analytics.router,
     audit_logs.router,
     auth.router,

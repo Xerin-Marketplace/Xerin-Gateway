@@ -60,6 +60,23 @@ from api.services.product_image_service import (
 router = APIRouter(prefix="/products", tags=["Products"])
 
 
+# Public display-currency list. Must be declared before "/{product_id}" routes —
+# otherwise "display-currencies" is captured as a product id and returns 422.
+@router.get("/display-currencies")
+def list_display_currencies():
+    return [
+        {
+            "id": "tzs",
+            "code": "TZS",
+            "name": "Tanzanian Shilling",
+            "symbol": "TSh",
+            "decimal_places": 0,
+            "is_base": True,
+            "rate_to_tzs": "1",
+        }
+    ]
+
+
 def _commit(db: Session, *, conflict_detail: str = "Database conflict") -> None:
     try:
         db.commit()
