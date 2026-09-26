@@ -2,7 +2,7 @@ import uuid
 import enum
 from decimal import Decimal
 
-from sqlalchemy import Column, String, Boolean, DateTime, ForeignKey, Enum, Text, UniqueConstraint, CheckConstraint, Index
+from sqlalchemy import Column, String, Boolean, Date, DateTime, ForeignKey, Enum, Text, UniqueConstraint, CheckConstraint, Index
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.sql import func
 from sqlalchemy.orm import relationship
@@ -118,6 +118,25 @@ class Session(Base):
     token_hash = Column(String(64), nullable=False, unique=True, index=True)
     expires_at = Column(DateTime(timezone=True), nullable=False, index=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class UserAuthProvider(Base):
+    """External identity provider links (Google, Apple, ...) keyed by the
+    provider's stable user id — never by email alone."""
+    __tablename__ = "user_auth_providers"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    provider = Column(String(30), nullable=False, index=True)
+    provider_user_id = Column(String(255), nullable=False)
+    email = Column(String(255), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    __table_args__ = (
+        UniqueConstraint("provider", "provider_user_id", name="uq_auth_provider_identity"),
+    )
+
+    user = relationship("User")
 
 
 class OTPRequest(Base):
@@ -980,8 +999,8 @@ class CommissionRule(Base):
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     name = Column(String(150), nullable=False)
-    scope = Column(Enum(CommissionScope), nullable=False, index=True)
-    rule_type = Column(Enum(CommissionRuleType), nullable=False, default=CommissionRuleType.percentage)
+    scope = Column(Enum(CommissionScope, values_callable=lambda e: [m.value for m in e]), nullable=False, index=True)
+    rule_type = Column(Enum(CommissionRuleType, values_callable=lambda e: [m.value for m in e]), nullable=False, default=CommissionRuleType.percentage)
     rate = Column(Numeric(10, 4), nullable=False)
     seller_id = Column(UUID(as_uuid=True), ForeignKey("sellers.id", ondelete="CASCADE"), nullable=True, index=True)
     category_id = Column(UUID(as_uuid=True), ForeignKey("categories.id", ondelete="CASCADE"), nullable=True, index=True)
@@ -2690,3 +2709,33 @@ class SystemSetting(Base):
     updated_by_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+
+# =========================================================
+# CURRENCIES & FX RATES
+# =========================================================
+
+class Currency(Base):
+    __tablename__ = "currencies"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    code = Column(String(10), unique=True, index=True, nullable=False)
+    name = Column(String(100), nullable=False)
+    symbol = Column(String(20), nullable=False)
+    is_base = Column(Boolean, nullable=False, default=False, server_default="false")
+    is_active = Column(Boolean, nullable=False, default=True, server_default="true")
+    decimal_places = Column(Integer, nullable=False, default=2, server_default="2")
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class FxRate(Base):
+    __tablename__ = "fx_rates"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    base_currency = Column(String(10), nullable=False, index=True)
+    quote_currency = Column(String(10), nullable=False, default="TZS")
+    rate = Column(Numeric(18, 6), nullable=False)
+    source = Column(String(100), nullable=True)
+    effective_at = Column(DateTime(timezone=True), server_default=func.now())
+    is_active = Column(Boolean, nullable=False, default=True, server_default="true")
+    created_at = Column(DateTime(timezone=True), server_default=func.now())

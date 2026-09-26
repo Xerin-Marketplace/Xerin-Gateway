@@ -15,11 +15,11 @@ from api.enums import (
     PickListStatus,
     PermissionCode,
     PutawayTaskStatus,
-    SellerStatus,
     WarehouseInventoryMovementType,
     WarehouseStatus,
 )
 from api.models import (
+    SellerStatus,
     InboundShipment,
     InboundShipmentItem,
     Packaging,

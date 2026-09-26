@@ -10,10 +10,13 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from api.deps import get_current_user, get_db
+from api.services.fx import rate_to_tzs
 from api.enums import PermissionCode
 from api.models import (
     Brand,
     Category,
+    Currency,
+    FxRate,
     Product,
     ProductImage,
     ProductOption,
@@ -58,6 +61,45 @@ from api.services.product_image_service import (
 )
 
 router = APIRouter(prefix="/products", tags=["Products"])
+
+
+# Public display-currency list. Must be declared before "/{product_id}" routes —
+# otherwise "display-currencies" is captured as a product id and returns 422.
+@router.get("/display-currencies")
+def list_display_currencies(db: Session = Depends(get_db)):
+    currencies = db.query(Currency).filter(Currency.is_active.is_(True)).all()
+    if not currencies:
+        return [
+            {
+                "id": "tzs",
+                "code": "TZS",
+                "name": "Tanzanian Shilling",
+                "symbol": "TSh",
+                "decimal_places": 0,
+                "is_base": True,
+                "rate_to_tzs": "1",
+            }
+        ]
+
+    results = []
+    for c in currencies:
+        if c.is_base:
+            rate = "1"
+        else:
+            live = rate_to_tzs(db, c.code)  # auto-fetch/cache live FX rate
+            rate = str(live) if live is not None else "0"
+        results.append(
+            {
+                "id": str(c.id),
+                "code": c.code,
+                "name": c.name,
+                "symbol": c.symbol,
+                "decimal_places": c.decimal_places,
+                "is_base": bool(c.is_base),
+                "rate_to_tzs": rate,
+            }
+        )
+    return results
 
 
 def _commit(db: Session, *, conflict_detail: str = "Database conflict") -> None:

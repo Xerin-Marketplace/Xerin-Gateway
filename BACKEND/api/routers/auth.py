@@ -25,6 +25,7 @@ from api.models import (
     Role,
     RolePermission,
     UserPermission,
+    UserAuthProvider,
 )
 from api.schemas import *
 from api.security import (
@@ -39,6 +40,7 @@ from api.security import (
     ALGORITHM,
 )
 from api.config import settings
+from api.services.google_oauth import verify_google_id_token
 
 # from api.utils import send_email, send_sms
 from api.routers.email import send_email as _send_email
@@ -616,6 +618,120 @@ def login(request: Request, data: LoginRequest, db: Session = Depends(get_db)):
     if inactive_status is not None and user.status == inactive_status:
         raise HTTPException(status_code=403, detail="Account inactive")
 
+    if user.status == UserStatus.pending_verification or not user.is_verified:
+        raise HTTPException(status_code=403, detail="Account not verified")
+
+    access_token = create_access_token({"sub": str(user.id)})
+    refresh_token = create_refresh_token({"sub": str(user.id)})
+
+    session = UserSession(
+        user_id=user.id,
+        token_hash=hash_token(refresh_token),
+        expires_at=datetime.now(timezone.utc)
+        + timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS),
+    )
+
+    user.last_login_at = datetime.now(timezone.utc)
+
+    db.add(session)
+    db.commit()
+
+    return {
+        "access_token": access_token,
+        "refresh_token": refresh_token,
+        "token_type": "bearer",
+        "user": build_auth_user_response(db, user),
+    }
+
+
+@router.post("/google", response_model=TokenResponse)
+def google_auth(request: Request, data: GoogleAuthRequest, db: Session = Depends(get_db)):
+    """Sign in / sign up with a Google-issued ID token.
+
+    The token is verified against Google's JWKS (signature, audience,
+    issuer, expiry). Account matching is done by provider identity (sub)
+    first, then by verified email for linking — never creating a second
+    account for the same verified email.
+    """
+    ip = _client_ip(request)
+    _rate_limit(f"google:ip:{ip}", max_calls=20, window_seconds=5 * 60)
+
+    try:
+        identity = verify_google_id_token(data.credential)
+    except ValueError as exc:
+        raise HTTPException(status_code=401, detail=str(exc))
+
+    # 1) Already-linked provider identity takes precedence over email match.
+    link = (
+        db.query(UserAuthProvider)
+        .filter(
+            UserAuthProvider.provider == "google",
+            UserAuthProvider.provider_user_id == identity.sub,
+        )
+        .first()
+    )
+
+    if link:
+        user = db.query(User).filter(User.id == link.user_id).first()
+        if user is None:
+            db.delete(link)
+            db.commit()
+            raise HTTPException(status_code=401, detail="Linked account no longer exists")
+    else:
+        user = db.query(User).filter(User.email == identity.email).first()
+
+        if user is not None:
+            # Existing account: safe to auto-link only when Google attests the
+            # email is verified — this prevents claiming someone else's email.
+            if not identity.email_verified:
+                raise HTTPException(
+                    status_code=409,
+                    detail="An account with this email already exists. Sign in with your password first.",
+                )
+            db.add(
+                UserAuthProvider(
+                    user_id=user.id,
+                    provider="google",
+                    provider_user_id=identity.sub,
+                    email=identity.email,
+                )
+            )
+            db.commit()
+            logger.info("Google account linked for existing user %s", user.id)
+        else:
+            # First Google sign-in: create a verified customer account.
+            # password_hash holds a random unusable value — Google-only
+            # accounts never authenticate by password until one is set.
+            import secrets as _secrets
+
+            user = User(
+                first_name=(identity.given_name or "").strip() or None,
+                last_name=(identity.family_name or "").strip() or None,
+                email=identity.email,
+                phone=None,
+                password_hash=hash_password(_secrets.token_urlsafe(48)),
+                status=UserStatus.active if identity.email_verified else UserStatus.pending_verification,
+                is_verified=identity.email_verified,
+            )
+            db.add(user)
+            db.flush()
+            _assign_role(db, user.id, "customer")
+            db.add(
+                UserAuthProvider(
+                    user_id=user.id,
+                    provider="google",
+                    provider_user_id=identity.sub,
+                    email=identity.email,
+                )
+            )
+            db.commit()
+            logger.info("New customer created via Google: %s", user.id)
+
+    if user.status == UserStatus.suspended:
+        raise HTTPException(status_code=403, detail="Account suspended")
+    inactive_status = getattr(UserStatus, "inactive", None)
+    if inactive_status is not None and user.status == inactive_status:
+        raise HTTPException(status_code=403, detail="Account inactive")
     if user.status == UserStatus.pending_verification or not user.is_verified:
         raise HTTPException(status_code=403, detail="Account not verified")
 

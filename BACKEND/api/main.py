@@ -3,8 +3,9 @@ from __future__ import annotations
 import logging
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, HTTPException, status
+from fastapi import FastAPI, HTTPException, Request, status
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from api.middleware.audit import AuditMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -13,9 +14,12 @@ from sqlalchemy import text
 from api.config import settings
 from api.database import SessionLocal
 from api.routers import (
+    advertisements,
     analytics,
     audit_logs,
     admin,
+    admin_catalog,
+    admin_finance,
     auth,
     cart,
     commissions,
@@ -93,15 +97,7 @@ api = FastAPI(
 if settings.trusted_hosts:
     api.add_middleware(
         TrustedHostMiddleware,
-        allowed_hosts=[
-        "127.0.0.1",
-        "testserver",
-        "localhost",
-        "api.xerinmarketplace.com",
-        "169.58.54.110",
-        "169.58.54.110:8080",
-        "https://frontend-new-five-puce.vercel.app",
-    ],
+        allowed_hosts=["testserver", *settings.trusted_hosts],
 )
 
 
@@ -115,6 +111,26 @@ api.add_middleware(
     allow_headers=["Authorization", "Content-Type", "Accept", "Origin", "X-Request-ID"],
     expose_headers=["X-Request-ID"],
 )
+
+
+@api.exception_handler(Exception)
+async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONResponse:
+    """Return JSON 500s so error responses still flow through CORSMiddleware.
+
+    Without this handler, unhandled exceptions escape to Starlette's
+    ServerErrorMiddleware — which sits *outside* CORSMiddleware — so the
+    browser sees a 500 with no Access-Control-Allow-Origin header and
+    reports it as a CORS failure, hiding the real error.
+    """
+    request_id = request.headers.get("X-Request-ID")
+    logger.exception("Unhandled error on %s %s", request.method, request.url.path)
+    return JSONResponse(
+        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        content={
+            "detail": "Internal server error",
+            **({"request_id": request_id} if request_id else {}),
+        },
+    )
 
 
 @api.get("/", tags=["system"])
@@ -156,6 +172,7 @@ if settings.SERVE_LOCAL_UPLOADS:
 
 
 for router in (
+    advertisements.router,
     analytics.router,
     audit_logs.router,
     auth.router,
@@ -184,6 +201,9 @@ for router in (
     product_qa.router,
     search_recommendations.router,
     admin_dashboard.router,
+    admin_catalog.router,
+    admin_catalog.brokers_router,
+    admin_finance.router,
     fulfilment.router,
     logistics.router,
     settings_router.router,

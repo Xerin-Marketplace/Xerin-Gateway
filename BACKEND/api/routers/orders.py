@@ -302,6 +302,12 @@ def create_order(
             pass
 
         return order
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception:
+        db.rollback()
+        raise HTTPException(status_code=500, detail="Could not create order")
 
 
 @router.get("/my-orders", response_model=PaginatedOrderResponse)
