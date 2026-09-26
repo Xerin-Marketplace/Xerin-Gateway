@@ -2,7 +2,7 @@ import uuid
 import enum
 from decimal import Decimal
 
-from sqlalchemy import Column, String, Boolean, DateTime, ForeignKey, Enum, Text, UniqueConstraint, CheckConstraint, Index
+from sqlalchemy import Column, String, Boolean, Date, DateTime, ForeignKey, Enum, Text, UniqueConstraint, CheckConstraint, Index
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.sql import func
 from sqlalchemy.orm import relationship

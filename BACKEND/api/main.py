@@ -3,8 +3,9 @@ from __future__ import annotations
 import logging
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, HTTPException, status
+from fastapi import FastAPI, HTTPException, Request, status
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from api.middleware.audit import AuditMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -115,6 +116,26 @@ api.add_middleware(
     allow_headers=["Authorization", "Content-Type", "Accept", "Origin", "X-Request-ID"],
     expose_headers=["X-Request-ID"],
 )
+
+
+@api.exception_handler(Exception)
+async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONResponse:
+    """Return JSON 500s so error responses still flow through CORSMiddleware.
+
+    Without this handler, unhandled exceptions escape to Starlette's
+    ServerErrorMiddleware — which sits *outside* CORSMiddleware — so the
+    browser sees a 500 with no Access-Control-Allow-Origin header and
+    reports it as a CORS failure, hiding the real error.
+    """
+    request_id = request.headers.get("X-Request-ID")
+    logger.exception("Unhandled error on %s %s", request.method, request.url.path)
+    return JSONResponse(
+        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        content={
+            "detail": "Internal server error",
+            **({"request_id": request_id} if request_id else {}),
+        },
+    )
 
 
 @api.get("/", tags=["system"])
