@@ -154,6 +154,7 @@ class TokenResponse(BaseModel):
     refresh_token: str
     token_type: str = "bearer"
     user: dict | None = None
+    is_new_user: bool = False
 
 
 class RefreshRequest(BaseModel):

@@ -663,6 +663,7 @@ def google_auth(request: Request, data: GoogleAuthRequest, db: Session = Depends
     except ValueError as exc:
         raise HTTPException(status_code=401, detail=str(exc))
 
+    is_new_user = False
     # 1) Already-linked provider identity takes precedence over email match.
     link = (
         db.query(UserAuthProvider)
@@ -728,6 +729,7 @@ def google_auth(request: Request, data: GoogleAuthRequest, db: Session = Depends
             )
             db.commit()
             logger.info("New customer created via Google: %s", user.id)
+            is_new_user = True
 
     if user.status == UserStatus.suspended:
         raise HTTPException(status_code=403, detail="Account suspended")
@@ -757,6 +759,7 @@ def google_auth(request: Request, data: GoogleAuthRequest, db: Session = Depends
         "refresh_token": refresh_token,
         "token_type": "bearer",
         "user": build_auth_user_response(db, user),
+        "is_new_user": is_new_user,
     }
 
 
