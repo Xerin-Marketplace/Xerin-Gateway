@@ -39,6 +39,25 @@ DEFAULT_ROLE_PERMISSIONS: dict[str, set[str]] = {
         PermissionCode.recommendations_read.value,
         PermissionCode.search_history_manage.value,
     },
+    "broker": {
+        # Winga — promotes products, earns commission. Base marketplace
+        # browsing permissions; broker-scoped ops are granted via
+        # broker-specific codes as that module ships.
+        PermissionCode.view_profile.value,
+        PermissionCode.update_profile.value,
+        PermissionCode.manage_addresses.value,
+        PermissionCode.can_view_products.value,
+        PermissionCode.can_view_public_stores.value,
+        PermissionCode.shipping_track.value,
+        PermissionCode.reviews_read.value,
+        PermissionCode.notifications_read.value,
+        PermissionCode.notifications_manage.value,
+        PermissionCode.product_questions_read.value,
+        PermissionCode.product_questions_create.value,
+        PermissionCode.search_read.value,
+        PermissionCode.recommendations_read.value,
+        PermissionCode.search_history_manage.value,
+    },
     "seller": {
         PermissionCode.view_profile.value,
         PermissionCode.update_profile.value,

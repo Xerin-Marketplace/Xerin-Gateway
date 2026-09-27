@@ -3914,3 +3914,7 @@ class AdvertisementTrackResponse(BaseModel):
     event_type: str
     impression_count: int
     click_count: int
+
+
+class SelectInitialRoleRequest(BaseModel):
+    role: Literal["customer", "seller", "broker"]

@@ -577,6 +577,8 @@ def build_auth_user_response(db: Session, user: User):
         account_type = "super_admin"
     elif "admin" in roles:
         account_type = "admin"
+    elif "broker" in roles:
+        account_type = "broker"
     elif seller:
         account_type = "seller"
     else:
@@ -778,6 +780,28 @@ def logout(
         db.commit()
 
     return {"message": "Logged out successfully"}
+
+
+@router.post("/select-initial-role")
+def select_initial_role(
+    data: SelectInitialRoleRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """First-run role choice from /choose-role.
+
+    Assigns the base role record (customer is already assigned at register
+    and is harmless to re-add). Sellers/brokers still complete their
+    dedicated onboarding afterwards — this only records the intent.
+    """
+    _assign_role(db, current_user.id, data.role)
+    db.commit()
+    return {
+        "message": "Role selected",
+        "selected_role": data.role,
+        "completed": True,
+        "user": build_auth_user_response(db, current_user),
+    }
 
 
 @router.post("/refresh-token", response_model=TokenResponse)
