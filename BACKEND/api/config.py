@@ -45,6 +45,7 @@ class Settings(BaseSettings):
     # Local uploads (temporary until object storage is introduced)
     UPLOAD_DIRECTORY: str = "uploads"
     SERVE_LOCAL_UPLOADS: bool = True
+    DEFAULT_COUNTRY: str = "Tanzania"
     MAX_UPLOAD_SIZE_MB: int = Field(default=5, ge=1)
 
     # Inventory reservations
