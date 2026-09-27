@@ -152,6 +152,7 @@ class PermissionCode(str, enum.Enum):
     analytics_seller_read = "analytics:seller_read"
     audit_logs_read = "audit_logs:read"
     security_events_read = "security_events:read"
+    monitoring_read = "monitoring:read"
 
     # Shipping and delivery
     shipping_read = "shipping:read"
@@ -361,6 +362,7 @@ class InventoryMovementType(str, enum.Enum):
 
 class AuditSeverity(str, enum.Enum):
     info = "info"
+    notice = "notice"
     warning = "warning"
     critical = "critical"
 
@@ -370,6 +372,16 @@ class SecurityEventType(str, enum.Enum):
     authorization_denied = "authorization_denied"
     suspicious_request = "suspicious_request"
     sensitive_action = "sensitive_action"
+    sql_injection_attempt = "sql_injection_attempt"
+    xss_attempt = "xss_attempt"
+    path_traversal_attempt = "path_traversal_attempt"
+    command_injection_attempt = "command_injection_attempt"
+    brute_force = "brute_force"
+    rate_limit_abuse = "rate_limit_abuse"
+    invalid_webhook = "invalid_webhook"
+    privilege_escalation = "privilege_escalation"
+    suspicious_upload = "suspicious_upload"
+    payment_anomaly = "payment_anomaly"
 
 
 class NotificationChannel(str, enum.Enum):

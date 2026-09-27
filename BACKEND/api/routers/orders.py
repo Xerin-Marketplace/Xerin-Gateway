@@ -283,6 +283,21 @@ def create_order(
             db.delete(cart_item)
         cart.coupon_code = None
 
+        if settings.MONITORING_ENABLED:
+            try:
+                from api.services.monitoring import record_business_event
+                from api.enums import AuditSeverity
+                record_business_event(
+                    db, action="order.created",
+                    description="Order created",
+                    severity=AuditSeverity.info,
+                    actor_user_id=current_user.id,
+                    resource_type="order", resource_id=str(order.id),
+                    event_metadata={"total": str(order.total_amount)},
+                )
+            except Exception:
+                pass
+
         db.commit()
         db.refresh(order)
 

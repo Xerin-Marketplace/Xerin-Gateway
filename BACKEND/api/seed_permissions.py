@@ -160,6 +160,7 @@ DEFAULT_ROLE_PERMISSIONS: dict[str, set[str]] = {
         PermissionCode.analytics_admin_read.value,
         PermissionCode.audit_logs_read.value,
         PermissionCode.security_events_read.value,
+        PermissionCode.monitoring_read.value,
         PermissionCode.reviews_read.value,
         PermissionCode.admin_reviews_read.value,
         PermissionCode.admin_reviews_moderate.value,

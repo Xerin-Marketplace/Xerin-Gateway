@@ -3,6 +3,8 @@ from datetime import datetime, timezone
 from decimal import Decimal
 from uuid import UUID
 
+import logging
+
 from fastapi import APIRouter, Depends, Header, HTTPException, status
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -38,6 +40,8 @@ from api.services.inventory_reservations import commit_order_reservations, ensur
 from api.services.commission_engine import calculate_order_commissions
 
 router = APIRouter(prefix="/payments", tags=["Payments"])
+
+logger = logging.getLogger(__name__)
 
 SUCCESS_STATUSES = {"success", "completed", "paid"}
 FAILED_STATUSES = {"failed", "failure"}
@@ -314,6 +318,33 @@ def payment_callback(
     return _apply_payment_callback(provider, data, db)
 
 
+def _payment_event(db: Session, action: str, description: str, *, severity: str,
+                   payment: Payment | None = None, order: Order | None = None,
+                   metadata: dict | None = None) -> None:
+    """Audit a payment lifecycle event; alerting follows severity rules."""
+    if not settings.MONITORING_ENABLED:
+        return
+    try:
+        from api.services.monitoring import record_business_event
+        record_business_event(
+            db,
+            action=action,
+            description=description,
+            severity=severity,
+            resource_type="payment",
+            resource_id=str(payment.id) if payment else None,
+            event_metadata={
+                "provider": payment.provider if payment else None,
+                "order_id": str(order.id) if order else (str(payment.order_id) if payment else None),
+                "amount": str(payment.amount) if payment else None,
+                **(metadata or {}),
+            },
+            dedup_key=f"{action}:{payment.id if payment else 'unknown'}",
+        )
+    except Exception:
+        logger.exception("payment monitoring event failed for %s", action)
+
+
 def _apply_payment_callback(provider: str, data: PaymentCallbackRequest, db: Session) -> Payment:
     normalized_provider = provider.lower().strip()
     if data.provider.lower().strip() != normalized_provider:
@@ -336,6 +367,12 @@ def _apply_payment_callback(provider: str, data: PaymentCallbackRequest, db: Ses
     if payment.status == PaymentStatus.completed:
         if payment.provider_transaction_id == data.transaction_id and incoming_status in SUCCESS_STATUSES | {PaymentStatus.completed.value}:
             return payment
+        _payment_event(db, "payment.callback_conflict",
+                       "Callback attempted to mutate a completed payment",
+                       severity="critical", payment=payment,
+                       metadata={"incoming_status": incoming_status,
+                                 "incoming_txn": str(data.transaction_id)[:80]})
+        db.commit()
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Completed payment cannot be changed by another callback")
 
     callback_payload = dict(data.payload or {})
@@ -362,11 +399,16 @@ def _apply_payment_callback(provider: str, data: PaymentCallbackRequest, db: Ses
         payment.provider_response = callback_payload
         order.status = OrderStatus.paid
         db.add(OrderStatusHistory(order_id=order.id, status=OrderStatus.paid.value, notes=f"Payment confirmed via {normalized_provider}"))
+        _payment_event(db, "payment.completed", "Payment completed",
+                       severity="notice", payment=payment, order=order)
     elif incoming_status in FAILED_STATUSES or incoming_status == PaymentStatus.failed.value:
         payment.status = PaymentStatus.failed
         payment.provider_transaction_id = data.transaction_id
         payment.provider_response = callback_payload
         payment.failure_reason = callback_payload.get("reason")
+        _payment_event(db, "payment.failed", "Payment failed",
+                       severity="warning", payment=payment,
+                       metadata={"reason": str(payment.failure_reason or "")[:200]})
         order = db.query(Order).filter(Order.id == payment.order_id).with_for_update().first()
         if order and order.status == OrderStatus.pending:
             release_order_reservations(db, order, target_status=InventoryReservationStatus.released)
@@ -403,6 +445,22 @@ def azampay_callback(
             detail="AzamPay callback secret is not configured",
         )
     if not x_azampay_secret or not hmac.compare_digest(x_azampay_secret, configured_secret):
+        if settings.MONITORING_ENABLED:
+            try:
+                from api.services.monitoring import record_security_alert
+                from api.enums import SecurityEventType, AuditSeverity
+                record_security_alert(
+                    db,
+                    event_type=SecurityEventType.invalid_webhook,
+                    description="AzamPay callback with an invalid or missing secret",
+                    severity=AuditSeverity.critical,
+                    request_path="/payments/azampay/callback",
+                    http_method="POST",
+                    dedup_key="security.invalid_webhook:azampay",
+                )
+                db.commit()
+            except Exception:
+                db.rollback()
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid AzamPay callback secret")
 
     reference = str(payload.get("utilityref") or payload.get("externalId") or payload.get("external_id") or "").strip()

@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import logging
+from uuid import uuid4
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from api.middleware.audit import AuditMiddleware
+from api.middleware.intrusion import IntrusionDetectionMiddleware
 from api.middleware.security import AuthRateLimitMiddleware, SecurityHeadersMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -53,6 +55,7 @@ from api.routers import (
     driver_kyc,
     delivery_fare,
     brokers,
+    monitoring,
 )
 
 logging.basicConfig(
@@ -83,6 +86,14 @@ async def lifespan(_: FastAPI):
         settings.APP_NAME,
         settings.APP_ENV,
     )
+
+    if settings.MONITORING_ENABLED:
+        try:
+            from api.services.scheduler import start_monitoring_scheduler
+            start_monitoring_scheduler()
+        except Exception:
+            logger.warning("Monitoring scheduler failed to start", exc_info=True)
+
     yield
     logger.info("Stopping %s", settings.APP_NAME)
 
@@ -105,6 +116,7 @@ if settings.trusted_hosts:
 
 
 api.add_middleware(AuditMiddleware)
+api.add_middleware(IntrusionDetectionMiddleware)
 api.add_middleware(SecurityHeadersMiddleware)
 api.add_middleware(AuthRateLimitMiddleware)
 
@@ -127,8 +139,32 @@ async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONR
     browser sees a 500 with no Access-Control-Allow-Origin header and
     reports it as a CORS failure, hiding the real error.
     """
-    request_id = request.headers.get("X-Request-ID")
+    request_id = request.headers.get("X-Request-ID") or f"err_{uuid4().hex[:16]}"
     logger.exception("Unhandled error on %s %s", request.method, request.url.path)
+
+    try:
+        from api.database import SessionLocal as _SL
+        from api.services.monitoring import record_business_event
+        from api.enums import AuditSeverity
+        _db = _SL()
+        try:
+            record_business_event(
+                _db,
+                action="system.unhandled_error",
+                description=f"Unhandled error on {request.method} {request.url.path}",
+                severity=AuditSeverity.critical,
+                request_id=request_id,
+                http_method=request.method,
+                request_path=request.url.path[:500],
+                event_metadata={"error_type": type(exc).__name__},
+                dedup_key=f"system.unhandled_error:{request.url.path}:{type(exc).__name__}",
+            )
+            _db.commit()
+        finally:
+            _db.close()
+    except Exception:
+        logger.exception("Failed to audit unhandled error")
+
     return JSONResponse(
         status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
         content={

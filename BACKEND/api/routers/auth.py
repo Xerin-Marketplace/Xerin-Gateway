@@ -12,6 +12,7 @@ import logging
 
 from api.database import SessionLocal
 from api.deps import get_db, get_current_user
+from api.enums import AuditSeverity, SecurityEventType
 from api.models import (
     User,
     Session as UserSession,
@@ -30,6 +31,7 @@ from api.models import (
     UserAuthProvider,
     Broker,
     BrokerStatus,
+    SecurityEvent,
 )
 from api.schemas import *
 from api.security import (
@@ -648,6 +650,41 @@ def login(request: Request, data: LoginRequest, db: Session = Depends(get_db)):
     user = db.query(User).filter(User.email == email).first()
 
     if not user or not verify_password(data.password, user.password_hash):
+        if settings.MONITORING_ENABLED:
+            try:
+                from api.services.monitoring import record_security_alert
+                record_security_alert(
+                    db,
+                    event_type=SecurityEventType.authentication_failed,
+                    description="Failed login attempt",
+                    severity=AuditSeverity.warning,
+                    ip_address=ip,
+                    user_agent=request.headers.get("user-agent", "")[:2000] or None,
+                    request_path="/auth/login",
+                    http_method="POST",
+                    event_metadata={"email_hint": (email[:2] + "***@" + email.split("@")[-1]) if "@" in email else "***"},
+                    dedup_key=f"security.authentication_failed:{ip}",
+                )
+                cutoff = datetime.now(timezone.utc) - timedelta(minutes=10)
+                recent = db.query(SecurityEvent).filter(
+                    SecurityEvent.ip_address == ip,
+                    SecurityEvent.event_type == SecurityEventType.authentication_failed,
+                    SecurityEvent.created_at >= cutoff,
+                ).count()
+                if recent >= 8:
+                    record_security_alert(
+                        db,
+                        event_type=SecurityEventType.brute_force,
+                        description=f"{recent} failed logins from one IP in 10 minutes",
+                        severity=AuditSeverity.critical,
+                        ip_address=ip,
+                        request_path="/auth/login",
+                        http_method="POST",
+                        dedup_key=f"security.brute_force:{ip}",
+                    )
+                db.commit()
+            except Exception:
+                db.rollback()
         raise HTTPException(status_code=401, detail="Invalid email or password")
 
     if user.status == UserStatus.suspended:
@@ -671,6 +708,23 @@ def login(request: Request, data: LoginRequest, db: Session = Depends(get_db)):
     )
 
     user.last_login_at = datetime.now(timezone.utc)
+
+    if settings.MONITORING_ENABLED:
+        try:
+            from api.services.monitoring import record_business_event
+            record_business_event(
+                db,
+                action="auth.login",
+                description="User logged in",
+                severity=AuditSeverity.info,
+                actor_user_id=user.id,
+                request_path="/auth/login",
+                http_method="POST",
+                ip_address=ip,
+                user_agent=request.headers.get("user-agent", "")[:2000] or None,
+            )
+        except Exception:
+            pass
 
     db.add(session)
     db.commit()
@@ -787,6 +841,23 @@ def google_auth(request: Request, data: GoogleAuthRequest, db: Session = Depends
     )
 
     user.last_login_at = datetime.now(timezone.utc)
+
+    if settings.MONITORING_ENABLED:
+        try:
+            from api.services.monitoring import record_business_event
+            record_business_event(
+                db,
+                action="auth.login",
+                description="User logged in",
+                severity=AuditSeverity.info,
+                actor_user_id=user.id,
+                request_path="/auth/login",
+                http_method="POST",
+                ip_address=ip,
+                user_agent=request.headers.get("user-agent", "")[:2000] or None,
+            )
+        except Exception:
+            pass
 
     db.add(session)
     db.commit()

@@ -16,6 +16,7 @@ from fastapi import (
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 from api.schemas import SellerProfileUpdate, SellerProfileResponse
+from api.config import settings
 from api.deps import get_db, get_current_user
 from api.models import (
     User,
@@ -1022,6 +1023,22 @@ def admin_approve_seller(
     seller.status = SellerStatus.approved
     seller.approved_at = datetime.now(timezone.utc)
     _assign_role(db, seller.user_id, "seller")
+
+    if settings.MONITORING_ENABLED:
+        try:
+            from api.services.monitoring import record_business_event
+            from api.enums import AuditSeverity
+            record_business_event(
+                db, action="admin.seller_approved",
+                description="Seller approved",
+                severity=AuditSeverity.notice,
+                actor_user_id=current_user.id,
+                resource_type="seller", resource_id=str(seller.id),
+                dedup_key=f"admin.seller_approved:{seller.id}",
+            )
+        except Exception:
+            pass
+
     db.commit()
     db.refresh(seller)
 
@@ -1049,6 +1066,21 @@ def admin_reject_seller(
         "status": "rejected",
         "rejection_reason": reason,
     })
+
+    if settings.MONITORING_ENABLED:
+        try:
+            from api.services.monitoring import record_business_event
+            from api.enums import AuditSeverity
+            record_business_event(
+                db, action="admin.seller_rejected",
+                description="Seller rejected",
+                severity=AuditSeverity.notice,
+                actor_user_id=current_user.id,
+                resource_type="seller", resource_id=str(seller.id),
+                dedup_key=f"admin.seller_rejected:{seller.id}",
+            )
+        except Exception:
+            pass
 
     db.commit()
     db.refresh(seller)

@@ -2937,3 +2937,67 @@ class BrokerPayoutRequest(Base):
     requested_at = Column(DateTime(timezone=True), server_default=func.now())
     processed_at = Column(DateTime(timezone=True), nullable=True)
     completed_at = Column(DateTime(timezone=True), nullable=True)
+
+class AlertNotification(Base):
+    """Outbound email alert delivery record — the event lives in
+    audit_logs/security_events; this only tracks notification delivery."""
+    __tablename__ = "alert_notifications"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    dedup_key = Column(String(200), nullable=False, index=True)
+    recipient = Column(String(320), nullable=False)
+    subject = Column(String(255), nullable=False)
+    body_text = Column(Text, nullable=False)
+    severity = Column(String(20), nullable=False, index=True)
+    event_type = Column(String(120), nullable=True, index=True)
+    status = Column(String(20), nullable=False, default="pending", server_default="pending", index=True)
+    attempts = Column(Integer, nullable=False, default=0, server_default="0")
+    aggregate_count = Column(Integer, nullable=False, default=1, server_default="1")
+    last_error = Column(Text, nullable=True)
+    next_retry_at = Column(DateTime(timezone=True), nullable=True, index=True)
+    sent_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now(), index=True)
+
+    __table_args__ = (
+        CheckConstraint("status IN ('pending','sent','failed','cancelled')", name="ck_alert_notification_status"),
+        CheckConstraint("severity IN ('info','notice','warning','critical')", name="ck_alert_notification_severity"),
+    )
+
+
+class MigrationEvent(Base):
+    """Records alembic migration executions from the deployment wrapper."""
+    __tablename__ = "migration_events"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    revision = Column(String(120), nullable=True, index=True)
+    name = Column(String(255), nullable=True)
+    status = Column(String(20), nullable=False, index=True)
+    environment = Column(String(40), nullable=True)
+    app_version = Column(String(120), nullable=True)
+    error_summary = Column(Text, nullable=True)
+    duration_ms = Column(Integer, nullable=True)
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now(), index=True)
+
+    __table_args__ = (
+        CheckConstraint("status IN ('started','succeeded','failed','rolled_back')", name="ck_migration_event_status"),
+    )
+
+
+class WeeklyReport(Base):
+    __tablename__ = "weekly_reports"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    period_start = Column(DateTime(timezone=True), nullable=False)
+    period_end = Column(DateTime(timezone=True), nullable=False)
+    subject = Column(String(255), nullable=False)
+    body_text = Column(Text, nullable=False)
+    stats = Column(JSONB, nullable=False, default=dict)
+    recipient = Column(String(320), nullable=False)
+    status = Column(String(20), nullable=False, default="pending", server_default="pending")
+    sent_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+    __table_args__ = (
+        CheckConstraint("status IN ('pending','sent','failed','skipped')", name="ck_weekly_report_status"),
+        UniqueConstraint("period_start", "period_end", name="uq_weekly_report_period"),
+    )

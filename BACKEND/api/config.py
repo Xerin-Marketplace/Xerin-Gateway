@@ -73,6 +73,30 @@ class Settings(BaseSettings):
     # Google OAuth (server-side ID token verification). Feature is disabled
     # when unset — the frontend should not render the Google button.
     GOOGLE_CLIENT_ID: str | None = None
+
+    # Monitoring / alerting
+    MONITORING_ENABLED: bool = True
+    # Central destination for operational/security alert emails. Leave unset
+    # to keep auditing but disable email delivery entirely.
+    MONITORING_ALERT_EMAIL: str | None = None
+    # Minimum audit/security severity that triggers an email alert.
+    MONITORING_ALERT_MIN_SEVERITY: str = "warning"
+    # Alert deduplication: same dedup key inside this window is aggregated
+    # into one notification instead of one email per event.
+    MONITORING_ALERT_WINDOW_MINUTES: int = Field(default=15, ge=1)
+    # Hard cap on how many emails a single dedup key may emit per window.
+    MONITORING_ALERT_MAX_PER_WINDOW: int = Field(default=2, ge=1)
+    # Email retry backoff (seconds): attempt n waits BASE * 2^(n-1).
+    ALERT_EMAIL_MAX_ATTEMPTS: int = Field(default=5, ge=1)
+    ALERT_EMAIL_RETRY_BASE_SECONDS: int = Field(default=60, ge=5)
+    # Weekly operational report.
+    MONITORING_WEEKLY_REPORT_ENABLED: bool = False
+    MONITORING_WEEKLY_REPORT_DAY: str = "MONDAY"
+    MONITORING_WEEKLY_REPORT_TIME: str = "08:00"
+    # Audit retention (days). 0 disables automatic cleanup.
+    AUDIT_LOG_RETENTION_DAYS: int = Field(default=365, ge=0)
+    # Deployment version label written into migration/deploy events.
+    APP_VERSION: str | None = None
     SMS_API_URL: str | None = None
 
     # Payment webhook security
