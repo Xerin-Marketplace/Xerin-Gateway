@@ -608,7 +608,7 @@ class SurgeScheduleType(str, enum.Enum):
     time_based = "time_based"
 
 
-class BrokerStatus(str, Enum):
+class BrokerStatus(str, enum.Enum):
     pending_kyc = "pending_kyc"
     kyc_submitted = "kyc_submitted"
     under_review = "under_review"
