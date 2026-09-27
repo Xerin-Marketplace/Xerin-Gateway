@@ -4,7 +4,7 @@ from uuid import UUID
 import threading
 from collections import defaultdict, deque
 from datetime import datetime, timedelta, timezone
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from sqlalchemy.orm import Session
 import jwt
 from jwt import PyJWTError as JWTError
@@ -22,6 +22,7 @@ from api.models import (
     SellerStatus,
     BusinessCategory,
     SellerBusinessCategory,
+    SellerKYCDocument,
     UserRole,
     Role,
     RolePermission,
@@ -399,7 +400,17 @@ def register(data: RegisterRequest, db: Session = Depends(get_db)):
 
 
 @router.post("/register-seller", response_model=SellerRegistrationResponse)
-def register_seller(data: SellerRegisterRequest, db: Session = Depends(get_db)):
+async def register_seller(
+    data: str = Form(...),
+    license: UploadFile | None = File(default=None),
+    db: Session = Depends(get_db),
+):
+    """Seller registration — multipart: `data` is the JSON payload, `license`
+    is an optional business-license upload stored as a KYC document."""
+    try:
+        data = SellerRegisterRequest.model_validate_json(data)
+    except Exception:
+        raise HTTPException(status_code=422, detail="Invalid registration payload")
     email = data.email.strip().lower()
     phone = data.phone.strip()
 
@@ -495,6 +506,19 @@ def register_seller(data: SellerRegisterRequest, db: Session = Depends(get_db)):
                 SellerBusinessCategory(
                     seller_id=seller.id,
                     business_category_id=category_id,
+                )
+            )
+
+        if license is not None and license.filename:
+            from api.routers.sellers import _save_kyc_upload
+
+            document_path = await _save_kyc_upload(seller.id, "business_registration", license)
+            db.add(
+                SellerKYCDocument(
+                    seller_id=seller.id,
+                    document_type="business_registration",
+                    document_url=document_path,
+                    status="pending",
                 )
             )
 
