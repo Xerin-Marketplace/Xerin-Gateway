@@ -50,6 +50,7 @@ REQUIRED_KYC_DOCUMENTS = [
     "tin",
     "business_profile",
     "business_registration",
+    "national_id",
 ]
 
 
@@ -549,10 +550,11 @@ async def upload_bulk_kyc_documents(
     tin_file: UploadFile = File(...),
     business_profile_file: UploadFile = File(...),
     business_registration_file: UploadFile = File(...),
+    national_id_file: UploadFile | None = File(default=None),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """Create or replace all three required KYC documents in one request."""
+    """Create or replace the required KYC documents in one request."""
     seller = get_my_seller(db, current_user)
     _ensure_kyc_is_editable(seller)
 
@@ -561,6 +563,8 @@ async def upload_bulk_kyc_documents(
         "business_profile": business_profile_file,
         "business_registration": business_registration_file,
     }
+    if national_id_file is not None and national_id_file.filename:
+        files_map["national_id"] = national_id_file
 
     saved_urls: dict[str, str] = {}
     old_urls: list[str] = []

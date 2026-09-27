@@ -232,6 +232,23 @@ def delete_kyc_document(
 @router.post("/submit-kyc")
 def submit_kyc(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     broker = _get_my_broker(db, current_user)
+    if not broker.nida_number:
+        raise HTTPException(
+            status_code=422, detail="Add your national ID (NIDA) number first."
+        )
+    payout_accounts = (
+        db.query(BrokerPayoutAccount)
+        .filter(
+            BrokerPayoutAccount.broker_id == broker.id,
+            BrokerPayoutAccount.is_active.is_(True),
+        )
+        .count()
+    )
+    if payout_accounts == 0:
+        raise HTTPException(
+            status_code=422,
+            detail="Add a payout account (mobile money or bank) before submitting KYC.",
+        )
     status = _kyc_status(db, broker)
     if status["missing_documents"]:
         raise HTTPException(
