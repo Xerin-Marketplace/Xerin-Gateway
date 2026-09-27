@@ -245,6 +245,7 @@ for router in (
     admin_advertisements.router,
     admin_catalog.router,
     brokers.router,
+    monitoring.router,
     admin_finance.router,
     fulfilment.router,
     logistics.router,

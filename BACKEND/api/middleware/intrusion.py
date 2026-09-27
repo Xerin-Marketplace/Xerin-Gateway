@@ -23,8 +23,9 @@ logger = logging.getLogger(__name__)
 # *decoded* path + query string only — request bodies are left to the
 # routers' validators (avoiding the cost/fragility of consuming streams).
 _SQLI_PATTERN = re.compile(
-    r"('|\%27)\s*(or|and)\s+\d+\s*=\s*\d+"
+    r"('|%27)\s*(or|and)\s+['\"]?\d+['\"]?\s*=\s*['\"]?\d+['\"]?"
     r"|union\s+(all\s+)?select\b"
+    r"|\b(or|and)\s+1\s*=\s*1\b"
     r"|\bselect\b.+\bfrom\b.+\binformation_schema\b"
     r"|\b(drop|truncate|alter)\s+table\b"
     r"|;\s*(drop|insert|update|delete|truncate)\b"
