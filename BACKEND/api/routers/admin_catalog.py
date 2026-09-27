@@ -197,11 +197,4 @@ def list_brands(
     return _paginate(query, page, page_size)
 
 
-# Brokers module is not part of this branch — return an empty page so the
-# admin UI degrades cleanly instead of logging 404s.
-@brokers_router.get("/admin")
-def admin_list_brokers(
-    page: int = Query(1, ge=1),
-    page_size: int = Query(20, ge=1, le=200),
-):
-    return {"total": 0, "page": page, "page_size": page_size, "total_pages": 1, "results": []}
+

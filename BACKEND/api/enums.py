@@ -606,3 +606,12 @@ class SurgePricingType(str, enum.Enum):
 class SurgeScheduleType(str, enum.Enum):
     always = "always"
     time_based = "time_based"
+
+
+class BrokerStatus(str, Enum):
+    pending_kyc = "pending_kyc"
+    kyc_submitted = "kyc_submitted"
+    under_review = "under_review"
+    approved = "approved"
+    rejected = "rejected"
+    suspended = "suspended"

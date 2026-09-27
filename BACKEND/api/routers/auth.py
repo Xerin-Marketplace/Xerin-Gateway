@@ -1,4 +1,5 @@
 import time
+import uuid
 from uuid import UUID
 import threading
 from collections import defaultdict, deque
@@ -8,7 +9,6 @@ from sqlalchemy.orm import Session
 import jwt
 from jwt import PyJWTError as JWTError
 import logging
-import threading
 
 from api.database import SessionLocal
 from api.deps import get_db, get_current_user
@@ -27,6 +27,8 @@ from api.models import (
     RolePermission,
     UserPermission,
     UserAuthProvider,
+    Broker,
+    BrokerStatus,
 )
 from api.schemas import *
 from api.security import (
@@ -814,6 +816,107 @@ def select_initial_role(
         "message": "Role selected",
         "selected_role": data.role,
         "completed": True,
+        "user": build_auth_user_response(db, current_user),
+    }
+
+
+@router.post("/onboard-seller")
+def onboard_seller(
+    data: SellerOnboardingRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Complete seller onboarding for an already-registered user."""
+    existing = db.query(Seller).filter(Seller.user_id == current_user.id).first()
+    if existing:
+        return {
+            "message": "Seller account already exists.",
+            "seller_id": str(existing.id),
+            "user": build_auth_user_response(db, current_user),
+        }
+
+    if not data.agreement_accepted:
+        raise HTTPException(status_code=422, detail="You must accept the Seller Agreement.")
+
+    seller = Seller(
+        user_id=current_user.id,
+        business_name=data.business_name.strip(),
+        contact_email=data.contact_email or current_user.email,
+        contact_phone=data.contact_phone or current_user.phone,
+        agreement_accepted=True,
+        status=SellerStatus.pending,
+    )
+    db.add(seller)
+    db.flush()
+
+    db.add(
+        SellerProfile(
+            seller_id=seller.id,
+            business_description=data.business_description,
+            business_country=data.business_country,
+            business_region=data.business_region,
+            business_city=data.business_city,
+            business_address=" ".join(
+                part for part in [data.business_district, data.business_ward, data.business_address] if part
+            ) or None,
+            product_description=data.product_description,
+            years_in_business=data.years_in_business,
+            website_url=data.website_url,
+        )
+    )
+
+    valid_ids = []
+    for category_id in set(data.business_category_ids):
+        try:
+            valid_ids.append(uuid.UUID(str(category_id)))
+        except (ValueError, AttributeError):
+            continue
+    for category_id in valid_ids:
+        db.add(
+            SellerBusinessCategory(seller_id=seller.id, business_category_id=category_id)
+        )
+
+    _assign_role(db, current_user.id, "seller")
+    db.commit()
+    return {
+        "message": "Seller account created. Complete store setup from the Seller Center.",
+        "seller_id": str(seller.id),
+        "user": build_auth_user_response(db, current_user),
+    }
+
+
+@router.post("/onboard-broker")
+def onboard_broker(
+    data: BrokerOnboardingRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Create a Winga (broker) profile for the authenticated user."""
+    existing = db.query(Broker).filter(Broker.user_id == current_user.id).first()
+    if existing:
+        return {
+            "message": "Winga account already exists.",
+            "broker_id": str(existing.id),
+            "user": build_auth_user_response(db, current_user),
+        }
+
+    broker_code = f"WNG-{uuid.uuid4().hex[:8].upper()}"
+    broker = Broker(
+        user_id=current_user.id,
+        broker_code=broker_code,
+        country=data.country.strip(),
+        region=data.region.strip(),
+        city=data.city.strip(),
+        district=(data.district or "").strip() or None,
+        ward=(data.ward or "").strip() or None,
+        status=BrokerStatus.pending_kyc,
+    )
+    db.add(broker)
+    _assign_role(db, current_user.id, "broker")
+    db.commit()
+    return {
+        "message": "Winga account created. Complete KYC to start earning.",
+        "broker_id": str(broker.id),
         "user": build_auth_user_response(db, current_user),
     }
 

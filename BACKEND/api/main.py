@@ -52,6 +52,7 @@ from api.routers import (
     settings as settings_router,
     driver_kyc,
     delivery_fare,
+    brokers,
 )
 
 logging.basicConfig(
@@ -207,7 +208,7 @@ for router in (
     admin_dashboard.router,
     admin_advertisements.router,
     admin_catalog.router,
-    admin_catalog.brokers_router,
+    brokers.router,
     admin_finance.router,
     fulfilment.router,
     logistics.router,

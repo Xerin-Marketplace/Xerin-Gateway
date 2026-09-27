@@ -3913,3 +3913,29 @@ class AdvertisementTrackResponse(BaseModel):
 
 class SelectInitialRoleRequest(BaseModel):
     role: Literal["customer", "seller", "broker"]
+
+
+class SellerOnboardingRequest(BaseModel):
+    business_name: str = Field(min_length=2, max_length=255)
+    business_category_ids: list[str] = []
+    business_description: Optional[str] = None
+    business_country: Optional[str] = None
+    business_region: Optional[str] = None
+    business_city: Optional[str] = None
+    business_district: Optional[str] = None
+    business_ward: Optional[str] = None
+    business_address: Optional[str] = None
+    product_description: Optional[str] = None
+    years_in_business: Optional[str] = None
+    website_url: Optional[str] = None
+    contact_email: Optional[EmailStr] = None
+    contact_phone: Optional[str] = None
+    agreement_accepted: bool = False
+
+
+class BrokerOnboardingRequest(BaseModel):
+    country: str = Field(min_length=2, max_length=100)
+    region: str = Field(min_length=2, max_length=100)
+    city: str = Field(min_length=2, max_length=100)
+    district: Optional[str] = None
+    ward: Optional[str] = None

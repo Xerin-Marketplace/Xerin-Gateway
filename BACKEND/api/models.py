@@ -22,6 +22,7 @@ from api.enums import (
     DriverStatus, DriverVerificationStatus, VehicleType, DeliveryTripStatus, StockTransferStatus,
     DriverDocumentType, DriverDocumentStatus, VehicleOwnership, VehicleRequestStatus,
     FareType, SurgePricingType, SurgeScheduleType,
+    BrokerStatus,
 )
 
 
@@ -266,6 +267,53 @@ class SellerKYCDocument(Base):
     uploaded_at = Column(DateTime(timezone=True), server_default=func.now())
 
     seller = relationship("Seller", back_populates="kyc_documents")
+
+
+class Broker(Base):
+    __tablename__ = "brokers"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), unique=True, nullable=False, index=True)
+    broker_code = Column(String(30), unique=True, nullable=False, index=True)
+
+    country = Column(String(100), nullable=False)
+    region = Column(String(100), nullable=False)
+    city = Column(String(100), nullable=False)
+    district = Column(String(100), nullable=True)
+    ward = Column(String(150), nullable=True)
+    nida_number = Column(String(50), nullable=True)
+
+    status = Column(Enum(BrokerStatus), default=BrokerStatus.pending_kyc, nullable=False, index=True)
+    status_reason = Column(Text, nullable=True)
+    approved_at = Column(DateTime(timezone=True), nullable=True)
+    rejected_at = Column(DateTime(timezone=True), nullable=True)
+    suspended_at = Column(DateTime(timezone=True), nullable=True)
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+    user = relationship("User")
+    kyc_documents = relationship("BrokerKycDocument", back_populates="broker", cascade="all, delete-orphan")
+
+
+class BrokerKycDocument(Base):
+    __tablename__ = "broker_kyc_documents"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    broker_id = Column(UUID(as_uuid=True), ForeignKey("brokers.id", ondelete="CASCADE"), nullable=False, index=True)
+
+    document_type = Column(String(100), nullable=False)
+    document_path = Column(Text, nullable=False)
+    original_filename = Column(String(255), nullable=True)
+    mime_type = Column(String(100), nullable=True)
+
+    status = Column(String(50), default="pending", nullable=False)  # pending | approved | rejected
+    rejection_reason = Column(Text, nullable=True)
+    reviewed_at = Column(DateTime(timezone=True), nullable=True)
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    broker = relationship("Broker", back_populates="kyc_documents")
 
 
 class SellerPayoutAccount(Base):
