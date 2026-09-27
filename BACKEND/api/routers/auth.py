@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 import jwt
 from jwt import PyJWTError as JWTError
 import logging
+import threading
 
 from api.database import SessionLocal
 from api.deps import get_db, get_current_user
@@ -53,6 +54,22 @@ def send_email(to: str, subject: str, body: str, html: str | None = None) -> Non
 
 def send_sms(to: str, message: str) -> None:
     return _send_sms(to=to, message=message)
+
+
+def _deliver_async(label: str, fn, **kwargs) -> None:
+    """Fire an outbound notification (SMS/email) on a daemon thread.
+
+    These providers can block for seconds — or hang — and the OTP/codes are
+    already persisted before this runs, so the HTTP response must not wait
+    on delivery. Failures are logged, never surfaced to the client.
+    """
+    def _run() -> None:
+        try:
+            fn(**kwargs)
+        except Exception as exc:  # noqa: BLE001 - delivery must never crash a request
+            logger.exception("%s failed: %s", label, exc)
+
+    threading.Thread(target=_run, daemon=True).start()
 
 
 logger = logging.getLogger(__name__)
@@ -352,22 +369,19 @@ def register(data: RegisterRequest, db: Session = Depends(get_db)):
             detail="Registration failed. Please try again.",
         )
 
-    try:
-        send_email(
-            to=email,
-            subject="Verify your account",
-            body=f"Your verification code is: {otp}",
-        )
-    except Exception as exc:
-        logger.exception("send_email failed for %s: %s", email, exc)
-
-    try:
-        send_sms(
-            to=phone,
-            message=f"Use this OTP to verify your Xerin Marketplace account: {otp}",
-        )
-    except Exception as exc:
-        logger.exception("send_sms failed for %s: %s", phone, exc)
+    _deliver_async(
+        "send_email",
+        send_email,
+        to=email,
+        subject="Verify your account",
+        body=f"Your verification code is: {otp}",
+    )
+    _deliver_async(
+        "send_sms",
+        send_sms,
+        to=phone,
+        message=f"Use this OTP to verify your Xerin Marketplace account: {otp}",
+    )
 
     return RegistrationResponse(
         message=(
@@ -507,22 +521,19 @@ def register_seller(data: SellerRegisterRequest, db: Session = Depends(get_db)):
             detail="Seller registration failed. Please try again.",
         )
 
-    try:
-        send_email(
-            to=email,
-            subject="Verify your seller account",
-            body=f"Your seller verification code is: {otp}",
-        )
-    except Exception as exc:
-        logger.exception("send_email failed for %s: %s", email, exc)
-
-    try:
-        send_sms(
-            to=phone,
-            message=f"Use this OTP to verify your Xerin Marketplace seller account: {otp}",
-        )
-    except Exception as exc:
-        logger.exception("send_sms failed for %s: %s", phone, exc)
+    _deliver_async(
+        "send_email",
+        send_email,
+        to=email,
+        subject="Verify your seller account",
+        body=f"Your seller verification code is: {otp}",
+    )
+    _deliver_async(
+        "send_sms",
+        send_sms,
+        to=phone,
+        message=f"Use this OTP to verify your Xerin Marketplace seller account: {otp}",
+    )
 
     return SellerRegistrationResponse(
         message=(
@@ -899,23 +910,19 @@ def send_otp(request: Request, data: SendOTPRequest, db: Session = Depends(get_d
     db.add(otp_request)
     db.commit()
 
-    # send via SMS (and email if a user exists with that phone)
-    try:
-        send_sms(to=phone, message=f"Your verification code is: {otp}")
-    except Exception as e:
-        logger.exception("send_sms failed for %s: %s", phone, e)
+    # send via SMS (and email if a user exists with that phone) — async so a
+    # slow provider can't stall the HTTP response past the client timeout.
+    _deliver_async("send_sms", send_sms, to=phone, message=f"Your verification code is: {otp}")
 
-    # try find user by phone to send email if available
     user = db.query(User).filter(User.phone == phone).first()
     if user:
-        try:
-            send_email(
-                to=user.email,
-                subject="Your verification code",
-                body=f"Your verification code is: {otp}",
-            )
-        except Exception as e:
-            logger.exception("send_email failed for %s: %s", user.email, e)
+        _deliver_async(
+            "send_email",
+            send_email,
+            to=user.email,
+            subject="Your verification code",
+            body=f"Your verification code is: {otp}",
+        )
 
     return {
         "message": "OTP sent successfully",
@@ -999,23 +1006,21 @@ def forgot_password(
     db.add(otp_request)
     db.commit()
 
-    # send password-reset OTP via email and SMS
-    try:
-        send_email(
-            to=user.email,
-            subject="Password reset code",
-            body=f"Your password reset code is: {otp}",
-        )
-    except Exception as e:
-        logger.exception("send_email failed for %s: %s", user.email, e)
+    # send password-reset OTP via email and SMS — both async
+    _deliver_async(
+        "send_email",
+        send_email,
+        to=user.email,
+        subject="Password reset code",
+        body=f"Your password reset code is: {otp}",
+    )
 
-    try:
-        send_sms(
-            to=user.phone,
-            message=f"Your password reset code is: {otp}",
-        )
-    except Exception as e:
-        logger.exception("send_sms failed for %s: %s", user.phone, e)
+    _deliver_async(
+        "send_sms",
+        send_sms,
+        to=user.phone,
+        message=f"Your password reset code is: {otp}",
+    )
 
     return {
         "message": "Password reset OTP sent",
