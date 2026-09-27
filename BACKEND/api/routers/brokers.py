@@ -5,14 +5,27 @@ from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 from typing import Optional
 
 from api.config import settings
 from api.deps import get_db, get_current_user
 from api.enums import PermissionCode
-from api.models import Broker, BrokerKycDocument, BrokerStatus, User
+from decimal import Decimal
+
+from fastapi import Header
+from api.models import (
+    Broker,
+    BrokerKycDocument,
+    BrokerStatus,
+    BrokerWallet,
+    BrokerWalletTransaction,
+    BrokerPayoutAccount,
+    BrokerPayoutRequest,
+    PayoutStatus,
+    User,
+)
 from api.permissions import require_permission
 
 router = APIRouter(prefix="/brokers", tags=["Brokers"])
@@ -382,31 +395,112 @@ def admin_suspend_broker(
 
 
 # ---------------------------------------------------------------------------
-# Commerce surface — the Winga earning engine (products, offers, wallet,
-# payouts, analytics) is not part of this release. Return honest empty/zero
-# payloads so the dashboard renders cleanly instead of 404-storming.
+# Wallet & payouts — real ledger-backed implementation.
 # ---------------------------------------------------------------------------
 
-def _empty_page(page: int, page_size: int):
-    return {"total": 0, "page": page, "page_size": page_size, "total_pages": 1, "results": []}
+def _serialize_wallet(w: BrokerWallet) -> dict:
+    f = lambda v: str(Decimal(v or 0))
+    return {
+        "id": str(w.id),
+        "broker_id": str(w.broker_id),
+        "currency": w.currency,
+        "pending_balance": f(w.pending_balance),
+        "available_balance": f(w.available_balance),
+        "reserved_balance": f(w.reserved_balance),
+        "paid_out_balance": f(w.paid_out_balance),
+        "reversed_balance": f(w.reversed_balance),
+        "debt_balance": f(w.debt_balance),
+        "is_frozen": bool(w.is_frozen),
+        "created_at": w.created_at.isoformat() if w.created_at else None,
+        "updated_at": w.updated_at.isoformat() if w.updated_at else None,
+    }
+
+
+def _serialize_tx(t: BrokerWalletTransaction) -> dict:
+    return {
+        "id": str(t.id),
+        "wallet_id": str(t.wallet_id),
+        "broker_id": str(t.broker_id),
+        "commission_id": None,
+        "payout_request_id": str(t.payout_request_id) if t.payout_request_id else None,
+        "transaction_type": t.transaction_type,
+        "amount": str(t.amount),
+        "currency": t.currency,
+        "reference": t.reference,
+        "description": t.description,
+        "created_at": t.created_at.isoformat() if t.created_at else None,
+    }
+
+
+def _serialize_account(a: BrokerPayoutAccount) -> dict:
+    return {
+        "id": str(a.id),
+        "broker_id": str(a.broker_id),
+        "account_type": a.account_type,
+        "provider": a.provider,
+        "account_name": a.account_name,
+        "account_number": a.account_number,
+        "currency": a.currency,
+        "is_default": bool(a.is_default),
+        "is_active": bool(a.is_active),
+        "verification_status": a.verification_status,
+        "verification_note": a.verification_note,
+        "verified_at": a.verified_at.isoformat() if a.verified_at else None,
+        "created_at": a.created_at.isoformat() if a.created_at else None,
+        "updated_at": a.updated_at.isoformat() if a.updated_at else None,
+    }
+
+
+def _serialize_payout(p: BrokerPayoutRequest) -> dict:
+    return {
+        "id": str(p.id),
+        "wallet_id": str(p.wallet_id),
+        "broker_id": str(p.broker_id),
+        "payout_account_id": str(p.payout_account_id),
+        "amount": str(p.amount),
+        "currency": p.currency,
+        "status": p.status.value if p.status else "pending",
+        "provider_reference": p.provider_reference,
+        "broker_note": p.broker_note,
+        "admin_note": p.admin_note,
+        "requested_at": p.requested_at.isoformat() if p.requested_at else None,
+        "processed_at": p.processed_at.isoformat() if p.processed_at else None,
+        "completed_at": p.completed_at.isoformat() if p.completed_at else None,
+    }
+
+
+def _wallet_for(db: Session, broker: Broker) -> BrokerWallet:
+    wallet = db.query(BrokerWallet).filter(BrokerWallet.broker_id == broker.id).first()
+    if wallet is None:
+        wallet = BrokerWallet(broker_id=broker.id)
+        db.add(wallet)
+        db.commit()
+        db.refresh(wallet)
+    return wallet
+
+
+def _ledger(db: Session, wallet: BrokerWallet, tx_type: str, amount: Decimal,
+            description: str, payout_request_id=None) -> None:
+    db.add(BrokerWalletTransaction(
+        wallet_id=wallet.id,
+        broker_id=wallet.broker_id,
+        transaction_type=tx_type,
+        amount=amount,
+        currency=wallet.currency,
+        reference=f"TX-{uuid.uuid4().hex[:10].upper()}",
+        description=description,
+        payout_request_id=payout_request_id,
+    ))
 
 
 @router.get("/products")
-def broker_products(
-    page: int = Query(1, ge=1),
-    page_size: int = Query(20, ge=1, le=200),
-    current_user: User = Depends(get_current_user),
-):
+def broker_products(current_user: User = Depends(get_current_user)):
     _ = current_user
     return []
 
 
 @router.get("/opportunities")
-def broker_opportunities(
-    page: int = Query(1, ge=1),
-    page_size: int = Query(20, ge=1, le=200),
-    current_user: User = Depends(get_current_user),
-):
+def broker_opportunities(current_user: User = Depends(get_current_user)):
     _ = current_user
     return []
 
@@ -442,57 +536,369 @@ def broker_commission_summary(current_user: User = Depends(get_current_user)):
 
 @router.get("/wallet")
 def broker_wallet(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    broker = _get_my_broker(db, current_user)
-    return {
-        "id": str(broker.id),
-        "broker_id": str(broker.id),
-        "currency": "TZS",
-        "pending_balance": "0",
-        "available_balance": "0",
-        "reserved_balance": "0",
-        "paid_out_balance": "0",
-        "reversed_balance": "0",
-        "debt_balance": "0",
-        "is_frozen": False,
-        "created_at": broker.created_at.isoformat() if broker.created_at else None,
-        "updated_at": broker.updated_at.isoformat() if broker.updated_at else None,
-    }
+    return _serialize_wallet(_wallet_for(db, _get_my_broker(db, current_user)))
 
 
 @router.get("/wallet/transactions")
 def broker_wallet_transactions(
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=200),
+    db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    _ = current_user
-    return _empty_page(page, page_size)
+    wallet = _wallet_for(db, _get_my_broker(db, current_user))
+    query = db.query(BrokerWalletTransaction).filter(BrokerWalletTransaction.wallet_id == wallet.id)
+    total = query.count()
+    rows = query.order_by(BrokerWalletTransaction.created_at.desc()).offset((page - 1) * page_size).limit(page_size).all()
+    return {
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+        "total_pages": max(1, (total + page_size - 1) // page_size),
+        "results": [_serialize_tx(t) for t in rows],
+    }
+
+
+class PayoutAccountIn(BaseModel):
+    account_type: str
+    provider: str = Field(min_length=2, max_length=100)
+    account_name: str = Field(min_length=2, max_length=255)
+    account_number: str = Field(min_length=4, max_length=100)
+    currency: str = "TZS"
+    is_default: bool = False
 
 
 @router.get("/payout-accounts")
-def broker_payout_accounts(current_user: User = Depends(get_current_user)):
-    _ = current_user
-    return []
+def broker_payout_accounts(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    broker = _get_my_broker(db, current_user)
+    rows = (
+        db.query(BrokerPayoutAccount)
+        .filter(BrokerPayoutAccount.broker_id == broker.id, BrokerPayoutAccount.is_active.is_(True))
+        .order_by(BrokerPayoutAccount.created_at.desc())
+        .all()
+    )
+    return [_serialize_account(a) for a in rows]
+
+
+@router.post("/payout-accounts")
+def broker_create_payout_account(
+    data: PayoutAccountIn,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    broker = _get_my_broker(db, current_user)
+    if data.account_type not in ("mobile_money", "bank"):
+        raise HTTPException(status_code=422, detail="account_type must be mobile_money or bank")
+    dup = db.query(BrokerPayoutAccount).filter(
+        BrokerPayoutAccount.broker_id == broker.id,
+        BrokerPayoutAccount.account_number == data.account_number.strip(),
+        BrokerPayoutAccount.is_active.is_(True),
+    ).first()
+    if dup:
+        raise HTTPException(status_code=409, detail="That payout account already exists.")
+
+    account = BrokerPayoutAccount(
+        broker_id=broker.id,
+        account_type=data.account_type,
+        provider=data.provider.strip(),
+        account_name=data.account_name.strip(),
+        account_number=data.account_number.strip(),
+        currency=data.currency,
+        is_default=data.is_default,
+    )
+    db.add(account)
+    db.commit()
+    db.refresh(account)
+    return _serialize_account(account)
+
+
+class PayoutAccountPatch(BaseModel):
+    account_type: Optional[str] = None
+    provider: Optional[str] = None
+    account_name: Optional[str] = None
+    account_number: Optional[str] = None
+    currency: Optional[str] = None
+    is_default: Optional[bool] = None
+    is_active: Optional[bool] = None
+
+
+@router.patch("/payout-accounts/{account_id}")
+def broker_update_payout_account(
+    account_id: str,
+    data: PayoutAccountPatch,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    broker = _get_my_broker(db, current_user)
+    account = db.query(BrokerPayoutAccount).filter(
+        BrokerPayoutAccount.id == account_id,
+        BrokerPayoutAccount.broker_id == broker.id,
+    ).first()
+    if not account:
+        raise HTTPException(status_code=404, detail="Payout account not found")
+    for field in ("account_type", "provider", "account_name", "account_number", "currency"):
+        value = getattr(data, field)
+        if value is not None:
+            setattr(account, field, value)
+    if data.is_default is not None:
+        account.is_default = data.is_default
+    if data.is_active is not None:
+        account.is_active = data.is_active
+    if data.provider or data.account_number:
+        account.verification_status = "pending"  # changes require re-verification
+        account.verified_at = None
+    db.commit()
+    db.refresh(account)
+    return _serialize_account(account)
+
+
+class PayoutRequestIn(BaseModel):
+    payout_account_id: str
+    amount: Decimal
+    note: Optional[str] = None
+
+
+@router.post("/payouts")
+def broker_request_payout(
+    data: PayoutRequestIn,
+    idempotency_key: Optional[str] = Header(None, alias="Idempotency-Key"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    broker = _get_my_broker(db, current_user)
+    wallet = _wallet_for(db, broker)
+
+    if wallet.is_frozen:
+        raise HTTPException(status_code=423, detail="Wallet is frozen. Contact support.")
+    if data.amount <= 0:
+        raise HTTPException(status_code=422, detail="Amount must be greater than zero.")
+    if Decimal(wallet.available_balance or 0) < data.amount:
+        raise HTTPException(status_code=422, detail="Insufficient available balance.")
+
+    account = db.query(BrokerPayoutAccount).filter(
+        BrokerPayoutAccount.id == data.payout_account_id,
+        BrokerPayoutAccount.broker_id == broker.id,
+        BrokerPayoutAccount.is_active.is_(True),
+    ).first()
+    if not account:
+        raise HTTPException(status_code=404, detail="Payout account not found")
+    if account.verification_status != "verified":
+        raise HTTPException(status_code=422, detail="Payout account is not verified yet.")
+
+    # Idempotency: same key replays the original request instead of double-charging.
+    if idempotency_key:
+        existing = db.query(BrokerPayoutRequest).filter(
+            BrokerPayoutRequest.broker_id == broker.id,
+            BrokerPayoutRequest.idempotency_key == idempotency_key,
+        ).first()
+        if existing:
+            return _serialize_payout(existing)
+
+    payout = BrokerPayoutRequest(
+        wallet_id=wallet.id,
+        broker_id=broker.id,
+        payout_account_id=account.id,
+        amount=data.amount,
+        currency=wallet.currency,
+        status=PayoutStatus.pending,
+        broker_note=data.note,
+        idempotency_key=idempotency_key,
+    )
+    wallet.available_balance = Decimal(wallet.available_balance) - data.amount
+    wallet.reserved_balance = Decimal(wallet.reserved_balance) + data.amount
+    db.add(payout)
+    db.flush()
+    _ledger(db, wallet, "payout_hold", data.amount,
+            f"Payout request placed to {account.provider}", payout.id)
+    db.commit()
+    db.refresh(payout)
+    return _serialize_payout(payout)
 
 
 @router.get("/payouts")
 def broker_payouts(
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=200),
+    db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    _ = current_user
-    return _empty_page(page, page_size)
+    broker = _get_my_broker(db, current_user)
+    query = db.query(BrokerPayoutRequest).filter(BrokerPayoutRequest.broker_id == broker.id)
+    total = query.count()
+    rows = query.order_by(BrokerPayoutRequest.requested_at.desc()).offset((page - 1) * page_size).limit(page_size).all()
+    return {
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+        "total_pages": max(1, (total + page_size - 1) // page_size),
+        "results": [_serialize_payout(p) for p in rows],
+    }
 
+
+@router.post("/payouts/{payout_id}/cancel")
+def broker_cancel_payout(
+    payout_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    broker = _get_my_broker(db, current_user)
+    payout = db.query(BrokerPayoutRequest).filter(
+        BrokerPayoutRequest.id == payout_id,
+        BrokerPayoutRequest.broker_id == broker.id,
+    ).first()
+    if not payout:
+        raise HTTPException(status_code=404, detail="Payout not found")
+    if payout.status not in (PayoutStatus.pending, PayoutStatus.approved):
+        raise HTTPException(status_code=409, detail="Only pending payouts can be cancelled")
+
+    wallet = _wallet_for(db, broker)
+    wallet.reserved_balance = Decimal(wallet.reserved_balance) - payout.amount
+    wallet.available_balance = Decimal(wallet.available_balance) + payout.amount
+    payout.status = PayoutStatus.cancelled
+    _ledger(db, wallet, "payout_released", payout.amount, "Payout cancelled — funds released", payout.id)
+    db.commit()
+    db.refresh(payout)
+    return _serialize_payout(payout)
+
+
+# ---- Admin payout management ----
+
+@router.get("/admin/payout-accounts")
+def admin_payout_accounts(db: Session = Depends(get_db), _: User = Depends(ADMIN_VIEW)):
+    rows = db.query(BrokerPayoutAccount).order_by(BrokerPayoutAccount.created_at.desc()).all()
+    return [_serialize_account(a) for a in rows]
+
+
+class AdminVerifyAccountIn(BaseModel):
+    status: str
+    note: Optional[str] = None
+
+
+@router.patch("/admin/payout-accounts/{account_id}/verification")
+def admin_verify_payout_account(
+    account_id: str,
+    data: AdminVerifyAccountIn,
+    db: Session = Depends(get_db),
+    _: User = Depends(ADMIN_APPROVE),
+):
+    account = db.query(BrokerPayoutAccount).filter(BrokerPayoutAccount.id == account_id).first()
+    if not account:
+        raise HTTPException(status_code=404, detail="Payout account not found")
+    if data.status not in ("verified", "rejected", "pending"):
+        raise HTTPException(status_code=422, detail="Invalid verification status")
+    account.verification_status = data.status
+    account.verification_note = data.note
+    account.verified_at = datetime.now(timezone.utc) if data.status == "verified" else None
+    db.commit()
+    db.refresh(account)
+    return _serialize_account(account)
+
+
+@router.get("/admin/payouts")
+def admin_payouts(
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=200),
+    status_filter: Optional[str] = Query(None, alias="status"),
+    db: Session = Depends(get_db),
+    _: User = Depends(ADMIN_VIEW),
+):
+    query = db.query(BrokerPayoutRequest)
+    if status_filter:
+        try:
+            query = query.filter(BrokerPayoutRequest.status == PayoutStatus(status_filter))
+        except ValueError:
+            pass
+    total = query.count()
+    rows = query.order_by(BrokerPayoutRequest.requested_at.desc()).offset((page - 1) * page_size).limit(page_size).all()
+    return {
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+        "total_pages": max(1, (total + page_size - 1) // page_size),
+        "results": [_serialize_payout(p) for p in rows],
+    }
+
+
+class AdminPayoutUpdateIn(BaseModel):
+    status: str
+    provider_reference: Optional[str] = None
+    note: Optional[str] = None
+
+
+@router.patch("/admin/payouts/{payout_id}")
+def admin_update_payout(
+    payout_id: str,
+    data: AdminPayoutUpdateIn,
+    db: Session = Depends(get_db),
+    _: User = Depends(ADMIN_APPROVE),
+):
+    payout = db.query(BrokerPayoutRequest).filter(BrokerPayoutRequest.id == payout_id).first()
+    if not payout:
+        raise HTTPException(status_code=404, detail="Payout not found")
+    try:
+        new_status = PayoutStatus(data.status)
+    except ValueError:
+        raise HTTPException(status_code=422, detail="Invalid status")
+
+    now = datetime.now(timezone.utc)
+    wallet = db.query(BrokerWallet).filter(BrokerWallet.id == payout.wallet_id).first()
+    if not wallet:
+        raise HTTPException(status_code=409, detail="Wallet missing for this payout")
+
+    # Balance transitions — reserved funds resolve to paid_out or back to available.
+    if new_status == PayoutStatus.completed and payout.status != PayoutStatus.completed:
+        wallet.reserved_balance = Decimal(wallet.reserved_balance) - payout.amount
+        wallet.paid_out_balance = Decimal(wallet.paid_out_balance) + payout.amount
+        payout.completed_at = now
+        _ledger(db, wallet, "payout_completed", payout.amount, "Payout completed", payout.id)
+    elif new_status in (PayoutStatus.rejected, PayoutStatus.failed) and payout.status not in (PayoutStatus.rejected, PayoutStatus.failed, PayoutStatus.cancelled):
+        wallet.reserved_balance = Decimal(wallet.reserved_balance) - payout.amount
+        wallet.available_balance = Decimal(wallet.available_balance) + payout.amount
+        _ledger(db, wallet, "payout_released", payout.amount, f"Payout {new_status.value} — funds released", payout.id)
+
+    payout.status = new_status
+    payout.provider_reference = data.provider_reference or payout.provider_reference
+    payout.admin_note = data.note or payout.admin_note
+    payout.processed_at = now
+    db.commit()
+    db.refresh(payout)
+    return _serialize_payout(payout)
+
+
+class FreezeWalletIn(BaseModel):
+    frozen: bool
+    reason: Optional[str] = None
+
+
+@router.patch("/admin/{broker_id}/security/wallet-freeze")
+def admin_freeze_wallet(
+    broker_id: str,
+    data: FreezeWalletIn,
+    db: Session = Depends(get_db),
+    _: User = Depends(ADMIN_APPROVE),
+):
+    broker = _admin_get_broker(db, broker_id)
+    wallet = _wallet_for(db, broker)
+    wallet.is_frozen = data.frozen
+    db.commit()
+    db.refresh(wallet)
+    return _serialize_wallet(wallet)
+
+
+# ---------------------------------------------------------------------------
+# Earning engine (offers, referral clicks, commissions, analytics) ships in a
+# separate release — these stay honest empties so the dashboard renders.
+# ---------------------------------------------------------------------------
 
 @router.get("/analytics/overview")
 def broker_analytics_overview(
     days: int = Query(30, ge=1, le=365),
+    db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    _ = current_user
+    wallet = _wallet_for(db, _get_my_broker(db, current_user))
     return {
-        "currency": "TZS",
+        "currency": wallet.currency,
         "period_days": days,
         "total_clicks": 0,
         "unique_visitors": 0,
@@ -504,9 +910,9 @@ def broker_analytics_overview(
         "pending_earnings": "0",
         "available_earnings": "0",
         "lifetime_earnings": "0",
-        "wallet_available": "0",
-        "wallet_pending": "0",
-        "wallet_paid_out": "0",
+        "wallet_available": str(wallet.available_balance),
+        "wallet_pending": str(wallet.pending_balance),
+        "wallet_paid_out": str(wallet.paid_out_balance),
         "currently_promoting": 0,
         "available_opportunities": 0,
         "own_products_active": 0,
@@ -522,20 +928,6 @@ def broker_campaign_analytics(
     current_user: User = Depends(get_current_user),
 ):
     _ = current_user
-    return _empty_page(page, page_size)
-
-
-@router.get("/admin/payout-accounts")
-def admin_payout_accounts(_: User = Depends(ADMIN_VIEW)):
-    return []
-
-
-@router.get("/admin/payouts")
-def admin_payouts(
-    page: int = Query(1, ge=1),
-    page_size: int = Query(20, ge=1, le=200),
-    _: User = Depends(ADMIN_VIEW),
-):
     return _empty_page(page, page_size)
 
 

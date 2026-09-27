@@ -2838,3 +2838,85 @@ class AdvertisementEvent(Base):
             name="uq_ad_event_dedupe",
         ),
     )
+
+
+class BrokerWallet(Base):
+    __tablename__ = "broker_wallets"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    broker_id = Column(UUID(as_uuid=True), ForeignKey("brokers.id", ondelete="CASCADE"), unique=True, nullable=False, index=True)
+    currency = Column(String(10), nullable=False, default="TZS")
+
+    pending_balance = Column(Numeric(14, 2), nullable=False, default=0)
+    available_balance = Column(Numeric(14, 2), nullable=False, default=0)
+    reserved_balance = Column(Numeric(14, 2), nullable=False, default=0)
+    paid_out_balance = Column(Numeric(14, 2), nullable=False, default=0)
+    reversed_balance = Column(Numeric(14, 2), nullable=False, default=0)
+    debt_balance = Column(Numeric(14, 2), nullable=False, default=0)
+
+    is_frozen = Column(Boolean, default=False, nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+    broker = relationship("Broker")
+
+
+class BrokerWalletTransaction(Base):
+    __tablename__ = "broker_wallet_transactions"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    wallet_id = Column(UUID(as_uuid=True), ForeignKey("broker_wallets.id", ondelete="CASCADE"), nullable=False, index=True)
+    broker_id = Column(UUID(as_uuid=True), ForeignKey("brokers.id", ondelete="CASCADE"), nullable=False, index=True)
+
+    transaction_type = Column(String(50), nullable=False)
+    amount = Column(Numeric(14, 2), nullable=False)
+    currency = Column(String(10), nullable=False, default="TZS")
+    reference = Column(String(100), nullable=True)
+    description = Column(Text, nullable=True)
+
+    payout_request_id = Column(UUID(as_uuid=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class BrokerPayoutAccount(Base):
+    __tablename__ = "broker_payout_accounts"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    broker_id = Column(UUID(as_uuid=True), ForeignKey("brokers.id", ondelete="CASCADE"), nullable=False, index=True)
+
+    account_type = Column(String(30), nullable=False)  # mobile_money | bank
+    provider = Column(String(100), nullable=False)
+    account_name = Column(String(255), nullable=False)
+    account_number = Column(String(100), nullable=False)
+    currency = Column(String(10), nullable=False, default="TZS")
+
+    is_default = Column(Boolean, default=False, nullable=False)
+    is_active = Column(Boolean, default=True, nullable=False)
+    verification_status = Column(String(30), nullable=False, default="pending")  # pending | verified | rejected
+    verification_note = Column(Text, nullable=True)
+    verified_at = Column(DateTime(timezone=True), nullable=True)
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+
+class BrokerPayoutRequest(Base):
+    __tablename__ = "broker_payout_requests"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    wallet_id = Column(UUID(as_uuid=True), ForeignKey("broker_wallets.id"), nullable=False, index=True)
+    broker_id = Column(UUID(as_uuid=True), ForeignKey("brokers.id", ondelete="CASCADE"), nullable=False, index=True)
+    payout_account_id = Column(UUID(as_uuid=True), ForeignKey("broker_payout_accounts.id"), nullable=False)
+
+    amount = Column(Numeric(14, 2), nullable=False)
+    currency = Column(String(10), nullable=False, default="TZS")
+    status = Column(Enum(PayoutStatus), nullable=False, default=PayoutStatus.pending, index=True)
+
+    provider_reference = Column(String(150), nullable=True)
+    broker_note = Column(Text, nullable=True)
+    admin_note = Column(Text, nullable=True)
+    idempotency_key = Column(String(120), nullable=True, index=True)
+
+    requested_at = Column(DateTime(timezone=True), server_default=func.now())
+    processed_at = Column(DateTime(timezone=True), nullable=True)
+    completed_at = Column(DateTime(timezone=True), nullable=True)
