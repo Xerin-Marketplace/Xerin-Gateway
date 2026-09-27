@@ -17,7 +17,7 @@ from api.permissions import require_permission
 
 router = APIRouter(prefix="/brokers", tags=["Brokers"])
 
-REQUIRED_KYC_DOCS = ["nida_front", "nida_back", "selfie"]
+REQUIRED_KYC_DOCS = ["national_id", "profile_photo", "selfie"]
 ALLOWED_DOC_MIME = {"image/jpeg", "image/png", "image/webp", "application/pdf"}
 
 
