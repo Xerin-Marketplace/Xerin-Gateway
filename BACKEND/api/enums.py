@@ -61,6 +61,7 @@ class PermissionCode(str, enum.Enum):
 
     manage_products = "manage_products"
     can_view_products = "can_view_products"
+    admin_catalog_read = "admin_catalog:read"
     can_approve_products = "can_approve_products"
     can_reject_products = "can_reject_products"
     seller_products_create = "seller_products:create"

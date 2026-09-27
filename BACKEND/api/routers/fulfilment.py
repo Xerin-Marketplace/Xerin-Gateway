@@ -4,7 +4,7 @@ import datetime
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import func, or_
+from sqlalchemy import func, or_, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, joinedload
 
@@ -29,6 +29,7 @@ from api.models import (
     ProductVariant,
     PutawayTask,
     Seller,
+    Order,
     SellerOrder,
     SellerOrderStatus,
     User,
@@ -128,10 +129,12 @@ def _is_admin(user: User, db: Session) -> bool:
 
 
 def _generate_reference(db: Session, prefix: str, model_cls) -> str:
+    """Sequential references via a per-prefix Postgres sequence (race-safe)."""
     year = datetime.datetime.now(datetime.timezone.utc).year
-    prefix_str = f"{prefix}-{year}-"
-    count = db.query(model_cls).filter(model_cls.reference.like(f"{prefix_str}%")).count()
-    return f"{prefix_str}{count + 1:04d}"
+    seq_name = f"{prefix.lower()}_ref_seq".replace("-", "_")
+    db.execute(text(f"CREATE SEQUENCE IF NOT EXISTS {seq_name}"))
+    seq_val = db.execute(text(f"SELECT nextval('{seq_name}')")).scalar()
+    return f"{prefix}-{year}-{seq_val:04d}"
 
 
 def _warehouse_to_response(wh: Warehouse) -> WarehouseResponse:
@@ -317,6 +320,8 @@ def list_warehouses(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    if not _is_admin(current_user, db):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Inventory access required")
     q = db.query(Warehouse)
     if status_filter:
         q = q.filter(Warehouse.status == status_filter)
@@ -329,7 +334,9 @@ def list_warehouses(
 
 
 @router.get("/warehouses/{warehouse_id}", response_model=WarehouseResponse)
-def get_warehouse_by_id(warehouse_id: UUID, db: Session = Depends(get_db), _: User = Depends(get_current_user)):
+def get_warehouse_by_id(warehouse_id: UUID, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    if not _is_admin(current_user, db):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Inventory access required")
     return _warehouse_to_response(_get_warehouse(db, warehouse_id))
 
 
@@ -607,6 +614,8 @@ def add_inbound_item(
     product = db.get(Product, data.product_id)
     if not product:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Product not found")
+    if not admin and product.seller_id != seller.id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="You can only add your own products to an inbound shipment")
     if data.variant_id:
         variant = db.get(ProductVariant, data.variant_id)
         if not variant or variant.product_id != data.product_id:
@@ -743,7 +752,7 @@ def complete_putaway_task(
         WarehouseInventory.product_id == task.product_id,
     )
     inv_q = inv_q.filter(WarehouseInventory.variant_id == task.variant_id) if task.variant_id else inv_q.filter(WarehouseInventory.variant_id.is_(None))
-    inv = inv_q.first()
+    inv = inv_q.with_for_update().first()
 
     if not inv:
         seller = db.query(Seller).filter(Seller.id == db.query(Product).filter(Product.id == task.product_id).first().seller_id).first()
@@ -758,6 +767,7 @@ def complete_putaway_task(
             warehouse_bin_id=wh_bin.id,
         )
         db.add(inv)
+        db.flush()
 
     inv.quantity += data.putaway_quantity
     inv.available_quantity = inv.quantity - inv.reserved_quantity
@@ -986,6 +996,10 @@ def complete_packing(
     if so:
         so.status = SellerOrderStatus.shipped
         so.shipped_at = datetime.datetime.now(datetime.timezone.utc)
+        parent_order = db.get(Order, so.order_id)
+        if parent_order is not None:
+            from api.routers.seller_orders import _sync_global
+            _sync_global(db, parent_order, current_user.id)
 
     # Deduct inventory
     items = db.query(PickListItem).filter(PickListItem.pick_list_id == picklist_id).all()
@@ -995,20 +1009,31 @@ def complete_packing(
             WarehouseInventory.product_id == item.product_id,
         )
         inv_q = inv_q.filter(WarehouseInventory.variant_id == item.variant_id) if item.variant_id else inv_q.filter(WarehouseInventory.variant_id.is_(None))
-        inv = inv_q.first()
-        if inv:
-            inv.quantity -= item.picked_quantity
-            inv.reserved_quantity = max(0, inv.reserved_quantity - item.quantity)
-            inv.available_quantity = inv.quantity - inv.reserved_quantity
-            movement = WarehouseInventoryMovement(
-                warehouse_inventory_id=inv.id,
-                movement_type=WarehouseInventoryMovementType.outbound_pick,
-                quantity=item.picked_quantity,
-                reference_type="pick_list",
-                reference_id=pl.id,
-                reason="Outbound pick for order",
+        inv = inv_q.with_for_update().first()
+        if not inv:
+            db.rollback()
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"No warehouse inventory row for product {item.product_id} — cannot ship unstocked product",
             )
-            db.add(movement)
+        if inv.quantity < item.picked_quantity:
+            db.rollback()
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"Insufficient warehouse stock for product {item.product_id}",
+            )
+        inv.quantity -= item.picked_quantity
+        inv.reserved_quantity = max(0, inv.reserved_quantity - item.quantity)
+        inv.available_quantity = inv.quantity - inv.reserved_quantity
+        movement = WarehouseInventoryMovement(
+            warehouse_inventory_id=inv.id,
+            movement_type=WarehouseInventoryMovementType.outbound_pick,
+            quantity=item.picked_quantity,
+            reference_type="pick_list",
+            reference_id=pl.id,
+            reason="Outbound pick for order",
+        )
+        db.add(movement)
 
     _commit(db)
     db.refresh(pl)
@@ -1111,7 +1136,9 @@ def adjust_inventory(
     db: Session = Depends(get_db),
     current_user: User = Depends(require_permission(PermissionCode.inventory_manage.value)),
 ):
-    inv = db.get(WarehouseInventory, inventory_id)
+    inv = db.query(WarehouseInventory).filter(
+        WarehouseInventory.id == inventory_id
+    ).with_for_update().first()
     if not inv:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Inventory record not found")
     if data.adjustment_type == InventoryAdjustmentType.increase:

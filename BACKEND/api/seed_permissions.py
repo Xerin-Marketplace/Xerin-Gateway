@@ -138,6 +138,7 @@ DEFAULT_ROLE_PERMISSIONS: dict[str, set[str]] = {
         PermissionCode.can_approve_sellers.value,
         PermissionCode.can_reject_sellers.value,
         PermissionCode.can_view_products.value,
+        PermissionCode.admin_catalog_read.value,
         PermissionCode.can_approve_products.value,
         PermissionCode.can_reject_products.value,
         PermissionCode.orders_read.value,

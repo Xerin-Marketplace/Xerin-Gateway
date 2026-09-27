@@ -135,7 +135,9 @@ def _commit(db: Session, *, conflict_detail: str = "Payment conflict") -> None:
 )
 def payment_name_lookup(
     data: NameLookupRequest,
+    current_user: User = Depends(get_current_user),
 ):
+    del current_user
     """
     Verify a Mobile Money account before payment/disbursement.
     """
@@ -395,7 +397,12 @@ def azampay_callback(
     db: Session = Depends(get_db),
 ):
     configured_secret = settings.AZAMPAY_CALLBACK_SECRET
-    if configured_secret and (not x_azampay_secret or not hmac.compare_digest(x_azampay_secret, configured_secret)):
+    if not configured_secret:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="AzamPay callback secret is not configured",
+        )
+    if not x_azampay_secret or not hmac.compare_digest(x_azampay_secret, configured_secret):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid AzamPay callback secret")
 
     reference = str(payload.get("utilityref") or payload.get("externalId") or payload.get("external_id") or "").strip()

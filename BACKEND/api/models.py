@@ -1013,6 +1013,17 @@ class Payment(Base):
 
     paid_at = Column(DateTime(timezone=True), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    __table_args__ = (
+        Index(
+            "uq_active_payment_per_order",
+            "order_id",
+            unique=True,
+            postgresql_where=(status.in_([
+                PaymentStatus.pending, PaymentStatus.processing, PaymentStatus.completed,
+            ])),
+        ),
+    )
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
 
     order = relationship("Order", back_populates="payments")
@@ -2296,6 +2307,12 @@ class WarehouseInventory(Base):
         CheckConstraint("reserved_quantity <= quantity", name="ck_wh_inv_reserved_lte_quantity"),
         CheckConstraint("available_quantity = quantity - reserved_quantity", name="ck_wh_inv_available_consistent"),
         Index("uq_wh_inv_warehouse_product_variant", "warehouse_id", "product_id", "variant_id", unique=True),
+        Index(
+            "uq_wh_inv_without_variant",
+            "warehouse_id", "product_id",
+            unique=True,
+            postgresql_where=variant_id.is_(None),
+        ),
     )
 
 
@@ -2915,7 +2932,7 @@ class BrokerPayoutRequest(Base):
     provider_reference = Column(String(150), nullable=True)
     broker_note = Column(Text, nullable=True)
     admin_note = Column(Text, nullable=True)
-    idempotency_key = Column(String(120), nullable=True, index=True)
+    idempotency_key = Column(String(120), nullable=True, unique=True, index=True)
 
     requested_at = Column(DateTime(timezone=True), server_default=func.now())
     processed_at = Column(DateTime(timezone=True), nullable=True)

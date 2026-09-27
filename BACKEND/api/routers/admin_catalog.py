@@ -92,7 +92,7 @@ def list_catalog_products(
     status_filter: str | None = Query(None),
     search: str | None = Query(None),
     db: Session = Depends(get_db),
-    _=Depends(require_permission(PermissionCode.can_view_products.value)),
+    _=Depends(require_permission(PermissionCode.admin_catalog_read.value)),
 ):
     query = (
         db.query(Product)
@@ -131,7 +131,7 @@ def list_catalog_products(
 @router.get("/summary")
 def catalog_summary(
     db: Session = Depends(get_db),
-    _=Depends(require_permission(PermissionCode.can_view_products.value)),
+    _=Depends(require_permission(PermissionCode.admin_catalog_read.value)),
 ):
     def count(status_value: str | None = None) -> int:
         q = db.query(func.count(Product.id))

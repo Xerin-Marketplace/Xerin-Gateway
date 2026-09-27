@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 
 from api.deps import get_current_user, get_db
 from api.models import Inventory, Product, ProductVariant, Seller, SellerStatus, User
+from api.permissions import get_user_permissions
 from api.schemas import InventoryCreate, InventoryResponse, InventoryUpdate
 
 router = APIRouter(prefix="/inventory", tags=["Inventory"])
@@ -25,6 +26,11 @@ def _owned_product(db: Session, seller: Seller, product_id: UUID) -> Product:
     if not product:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Product not found or not owned by you")
     return product
+
+
+def _is_inventory_admin(db: Session, user: User) -> bool:
+    perms = get_user_permissions(db, user)
+    return bool({"inventory_manage", "admin_catalog:read", "logistics_read"} & perms)
 
 
 def _validate_stock(quantity: int, reserved_quantity: int) -> None:
@@ -85,15 +91,35 @@ def get_my_inventory(db: Session = Depends(get_db), current_user: User = Depends
     return db.query(Inventory).join(Product, Product.id == Inventory.product_id).filter(Product.seller_id == seller.id).order_by(Inventory.updated_at.desc().nullslast()).all()
 
 
+@router.get("/product/{product_id}/availability")
+def get_product_availability(product_id: UUID, db: Session = Depends(get_db)):
+    """Public availability signal — never exposes exact stock counts."""
+    inventory = db.query(Inventory).join(Product, Product.id == Inventory.product_id).filter(
+        Inventory.product_id == product_id,
+        Product.is_active.is_(True),
+    ).first()
+    available = int(inventory.available or 0) if inventory else 0
+    return {
+        "product_id": str(product_id),
+        "in_stock": available > 0,
+        "low_stock": 0 < available <= 5,
+    }
+
+
 @router.get("/product/{product_id}", response_model=InventoryResponse)
-def get_product_inventory(product_id: UUID, db: Session = Depends(get_db)):
+def get_product_inventory(product_id: UUID, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    """Full stock levels are restricted to the owning seller or staff."""
+    seller = db.query(Seller).filter(Seller.user_id == current_user.id).first()
     inventory = db.query(Inventory).join(Product, Product.id == Inventory.product_id).filter(
         Inventory.product_id == product_id,
         Inventory.variant_id.is_(None),
-        Product.is_active.is_(True),
     ).first()
     if not inventory:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Inventory not found")
+    product = db.get(Product, product_id)
+    is_owner = bool(seller and product and product.seller_id == seller.id)
+    if not is_owner and not _is_inventory_admin(db, current_user):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized to view stock levels")
     return inventory
 
 

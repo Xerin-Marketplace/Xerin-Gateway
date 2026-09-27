@@ -274,6 +274,10 @@ async def delivery_webhook(
         if seller_order:
             seller_order.status = SellerOrderStatus.delivered
             seller_order.delivered_at = now
+            parent_order = db.get(Order, seller_order.order_id)
+            if parent_order is not None:
+                from api.routers.seller_orders import _sync_global
+                _sync_global(db, parent_order, job.updated_by_id if hasattr(job, "updated_by_id") else None)
     db.add(ShipmentTrackingEvent(shipment_id=shipment.id, status=shipment.status, location=payload.get("location"), notes=payload.get("notes") or f"External delivery status: {status.value}"))
     db.commit()
     return {"accepted": True, "delivery_id": external_id, "status": status}

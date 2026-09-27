@@ -1053,7 +1053,7 @@ def send_otp(request: Request, data: SendOTPRequest, db: Session = Depends(get_d
 
     return {
         "message": "OTP sent successfully",
-        "dev_otp": otp if settings.DEBUG else None,
+        "dev_otp": otp if not settings.is_production and settings.DEBUG else None,
     }
 
 
@@ -1151,7 +1151,7 @@ def forgot_password(
 
     return {
         "message": "Password reset OTP sent",
-        "dev_otp": otp if settings.DEBUG else None,
+        "dev_otp": otp if not settings.is_production and settings.DEBUG else None,
     }
 
 
@@ -1161,6 +1161,10 @@ def reset_password(data: ResetPasswordRequest, db: Session = Depends(get_db)):
 
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
+
+    identifier = (user.phone or user.email or "").strip().lower()
+    if identifier:
+        _check_otp_lockout(identifier)
 
     otp_request = (
         db.query(OTPRequest)
@@ -1174,6 +1178,8 @@ def reset_password(data: ResetPasswordRequest, db: Session = Depends(get_db)):
     )
 
     if not otp_request or not verify_otp_hash(data.otp_code, otp_request.otp_hash):
+        if identifier:
+            _record_otp_failure(identifier)
         raise HTTPException(status_code=400, detail="Invalid OTP")
 
     if otp_request.expires_at < datetime.now(timezone.utc):

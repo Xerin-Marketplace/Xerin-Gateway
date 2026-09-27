@@ -16,6 +16,7 @@ from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import func
 
+from api.config import settings
 from api.database import SessionLocal
 from api.models import (
     Advertisement,
@@ -83,6 +84,9 @@ def _slug_exists(db, model, slug: str) -> bool:
 
 
 def seed_demo() -> None:
+    if settings.is_production:
+        raise RuntimeError("seed_demo must never run against production")
+
     db = SessionLocal()
     try:
         # --- demo seller user ---

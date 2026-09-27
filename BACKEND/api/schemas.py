@@ -3269,6 +3269,7 @@ class UpdateTripStatusRequest(BaseModel):
     notes: Optional[str] = None
     latitude: Optional[float] = None
     longitude: Optional[float] = None
+    otp: Optional[str] = None
 
 
 class DriverLocationUpdate(BaseModel):

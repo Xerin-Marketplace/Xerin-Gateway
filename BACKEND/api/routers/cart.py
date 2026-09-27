@@ -137,11 +137,12 @@ def add_cart_item(
             if not variant or not variant.is_active:
                 raise HTTPException(status_code=404, detail="Product variant not found or inactive")
 
+        cart = _get_or_create_cart(db, current_user.id, lock=True)
+
         inventory = _inventory_query(db, product.id, data.variant_id).with_for_update().first()
         if not inventory:
             raise HTTPException(status_code=409, detail="Inventory is not configured for this item")
 
-        cart = _get_or_create_cart(db, current_user.id, lock=True)
         item_query = db.query(CartItem).filter(
             CartItem.cart_id == cart.id,
             CartItem.product_id == product.id,
