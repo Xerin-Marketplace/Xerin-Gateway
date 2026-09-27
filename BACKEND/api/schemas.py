@@ -113,14 +113,8 @@ def _normalise_phone(value: str | None) -> str | None:
 def _validate_password(value: str) -> str:
     if len(value.encode("utf-8")) > 72:
         raise ValueError("Password must not exceed 72 bytes")
-    if len(value) < 10:
-        raise ValueError("Password must contain at least 10 characters")
-    if not any(ch.isupper() for ch in value):
-        raise ValueError("Password must contain an uppercase letter")
-    if not any(ch.islower() for ch in value):
-        raise ValueError("Password must contain a lowercase letter")
-    if not any(ch.isdigit() for ch in value):
-        raise ValueError("Password must contain a number")
+    if len(value) < 6:
+        raise ValueError("Password must contain at least 6 characters")
     return value
 
 
