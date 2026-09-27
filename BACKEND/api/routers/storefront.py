@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session, selectinload
 
 from api.deps import get_db
 from api.enums import PermissionCode, StoreStatus
-from api.models import Category, Product, ProductImage, ProductStatus, Seller, Store, User
+from api.models import Category, Product, ProductImage, ProductStatus, Seller, SellerStatus, Store, StoreReview, ReviewStatus, User
 from api.permissions import require_permission
 from api.schemas import ProductResponse, StoreResponse, StoreUpdate
 from api.routers.stores import (
@@ -96,6 +96,51 @@ def _public_store(db: Session, slug: str) -> Store:
     if not store:
         raise HTTPException(status_code=404, detail="Store not found")
     return store
+
+
+
+@router.get("/sellers/{seller_id}/public")
+def public_seller_summary(seller_id: uuid.UUID, db: Session = Depends(get_db)):
+    """Public, minimal seller card for product pages — verified only if approved."""
+    seller = db.get(Seller, seller_id)
+    if not seller or seller.status not in (SellerStatus.approved, SellerStatus.suspended):
+        raise HTTPException(status_code=404, detail="Seller not found")
+
+    store = db.query(Store).filter(
+        Store.seller_id == seller.id,
+        Store.status == StoreStatus.active,
+    ).first()
+
+    rating_q = db.query(
+        func.avg(StoreReview.rating), func.count(StoreReview.id)
+    ).join(Store, Store.id == StoreReview.store_id).filter(
+        Store.seller_id == seller.id,
+        StoreReview.status == ReviewStatus.approved,
+    ).first()
+
+    products_sold = db.query(func.count(Product.id)).filter(
+        Product.seller_id == seller.id,
+        Product.status == ProductStatus.approved,
+        Product.is_active.is_(True),
+    ).scalar() or 0
+
+    return {
+        "seller_id": str(seller.id),
+        "business_name": seller.business_name,
+        "verified": seller.status == SellerStatus.approved,
+        "store": {
+            "name": store.store_name,
+            "slug": store.slug,
+            "logo_url": store.logo_url,
+            "country": store.country,
+            "region": store.region,
+            "district": store.district,
+        } if store else None,
+        "rating": float(rating_q[0]) if rating_q and rating_q[0] is not None else None,
+        "review_count": int(rating_q[1]) if rating_q else 0,
+        "products_count": products_sold,
+        "member_since": seller.created_at.isoformat() if seller.created_at else None,
+    }
 
 
 @router.get("/stores/{slug}/products", response_model=list[ProductResponse])

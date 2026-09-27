@@ -39,6 +39,25 @@ DEFAULT_ROLE_PERMISSIONS: dict[str, set[str]] = {
         PermissionCode.recommendations_read.value,
         PermissionCode.search_history_manage.value,
     },
+    "broker": {
+        # Winga — promotes products, earns commission. Base marketplace
+        # browsing permissions; broker-scoped ops are granted via
+        # broker-specific codes as that module ships.
+        PermissionCode.view_profile.value,
+        PermissionCode.update_profile.value,
+        PermissionCode.manage_addresses.value,
+        PermissionCode.can_view_products.value,
+        PermissionCode.can_view_public_stores.value,
+        PermissionCode.shipping_track.value,
+        PermissionCode.reviews_read.value,
+        PermissionCode.notifications_read.value,
+        PermissionCode.notifications_manage.value,
+        PermissionCode.product_questions_read.value,
+        PermissionCode.product_questions_create.value,
+        PermissionCode.search_read.value,
+        PermissionCode.recommendations_read.value,
+        PermissionCode.search_history_manage.value,
+    },
     "seller": {
         PermissionCode.view_profile.value,
         PermissionCode.update_profile.value,
@@ -119,6 +138,7 @@ DEFAULT_ROLE_PERMISSIONS: dict[str, set[str]] = {
         PermissionCode.can_approve_sellers.value,
         PermissionCode.can_reject_sellers.value,
         PermissionCode.can_view_products.value,
+        PermissionCode.admin_catalog_read.value,
         PermissionCode.can_approve_products.value,
         PermissionCode.can_reject_products.value,
         PermissionCode.orders_read.value,
@@ -140,6 +160,7 @@ DEFAULT_ROLE_PERMISSIONS: dict[str, set[str]] = {
         PermissionCode.analytics_admin_read.value,
         PermissionCode.audit_logs_read.value,
         PermissionCode.security_events_read.value,
+        PermissionCode.monitoring_read.value,
         PermissionCode.reviews_read.value,
         PermissionCode.admin_reviews_read.value,
         PermissionCode.admin_reviews_moderate.value,
@@ -196,6 +217,9 @@ DEFAULT_ROLE_PERMISSIONS: dict[str, set[str]] = {
         # Settings
         PermissionCode.settings_read.value,
         PermissionCode.settings_manage.value,
+        # Advertising
+        PermissionCode.advertisements_read.value,
+        PermissionCode.advertisements_manage.value,
     },
     "super_admin": {permission.value for permission in PermissionCode},
 }

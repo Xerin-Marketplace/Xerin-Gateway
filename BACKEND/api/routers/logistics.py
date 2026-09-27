@@ -41,8 +41,9 @@ from api.models import (
     Vehicle,
     Warehouse,
     WarehouseInventory,
+    SystemSetting,
 )
-from api.permissions import require_permission
+from api.permissions import require_permission, get_user_permissions
 from api.services.notification_service import notification_service
 from api.services.delivery_fare_service import calculate_fare
 from api.schemas import FareCalculationRequest
@@ -232,6 +233,24 @@ def _transfer_to_response(t: SellerStockTransfer, db: Session) -> StockTransferR
     )
 
 
+def _logistics_actor(db: Session, user: User):
+    """Returns (driver_profile, is_privileged_logistics_operator)."""
+    driver = db.query(Driver).filter(Driver.user_id == user.id).first()
+    perms = get_user_permissions(db, user)
+    privileged = bool({
+        PermissionCode.logistics_read.value,
+        PermissionCode.logistics_manage.value,
+        PermissionCode.logistics_trip_assign.value,
+        PermissionCode.logistics_driver_manage.value,
+    } & perms)
+    return driver, privileged
+
+
+def _delivery_otp_required(db: Session) -> bool:
+    row = db.query(SystemSetting).filter(SystemSetting.key == "delivery_otp_required").first()
+    return bool(row and str(row.value).lower() in ("true", "1", "yes"))
+
+
 # =========================================================
 # DRIVER ENDPOINTS
 # =========================================================
@@ -246,6 +265,9 @@ def list_drivers(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    _, privileged = _logistics_actor(db, current_user)
+    if not privileged:
+        raise HTTPException(403, "Logistics access required")
     q = db.query(Driver)
     if status_filter:
         q = q.filter(Driver.status == status_filter)
@@ -280,6 +302,9 @@ def get_driver(
     driver = db.query(Driver).filter(Driver.id == driver_id).first()
     if not driver:
         raise HTTPException(404, "Driver not found")
+    self_driver, privileged = _logistics_actor(db, current_user)
+    if not privileged and (not self_driver or self_driver.id != driver.id):
+        raise HTTPException(403, "Not authorized to view this driver")
     return _driver_to_response(driver, db)
 
 
@@ -384,6 +409,10 @@ def update_driver_location(
     driver = db.query(Driver).filter(Driver.id == driver_id).first()
     if not driver:
         raise HTTPException(404, "Driver not found")
+    self_driver, privileged = _logistics_actor(db, current_user)
+    allowed = privileged or (self_driver and self_driver.id == driver.id)
+    if not allowed:
+        raise HTTPException(403, "Only the assigned driver or a logistics operator can update location")
     driver.current_latitude = data.latitude
     driver.current_longitude = data.longitude
     driver.last_location_at = datetime.datetime.now(datetime.timezone.utc)
@@ -405,6 +434,9 @@ def list_vehicles(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    _, privileged = _logistics_actor(db, current_user)
+    if not privileged:
+        raise HTTPException(403, "Logistics access required")
     q = db.query(Vehicle)
     if is_active is not None:
         q = q.filter(Vehicle.is_active == is_active)
@@ -435,6 +467,9 @@ def get_vehicle(
     vehicle = db.query(Vehicle).filter(Vehicle.id == vehicle_id).first()
     if not vehicle:
         raise HTTPException(404, "Vehicle not found")
+    _, privileged = _logistics_actor(db, current_user)
+    if not privileged:
+        raise HTTPException(403, "Logistics access required")
     return _vehicle_to_response(vehicle)
 
 
@@ -508,7 +543,12 @@ def list_delivery_trips(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    self_driver, privileged = _logistics_actor(db, current_user)
+    if not privileged and not self_driver:
+        raise HTTPException(403, "Logistics access required")
     q = db.query(DeliveryTrip)
+    if not privileged:
+        q = q.filter(DeliveryTrip.driver_id == self_driver.id)
     if status_filter:
         q = q.filter(DeliveryTrip.status == status_filter)
     if driver_id:
@@ -532,6 +572,9 @@ def get_delivery_trip(
     trip = db.query(DeliveryTrip).filter(DeliveryTrip.id == trip_id).first()
     if not trip:
         raise HTTPException(404, "Delivery trip not found")
+    self_driver, privileged = _logistics_actor(db, current_user)
+    if not privileged and (not self_driver or trip.driver_id != self_driver.id):
+        raise HTTPException(403, "Not authorized to view this trip")
     return _trip_to_response(trip, db)
 
 
@@ -693,6 +736,14 @@ def update_trip_status(
     if not trip:
         raise HTTPException(404, "Delivery trip not found")
 
+    self_driver, privileged = _logistics_actor(db, current_user)
+    if not privileged and (not self_driver or trip.driver_id != self_driver.id):
+        raise HTTPException(403, "Only the assigned driver or a logistics operator can update this trip")
+
+    if data.status == DeliveryTripStatus.delivered and _delivery_otp_required(db):
+        if not data.otp or not trip.otp or data.otp.strip() != trip.otp:
+            raise HTTPException(400, "A valid delivery OTP is required")
+
     old_status = trip.status
     trip.status = data.status
 
@@ -780,6 +831,9 @@ def list_driver_trips(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    self_driver, privileged = _logistics_actor(db, current_user)
+    if not privileged and (not self_driver or self_driver.id != driver_id):
+        raise HTTPException(403, "Not authorized to view these trips")
     q = db.query(DeliveryTrip).filter(DeliveryTrip.driver_id == driver_id)
     if status_filter:
         q = q.filter(DeliveryTrip.status == status_filter)
@@ -805,10 +859,12 @@ def list_stock_transfers(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    q = db.query(SellerStockTransfer)
-    # Sellers see only their own transfers; admins see all
     seller = db.query(Seller).filter(Seller.user_id == current_user.id).first()
-    if seller:
+    _, privileged = _logistics_actor(db, current_user)
+    if not seller and not privileged:
+        raise HTTPException(403, "Not authorized to view stock transfers")
+    q = db.query(SellerStockTransfer)
+    if seller and not privileged:
         q = q.filter(SellerStockTransfer.seller_id == seller.id)
     if status_filter:
         q = q.filter(SellerStockTransfer.status == status_filter)

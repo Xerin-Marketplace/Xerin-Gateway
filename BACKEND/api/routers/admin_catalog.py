@@ -92,7 +92,7 @@ def list_catalog_products(
     status_filter: str | None = Query(None),
     search: str | None = Query(None),
     db: Session = Depends(get_db),
-    _=Depends(require_permission(PermissionCode.can_view_products.value)),
+    _=Depends(require_permission(PermissionCode.admin_catalog_read.value)),
 ):
     query = (
         db.query(Product)
@@ -131,7 +131,7 @@ def list_catalog_products(
 @router.get("/summary")
 def catalog_summary(
     db: Session = Depends(get_db),
-    _=Depends(require_permission(PermissionCode.can_view_products.value)),
+    _=Depends(require_permission(PermissionCode.admin_catalog_read.value)),
 ):
     def count(status_value: str | None = None) -> int:
         q = db.query(func.count(Product.id))
@@ -197,11 +197,4 @@ def list_brands(
     return _paginate(query, page, page_size)
 
 
-# Brokers module is not part of this branch — return an empty page so the
-# admin UI degrades cleanly instead of logging 404s.
-@brokers_router.get("/admin")
-def admin_list_brokers(
-    page: int = Query(1, ge=1),
-    page_size: int = Query(20, ge=1, le=200),
-):
-    return {"total": 0, "page": page, "page_size": page_size, "total_pages": 1, "results": []}
+

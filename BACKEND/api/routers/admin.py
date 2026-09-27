@@ -1017,7 +1017,7 @@ def reject_seller(
 def get_pending_products(
     db: Session = Depends(get_db),
     current_user: User = Depends(
-        require_permission(PermissionCode.can_view_products.value)
+        require_permission(PermissionCode.admin_catalog_read.value)
     ),
 ):
 

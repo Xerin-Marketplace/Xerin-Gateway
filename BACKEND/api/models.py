@@ -22,6 +22,7 @@ from api.enums import (
     DriverStatus, DriverVerificationStatus, VehicleType, DeliveryTripStatus, StockTransferStatus,
     DriverDocumentType, DriverDocumentStatus, VehicleOwnership, VehicleRequestStatus,
     FareType, SurgePricingType, SurgeScheduleType,
+    BrokerStatus,
 )
 
 
@@ -266,6 +267,53 @@ class SellerKYCDocument(Base):
     uploaded_at = Column(DateTime(timezone=True), server_default=func.now())
 
     seller = relationship("Seller", back_populates="kyc_documents")
+
+
+class Broker(Base):
+    __tablename__ = "brokers"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), unique=True, nullable=False, index=True)
+    broker_code = Column(String(30), unique=True, nullable=False, index=True)
+
+    country = Column(String(100), nullable=False)
+    region = Column(String(100), nullable=False)
+    city = Column(String(100), nullable=False)
+    district = Column(String(100), nullable=True)
+    ward = Column(String(150), nullable=True)
+    nida_number = Column(String(50), nullable=True)
+
+    status = Column(Enum(BrokerStatus), default=BrokerStatus.pending_kyc, nullable=False, index=True)
+    status_reason = Column(Text, nullable=True)
+    approved_at = Column(DateTime(timezone=True), nullable=True)
+    rejected_at = Column(DateTime(timezone=True), nullable=True)
+    suspended_at = Column(DateTime(timezone=True), nullable=True)
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+    user = relationship("User")
+    kyc_documents = relationship("BrokerKycDocument", back_populates="broker", cascade="all, delete-orphan")
+
+
+class BrokerKycDocument(Base):
+    __tablename__ = "broker_kyc_documents"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    broker_id = Column(UUID(as_uuid=True), ForeignKey("brokers.id", ondelete="CASCADE"), nullable=False, index=True)
+
+    document_type = Column(String(100), nullable=False)
+    document_path = Column(Text, nullable=False)
+    original_filename = Column(String(255), nullable=True)
+    mime_type = Column(String(100), nullable=True)
+
+    status = Column(String(50), default="pending", nullable=False)  # pending | approved | rejected
+    rejection_reason = Column(Text, nullable=True)
+    reviewed_at = Column(DateTime(timezone=True), nullable=True)
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    broker = relationship("Broker", back_populates="kyc_documents")
 
 
 class SellerPayoutAccount(Base):
@@ -965,6 +1013,17 @@ class Payment(Base):
 
     paid_at = Column(DateTime(timezone=True), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    __table_args__ = (
+        Index(
+            "uq_active_payment_per_order",
+            "order_id",
+            unique=True,
+            postgresql_where=(status.in_([
+                PaymentStatus.pending, PaymentStatus.processing, PaymentStatus.completed,
+            ])),
+        ),
+    )
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
 
     order = relationship("Order", back_populates="payments")
@@ -2248,6 +2307,12 @@ class WarehouseInventory(Base):
         CheckConstraint("reserved_quantity <= quantity", name="ck_wh_inv_reserved_lte_quantity"),
         CheckConstraint("available_quantity = quantity - reserved_quantity", name="ck_wh_inv_available_consistent"),
         Index("uq_wh_inv_warehouse_product_variant", "warehouse_id", "product_id", "variant_id", unique=True),
+        Index(
+            "uq_wh_inv_without_variant",
+            "warehouse_id", "product_id",
+            unique=True,
+            postgresql_where=variant_id.is_(None),
+        ),
     )
 
 
@@ -2739,3 +2804,200 @@ class FxRate(Base):
     effective_at = Column(DateTime(timezone=True), server_default=func.now())
     is_active = Column(Boolean, nullable=False, default=True, server_default="true")
     created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class Advertisement(Base):
+    """Sponsored placement shown on the storefront (hero rail, homepage
+    banner, category/search banners). Tracked via AdvertisementEvent."""
+    __tablename__ = "advertisements"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    advertiser_name = Column(String(150), nullable=False)
+    title = Column(String(200), nullable=False)
+    description = Column(Text, nullable=True)
+    image_url = Column(String(500), nullable=False)
+    mobile_image_url = Column(String(500), nullable=True)
+    alt_text = Column(String(255), nullable=True)
+    target_url = Column(String(500), nullable=True)
+    cta_label = Column(String(60), nullable=True)
+    placement = Column(String(40), nullable=False, index=True)
+    status = Column(String(20), nullable=False, default="draft", server_default="draft")
+    starts_at = Column(DateTime(timezone=True), nullable=False)
+    ends_at = Column(DateTime(timezone=True), nullable=False)
+    priority = Column(Integer, nullable=False, default=0, server_default="0")
+    billing_type = Column(String(10), nullable=False, default="fixed", server_default="fixed")
+    price = Column(Numeric(14, 2), nullable=True)
+    currency = Column(String(10), nullable=False, default="TZS", server_default="TZS")
+    impression_count = Column(Integer, nullable=False, default=0, server_default="0")
+    click_count = Column(Integer, nullable=False, default=0, server_default="0")
+    metadata_json = Column(JSONB, nullable=False, default=dict, server_default="{}")
+    created_by_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    updated_by_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+
+class AdvertisementEvent(Base):
+    """Deduplicated impression/click events per (ad, session, type)."""
+    __tablename__ = "advertisement_events"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    advertisement_id = Column(UUID(as_uuid=True), ForeignKey("advertisements.id", ondelete="CASCADE"), nullable=False, index=True)
+    event_type = Column(String(15), nullable=False)  # impression | click
+    session_id = Column(String(80), nullable=False)
+    client_event_id = Column(String(80), nullable=True)
+    page_path = Column(String(255), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), index=True)
+
+    __table_args__ = (
+        UniqueConstraint(
+            "advertisement_id", "session_id", "event_type",
+            name="uq_ad_event_dedupe",
+        ),
+    )
+
+
+class BrokerWallet(Base):
+    __tablename__ = "broker_wallets"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    broker_id = Column(UUID(as_uuid=True), ForeignKey("brokers.id", ondelete="CASCADE"), unique=True, nullable=False, index=True)
+    currency = Column(String(10), nullable=False, default="TZS")
+
+    pending_balance = Column(Numeric(14, 2), nullable=False, default=0)
+    available_balance = Column(Numeric(14, 2), nullable=False, default=0)
+    reserved_balance = Column(Numeric(14, 2), nullable=False, default=0)
+    paid_out_balance = Column(Numeric(14, 2), nullable=False, default=0)
+    reversed_balance = Column(Numeric(14, 2), nullable=False, default=0)
+    debt_balance = Column(Numeric(14, 2), nullable=False, default=0)
+
+    is_frozen = Column(Boolean, default=False, nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+    broker = relationship("Broker")
+
+
+class BrokerWalletTransaction(Base):
+    __tablename__ = "broker_wallet_transactions"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    wallet_id = Column(UUID(as_uuid=True), ForeignKey("broker_wallets.id", ondelete="CASCADE"), nullable=False, index=True)
+    broker_id = Column(UUID(as_uuid=True), ForeignKey("brokers.id", ondelete="CASCADE"), nullable=False, index=True)
+
+    transaction_type = Column(String(50), nullable=False)
+    amount = Column(Numeric(14, 2), nullable=False)
+    currency = Column(String(10), nullable=False, default="TZS")
+    reference = Column(String(100), nullable=True)
+    description = Column(Text, nullable=True)
+
+    payout_request_id = Column(UUID(as_uuid=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class BrokerPayoutAccount(Base):
+    __tablename__ = "broker_payout_accounts"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    broker_id = Column(UUID(as_uuid=True), ForeignKey("brokers.id", ondelete="CASCADE"), nullable=False, index=True)
+
+    account_type = Column(String(30), nullable=False)  # mobile_money | bank
+    provider = Column(String(100), nullable=False)
+    account_name = Column(String(255), nullable=False)
+    account_number = Column(String(100), nullable=False)
+    currency = Column(String(10), nullable=False, default="TZS")
+
+    is_default = Column(Boolean, default=False, nullable=False)
+    is_active = Column(Boolean, default=True, nullable=False)
+    verification_status = Column(String(30), nullable=False, default="pending")  # pending | verified | rejected
+    verification_note = Column(Text, nullable=True)
+    verified_at = Column(DateTime(timezone=True), nullable=True)
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+
+class BrokerPayoutRequest(Base):
+    __tablename__ = "broker_payout_requests"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    wallet_id = Column(UUID(as_uuid=True), ForeignKey("broker_wallets.id"), nullable=False, index=True)
+    broker_id = Column(UUID(as_uuid=True), ForeignKey("brokers.id", ondelete="CASCADE"), nullable=False, index=True)
+    payout_account_id = Column(UUID(as_uuid=True), ForeignKey("broker_payout_accounts.id"), nullable=False)
+
+    amount = Column(Numeric(14, 2), nullable=False)
+    currency = Column(String(10), nullable=False, default="TZS")
+    status = Column(Enum(PayoutStatus), nullable=False, default=PayoutStatus.pending, index=True)
+
+    provider_reference = Column(String(150), nullable=True)
+    broker_note = Column(Text, nullable=True)
+    admin_note = Column(Text, nullable=True)
+    idempotency_key = Column(String(120), nullable=True, unique=True, index=True)
+
+    requested_at = Column(DateTime(timezone=True), server_default=func.now())
+    processed_at = Column(DateTime(timezone=True), nullable=True)
+    completed_at = Column(DateTime(timezone=True), nullable=True)
+
+class AlertNotification(Base):
+    """Outbound email alert delivery record — the event lives in
+    audit_logs/security_events; this only tracks notification delivery."""
+    __tablename__ = "alert_notifications"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    dedup_key = Column(String(200), nullable=False, index=True)
+    recipient = Column(String(320), nullable=False)
+    subject = Column(String(255), nullable=False)
+    body_text = Column(Text, nullable=False)
+    severity = Column(String(20), nullable=False, index=True)
+    event_type = Column(String(120), nullable=True, index=True)
+    status = Column(String(20), nullable=False, default="pending", server_default="pending", index=True)
+    attempts = Column(Integer, nullable=False, default=0, server_default="0")
+    aggregate_count = Column(Integer, nullable=False, default=1, server_default="1")
+    last_error = Column(Text, nullable=True)
+    next_retry_at = Column(DateTime(timezone=True), nullable=True, index=True)
+    sent_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now(), index=True)
+
+    __table_args__ = (
+        CheckConstraint("status IN ('pending','sent','failed','cancelled')", name="ck_alert_notification_status"),
+        CheckConstraint("severity IN ('info','notice','warning','critical')", name="ck_alert_notification_severity"),
+    )
+
+
+class MigrationEvent(Base):
+    """Records alembic migration executions from the deployment wrapper."""
+    __tablename__ = "migration_events"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    revision = Column(String(120), nullable=True, index=True)
+    name = Column(String(255), nullable=True)
+    status = Column(String(20), nullable=False, index=True)
+    environment = Column(String(40), nullable=True)
+    app_version = Column(String(120), nullable=True)
+    error_summary = Column(Text, nullable=True)
+    duration_ms = Column(Integer, nullable=True)
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now(), index=True)
+
+    __table_args__ = (
+        CheckConstraint("status IN ('started','succeeded','failed','rolled_back')", name="ck_migration_event_status"),
+    )
+
+
+class WeeklyReport(Base):
+    __tablename__ = "weekly_reports"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    period_start = Column(DateTime(timezone=True), nullable=False)
+    period_end = Column(DateTime(timezone=True), nullable=False)
+    subject = Column(String(255), nullable=False)
+    body_text = Column(Text, nullable=False)
+    stats = Column(JSONB, nullable=False, default=dict)
+    recipient = Column(String(320), nullable=False)
+    status = Column(String(20), nullable=False, default="pending", server_default="pending")
+    sent_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+    __table_args__ = (
+        CheckConstraint("status IN ('pending','sent','failed','skipped')", name="ck_weekly_report_status"),
+        UniqueConstraint("period_start", "period_end", name="uq_weekly_report_period"),
+    )

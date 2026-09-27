@@ -102,6 +102,36 @@ def list_display_currencies(db: Session = Depends(get_db)):
     return results
 
 
+# Currencies a seller may price a listing in — same catalogue, without the
+# live TZS conversion rate. Declared before "/{product_id}" for the same
+# reason as display-currencies.
+@router.get("/listing-currencies")
+def list_listing_currencies(db: Session = Depends(get_db)):
+    currencies = db.query(Currency).filter(Currency.is_active.is_(True)).all()
+    if not currencies:
+        return [
+            {
+                "id": "tzs",
+                "code": "TZS",
+                "name": "Tanzanian Shilling",
+                "symbol": "TSh",
+                "decimal_places": 0,
+                "is_base": True,
+            }
+        ]
+    return [
+        {
+            "id": str(c.id),
+            "code": c.code,
+            "name": c.name,
+            "symbol": c.symbol,
+            "decimal_places": c.decimal_places,
+            "is_base": bool(c.is_base),
+        }
+        for c in currencies
+    ]
+
+
 def _commit(db: Session, *, conflict_detail: str = "Database conflict") -> None:
     try:
         db.commit()

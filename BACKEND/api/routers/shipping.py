@@ -8,7 +8,8 @@ from sqlalchemy.orm import Session, joinedload, selectinload
 
 from api.deps import get_current_user, get_db
 from api.enums import PermissionCode, ShippingRateType
-from api.models import Address, Order, Shipment, ShipmentStatus, ShipmentTrackingEvent, ShippingMethod, ShippingRate, ShippingZone, User
+from api.models import Address, Order, Shipment, ShipmentStatus, ShipmentTrackingEvent, ShippingMethod, ShippingRate, ShippingZone, SystemSetting, User
+from api.config import settings
 from api.permissions import require_permission
 from api.schemas import (
     ShippingMethodCreate, ShippingMethodResponse, ShippingMethodUpdate,
@@ -26,6 +27,33 @@ def _commit(db: Session):
     except IntegrityError as exc:
         db.rollback()
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Shipping record conflicts with existing data") from exc
+
+@router.get("/checkout-config")
+def checkout_config(db: Session = Depends(get_db)):
+    """Public checkout capability flags — derived from real shipping setup."""
+    zones = db.query(ShippingZone).filter(ShippingZone.is_active.is_(True)).all()
+    methods = db.query(ShippingMethod).filter(ShippingMethod.is_active.is_(True)).all()
+    rates = db.query(ShippingRate).filter(ShippingRate.is_active.is_(True)).count()
+
+    countries = {z.country.lower() for z in zones if z.country}
+    local_country = (settings.DEFAULT_COUNTRY or "Tanzania").lower()
+    local_allowed = local_country in countries or not zones
+
+    cod_setting = db.query(SystemSetting).filter(
+        SystemSetting.key == "cod_allowed"
+    ).first()
+    cod_allowed = bool(
+        cod_setting and str(cod_setting.value).lower() in ("true", "1", "yes")
+    )
+
+    return {
+        "default_country": settings.DEFAULT_COUNTRY or "Tanzania",
+        "local_delivery_allowed": local_allowed,
+        "international_delivery_allowed": bool(countries - {local_country}),
+        "cod_allowed": cod_allowed,
+        "configured": bool(zones and methods and rates),
+    }
+
 
 @router.post("/zones", response_model=ShippingZoneResponse, status_code=status.HTTP_201_CREATED)
 def create_zone(data: ShippingZoneCreate, db: Session = Depends(get_db), _: User = Depends(require_permission(PermissionCode.shipping_write.value))):

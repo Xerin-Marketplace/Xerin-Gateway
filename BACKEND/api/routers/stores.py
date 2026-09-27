@@ -1,3 +1,4 @@
+import io
 import math
 import re
 import shutil
@@ -202,6 +203,24 @@ async def save_store_image(
         raise HTTPException(
             status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
             detail=f"Image must not exceed {maximum_mb} MB",
+        )
+
+    try:
+        from PIL import Image
+        with Image.open(io.BytesIO(content)) as probe:
+            detected = (probe.format or "").upper()
+            probe.verify()
+        if detected not in {"JPEG", "PNG", "WEBP"}:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Only real JPEG, PNG or WEBP images are allowed",
+            )
+    except HTTPException:
+        raise
+    except Exception:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="The uploaded file is not a valid image",
         )
 
     filename = (

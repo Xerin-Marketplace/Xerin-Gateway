@@ -113,14 +113,8 @@ def _normalise_phone(value: str | None) -> str | None:
 def _validate_password(value: str) -> str:
     if len(value.encode("utf-8")) > 72:
         raise ValueError("Password must not exceed 72 bytes")
-    if len(value) < 10:
-        raise ValueError("Password must contain at least 10 characters")
-    if not any(ch.isupper() for ch in value):
-        raise ValueError("Password must contain an uppercase letter")
-    if not any(ch.islower() for ch in value):
-        raise ValueError("Password must contain a lowercase letter")
-    if not any(ch.isdigit() for ch in value):
-        raise ValueError("Password must contain a number")
+    if len(value) < 6:
+        raise ValueError("Password must contain at least 6 characters")
     return value
 
 
@@ -160,6 +154,7 @@ class TokenResponse(BaseModel):
     refresh_token: str
     token_type: str = "bearer"
     user: dict | None = None
+    is_new_user: bool = False
 
 
 class RefreshRequest(BaseModel):
@@ -3274,6 +3269,7 @@ class UpdateTripStatusRequest(BaseModel):
     notes: Optional[str] = None
     latitude: Optional[float] = None
     longitude: Optional[float] = None
+    otp: Optional[str] = None
 
 
 class DriverLocationUpdate(BaseModel):
@@ -3802,3 +3798,145 @@ class DeleteMyAccountRequest(BaseModel):
 
 # Resolve forward references declared before their targets are defined.
 OrderResponse.model_rebuild()
+
+
+# ── Advertisements ─────────────────────────────────────────────
+
+AdvertisementPlacement = Literal[
+    "hero_side_top", "hero_side_bottom", "homepage_banner",
+    "category_banner", "search_banner",
+]
+AdvertisementStoredStatus = Literal["draft", "active", "paused"]
+AdvertisementBillingType = Literal["fixed", "cpc", "cpm"]
+
+
+class AdvertisementBase(BaseModel):
+    advertiser_name: str = Field(min_length=1, max_length=150)
+    title: str = Field(min_length=1, max_length=200)
+    description: Optional[str] = None
+    image_url: str = Field(min_length=1, max_length=500)
+    mobile_image_url: Optional[str] = Field(default=None, max_length=500)
+    alt_text: Optional[str] = Field(default=None, max_length=255)
+    target_url: Optional[str] = Field(default=None, max_length=500)
+    cta_label: Optional[str] = Field(default=None, max_length=60)
+    placement: AdvertisementPlacement
+    status: AdvertisementStoredStatus = "draft"
+    starts_at: datetime
+    ends_at: datetime
+    priority: int = Field(default=0, ge=0, le=1000)
+    billing_type: AdvertisementBillingType = "fixed"
+    price: Optional[float] = None
+    currency: str = Field(default="TZS", min_length=3, max_length=10)
+    metadata_json: dict = {}
+
+
+class AdvertisementCreate(AdvertisementBase):
+    @field_validator("ends_at")
+    @classmethod
+    def _ends_after_start(cls, value, info):
+        starts = info.data.get("starts_at")
+        if starts and value <= starts:
+            raise ValueError("ends_at must be after starts_at")
+        return value
+
+
+class AdvertisementUpdate(BaseModel):
+    advertiser_name: Optional[str] = Field(default=None, min_length=1, max_length=150)
+    title: Optional[str] = Field(default=None, min_length=1, max_length=200)
+    description: Optional[str] = None
+    image_url: Optional[str] = Field(default=None, min_length=1, max_length=500)
+    mobile_image_url: Optional[str] = None
+    alt_text: Optional[str] = None
+    target_url: Optional[str] = None
+    cta_label: Optional[str] = None
+    placement: Optional[AdvertisementPlacement] = None
+    status: Optional[AdvertisementStoredStatus] = None
+    starts_at: Optional[datetime] = None
+    ends_at: Optional[datetime] = None
+    priority: Optional[int] = Field(default=None, ge=0, le=1000)
+    billing_type: Optional[AdvertisementBillingType] = None
+    price: Optional[float] = None
+    currency: Optional[str] = None
+    metadata_json: Optional[dict] = None
+
+
+class AdvertisementResponse(BaseModel):
+    model_config = ORM_CONFIG
+
+    id: UUID
+    advertiser_name: str
+    title: str
+    description: Optional[str]
+    image_url: str
+    mobile_image_url: Optional[str]
+    alt_text: Optional[str]
+    target_url: Optional[str]
+    cta_label: Optional[str]
+    placement: str
+    status: str
+    effective_status: str
+    starts_at: datetime
+    ends_at: datetime
+    priority: int
+    billing_type: str
+    price: Optional[float]
+    currency: str
+    impression_count: int
+    click_count: int
+    metadata_json: dict
+    created_by_id: Optional[UUID]
+    updated_by_id: Optional[UUID]
+    created_at: datetime
+    updated_at: Optional[datetime]
+
+
+class PaginatedAdvertisementResponse(BaseModel):
+    total: int
+    page: int
+    page_size: int
+    total_pages: int
+    results: list[AdvertisementResponse]
+
+
+class AdvertisementTrackRequest(BaseModel):
+    session_id: str = Field(min_length=4, max_length=80)
+    client_event_id: Optional[str] = Field(default=None, max_length=80)
+    page_path: Optional[str] = Field(default=None, max_length=255)
+
+
+class AdvertisementTrackResponse(BaseModel):
+    accepted: bool
+    duplicate: bool
+    event_type: str
+    impression_count: int
+    click_count: int
+
+
+class SelectInitialRoleRequest(BaseModel):
+    role: Literal["customer", "seller", "broker"]
+
+
+class SellerOnboardingRequest(BaseModel):
+    business_name: str = Field(min_length=2, max_length=255)
+    business_category_ids: list[str] = []
+    business_description: Optional[str] = None
+    business_country: Optional[str] = None
+    business_region: Optional[str] = None
+    business_city: Optional[str] = None
+    business_district: Optional[str] = None
+    business_ward: Optional[str] = None
+    business_address: Optional[str] = None
+    product_description: Optional[str] = None
+    years_in_business: Optional[str] = None
+    website_url: Optional[str] = None
+    contact_email: Optional[EmailStr] = None
+    contact_phone: Optional[str] = None
+    agreement_accepted: bool = False
+
+
+class BrokerOnboardingRequest(BaseModel):
+    country: str = Field(min_length=2, max_length=100)
+    region: str = Field(min_length=2, max_length=100)
+    city: str = Field(min_length=2, max_length=100)
+    district: Optional[str] = None
+    ward: Optional[str] = None

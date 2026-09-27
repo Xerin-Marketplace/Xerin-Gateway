@@ -1,9 +1,10 @@
 import time
+import uuid
 from uuid import UUID
 import threading
 from collections import defaultdict, deque
 from datetime import datetime, timedelta, timezone
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from sqlalchemy.orm import Session
 import jwt
 from jwt import PyJWTError as JWTError
@@ -11,6 +12,7 @@ import logging
 
 from api.database import SessionLocal
 from api.deps import get_db, get_current_user
+from api.enums import AuditSeverity, SecurityEventType
 from api.models import (
     User,
     Session as UserSession,
@@ -21,11 +23,15 @@ from api.models import (
     SellerStatus,
     BusinessCategory,
     SellerBusinessCategory,
+    SellerKYCDocument,
     UserRole,
     Role,
     RolePermission,
     UserPermission,
     UserAuthProvider,
+    Broker,
+    BrokerStatus,
+    SecurityEvent,
 )
 from api.schemas import *
 from api.security import (
@@ -53,6 +59,22 @@ def send_email(to: str, subject: str, body: str, html: str | None = None) -> Non
 
 def send_sms(to: str, message: str) -> None:
     return _send_sms(to=to, message=message)
+
+
+def _deliver_async(label: str, fn, **kwargs) -> None:
+    """Fire an outbound notification (SMS/email) on a daemon thread.
+
+    These providers can block for seconds — or hang — and the OTP/codes are
+    already persisted before this runs, so the HTTP response must not wait
+    on delivery. Failures are logged, never surfaced to the client.
+    """
+    def _run() -> None:
+        try:
+            fn(**kwargs)
+        except Exception as exc:  # noqa: BLE001 - delivery must never crash a request
+            logger.exception("%s failed: %s", label, exc)
+
+    threading.Thread(target=_run, daemon=True).start()
 
 
 logger = logging.getLogger(__name__)
@@ -352,22 +374,19 @@ def register(data: RegisterRequest, db: Session = Depends(get_db)):
             detail="Registration failed. Please try again.",
         )
 
-    try:
-        send_email(
-            to=email,
-            subject="Verify your account",
-            body=f"Your verification code is: {otp}",
-        )
-    except Exception as exc:
-        logger.exception("send_email failed for %s: %s", email, exc)
-
-    try:
-        send_sms(
-            to=phone,
-            message=f"Use this OTP to verify your Xerin Marketplace account: {otp}",
-        )
-    except Exception as exc:
-        logger.exception("send_sms failed for %s: %s", phone, exc)
+    _deliver_async(
+        "send_email",
+        send_email,
+        to=email,
+        subject="Verify your account",
+        body=f"Your verification code is: {otp}",
+    )
+    _deliver_async(
+        "send_sms",
+        send_sms,
+        to=phone,
+        message=f"Use this OTP to verify your Xerin Marketplace account: {otp}",
+    )
 
     return RegistrationResponse(
         message=(
@@ -383,7 +402,17 @@ def register(data: RegisterRequest, db: Session = Depends(get_db)):
 
 
 @router.post("/register-seller", response_model=SellerRegistrationResponse)
-def register_seller(data: SellerRegisterRequest, db: Session = Depends(get_db)):
+async def register_seller(
+    data: str = Form(...),
+    license: UploadFile | None = File(default=None),
+    db: Session = Depends(get_db),
+):
+    """Seller registration — multipart: `data` is the JSON payload, `license`
+    is an optional business-license upload stored as a KYC document."""
+    try:
+        data = SellerRegisterRequest.model_validate_json(data)
+    except Exception:
+        raise HTTPException(status_code=422, detail="Invalid registration payload")
     email = data.email.strip().lower()
     phone = data.phone.strip()
 
@@ -482,6 +511,19 @@ def register_seller(data: SellerRegisterRequest, db: Session = Depends(get_db)):
                 )
             )
 
+        if license is not None and license.filename:
+            from api.routers.sellers import _save_kyc_upload
+
+            document_path = await _save_kyc_upload(seller.id, "business_registration", license)
+            db.add(
+                SellerKYCDocument(
+                    seller_id=seller.id,
+                    document_type="business_registration",
+                    document_url=document_path,
+                    status="pending",
+                )
+            )
+
     otp = generate_otp()
 
     try:
@@ -507,22 +549,19 @@ def register_seller(data: SellerRegisterRequest, db: Session = Depends(get_db)):
             detail="Seller registration failed. Please try again.",
         )
 
-    try:
-        send_email(
-            to=email,
-            subject="Verify your seller account",
-            body=f"Your seller verification code is: {otp}",
-        )
-    except Exception as exc:
-        logger.exception("send_email failed for %s: %s", email, exc)
-
-    try:
-        send_sms(
-            to=phone,
-            message=f"Use this OTP to verify your Xerin Marketplace seller account: {otp}",
-        )
-    except Exception as exc:
-        logger.exception("send_sms failed for %s: %s", phone, exc)
+    _deliver_async(
+        "send_email",
+        send_email,
+        to=email,
+        subject="Verify your seller account",
+        body=f"Your seller verification code is: {otp}",
+    )
+    _deliver_async(
+        "send_sms",
+        send_sms,
+        to=phone,
+        message=f"Use this OTP to verify your Xerin Marketplace seller account: {otp}",
+    )
 
     return SellerRegistrationResponse(
         message=(
@@ -577,6 +616,8 @@ def build_auth_user_response(db: Session, user: User):
         account_type = "super_admin"
     elif "admin" in roles:
         account_type = "admin"
+    elif "broker" in roles:
+        account_type = "broker"
     elif seller:
         account_type = "seller"
     else:
@@ -609,6 +650,41 @@ def login(request: Request, data: LoginRequest, db: Session = Depends(get_db)):
     user = db.query(User).filter(User.email == email).first()
 
     if not user or not verify_password(data.password, user.password_hash):
+        if settings.MONITORING_ENABLED:
+            try:
+                from api.services.monitoring import record_security_alert
+                record_security_alert(
+                    db,
+                    event_type=SecurityEventType.authentication_failed,
+                    description="Failed login attempt",
+                    severity=AuditSeverity.warning,
+                    ip_address=ip,
+                    user_agent=request.headers.get("user-agent", "")[:2000] or None,
+                    request_path="/auth/login",
+                    http_method="POST",
+                    event_metadata={"email_hint": (email[:2] + "***@" + email.split("@")[-1]) if "@" in email else "***"},
+                    dedup_key=f"security.authentication_failed:{ip}",
+                )
+                cutoff = datetime.now(timezone.utc) - timedelta(minutes=10)
+                recent = db.query(SecurityEvent).filter(
+                    SecurityEvent.ip_address == ip,
+                    SecurityEvent.event_type == SecurityEventType.authentication_failed,
+                    SecurityEvent.created_at >= cutoff,
+                ).count()
+                if recent >= 8:
+                    record_security_alert(
+                        db,
+                        event_type=SecurityEventType.brute_force,
+                        description=f"{recent} failed logins from one IP in 10 minutes",
+                        severity=AuditSeverity.critical,
+                        ip_address=ip,
+                        request_path="/auth/login",
+                        http_method="POST",
+                        dedup_key=f"security.brute_force:{ip}",
+                    )
+                db.commit()
+            except Exception:
+                db.rollback()
         raise HTTPException(status_code=401, detail="Invalid email or password")
 
     if user.status == UserStatus.suspended:
@@ -632,6 +708,23 @@ def login(request: Request, data: LoginRequest, db: Session = Depends(get_db)):
     )
 
     user.last_login_at = datetime.now(timezone.utc)
+
+    if settings.MONITORING_ENABLED:
+        try:
+            from api.services.monitoring import record_business_event
+            record_business_event(
+                db,
+                action="auth.login",
+                description="User logged in",
+                severity=AuditSeverity.info,
+                actor_user_id=user.id,
+                request_path="/auth/login",
+                http_method="POST",
+                ip_address=ip,
+                user_agent=request.headers.get("user-agent", "")[:2000] or None,
+            )
+        except Exception:
+            pass
 
     db.add(session)
     db.commit()
@@ -661,6 +754,7 @@ def google_auth(request: Request, data: GoogleAuthRequest, db: Session = Depends
     except ValueError as exc:
         raise HTTPException(status_code=401, detail=str(exc))
 
+    is_new_user = False
     # 1) Already-linked provider identity takes precedence over email match.
     link = (
         db.query(UserAuthProvider)
@@ -726,6 +820,7 @@ def google_auth(request: Request, data: GoogleAuthRequest, db: Session = Depends
             )
             db.commit()
             logger.info("New customer created via Google: %s", user.id)
+            is_new_user = True
 
     if user.status == UserStatus.suspended:
         raise HTTPException(status_code=403, detail="Account suspended")
@@ -747,6 +842,23 @@ def google_auth(request: Request, data: GoogleAuthRequest, db: Session = Depends
 
     user.last_login_at = datetime.now(timezone.utc)
 
+    if settings.MONITORING_ENABLED:
+        try:
+            from api.services.monitoring import record_business_event
+            record_business_event(
+                db,
+                action="auth.login",
+                description="User logged in",
+                severity=AuditSeverity.info,
+                actor_user_id=user.id,
+                request_path="/auth/login",
+                http_method="POST",
+                ip_address=ip,
+                user_agent=request.headers.get("user-agent", "")[:2000] or None,
+            )
+        except Exception:
+            pass
+
     db.add(session)
     db.commit()
 
@@ -755,6 +867,7 @@ def google_auth(request: Request, data: GoogleAuthRequest, db: Session = Depends
         "refresh_token": refresh_token,
         "token_type": "bearer",
         "user": build_auth_user_response(db, user),
+        "is_new_user": is_new_user,
     }
 
 
@@ -778,6 +891,129 @@ def logout(
         db.commit()
 
     return {"message": "Logged out successfully"}
+
+
+@router.post("/select-initial-role")
+def select_initial_role(
+    data: SelectInitialRoleRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """First-run role choice from /choose-role.
+
+    Assigns the base role record (customer is already assigned at register
+    and is harmless to re-add). Sellers/brokers still complete their
+    dedicated onboarding afterwards — this only records the intent.
+    """
+    _assign_role(db, current_user.id, data.role)
+    db.commit()
+    return {
+        "message": "Role selected",
+        "selected_role": data.role,
+        "completed": True,
+        "user": build_auth_user_response(db, current_user),
+    }
+
+
+@router.post("/onboard-seller")
+def onboard_seller(
+    data: SellerOnboardingRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Complete seller onboarding for an already-registered user."""
+    existing = db.query(Seller).filter(Seller.user_id == current_user.id).first()
+    if existing:
+        return {
+            "message": "Seller account already exists.",
+            "seller_id": str(existing.id),
+            "user": build_auth_user_response(db, current_user),
+        }
+
+    if not data.agreement_accepted:
+        raise HTTPException(status_code=422, detail="You must accept the Seller Agreement.")
+
+    seller = Seller(
+        user_id=current_user.id,
+        business_name=data.business_name.strip(),
+        contact_email=data.contact_email or current_user.email,
+        contact_phone=data.contact_phone or current_user.phone,
+        agreement_accepted=True,
+        status=SellerStatus.pending,
+    )
+    db.add(seller)
+    db.flush()
+
+    db.add(
+        SellerProfile(
+            seller_id=seller.id,
+            business_description=data.business_description,
+            business_country=data.business_country,
+            business_region=data.business_region,
+            business_city=data.business_city,
+            business_address=" ".join(
+                part for part in [data.business_district, data.business_ward, data.business_address] if part
+            ) or None,
+            product_description=data.product_description,
+            years_in_business=data.years_in_business,
+            website_url=data.website_url,
+        )
+    )
+
+    valid_ids = []
+    for category_id in set(data.business_category_ids):
+        try:
+            valid_ids.append(uuid.UUID(str(category_id)))
+        except (ValueError, AttributeError):
+            continue
+    for category_id in valid_ids:
+        db.add(
+            SellerBusinessCategory(seller_id=seller.id, business_category_id=category_id)
+        )
+
+    _assign_role(db, current_user.id, "seller")
+    db.commit()
+    return {
+        "message": "Seller account created. Complete store setup from the Seller Center.",
+        "seller_id": str(seller.id),
+        "user": build_auth_user_response(db, current_user),
+    }
+
+
+@router.post("/onboard-broker")
+def onboard_broker(
+    data: BrokerOnboardingRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Create a Winga (broker) profile for the authenticated user."""
+    existing = db.query(Broker).filter(Broker.user_id == current_user.id).first()
+    if existing:
+        return {
+            "message": "Winga account already exists.",
+            "broker_id": str(existing.id),
+            "user": build_auth_user_response(db, current_user),
+        }
+
+    broker_code = f"WNG-{uuid.uuid4().hex[:8].upper()}"
+    broker = Broker(
+        user_id=current_user.id,
+        broker_code=broker_code,
+        country=data.country.strip(),
+        region=data.region.strip(),
+        city=data.city.strip(),
+        district=(data.district or "").strip() or None,
+        ward=(data.ward or "").strip() or None,
+        status=BrokerStatus.pending_kyc,
+    )
+    db.add(broker)
+    _assign_role(db, current_user.id, "broker")
+    db.commit()
+    return {
+        "message": "Winga account created. Complete KYC to start earning.",
+        "broker_id": str(broker.id),
+        "user": build_auth_user_response(db, current_user),
+    }
 
 
 @router.post("/refresh-token", response_model=TokenResponse)
@@ -872,27 +1108,23 @@ def send_otp(request: Request, data: SendOTPRequest, db: Session = Depends(get_d
     db.add(otp_request)
     db.commit()
 
-    # send via SMS (and email if a user exists with that phone)
-    try:
-        send_sms(to=phone, message=f"Your verification code is: {otp}")
-    except Exception as e:
-        logger.exception("send_sms failed for %s: %s", phone, e)
+    # send via SMS (and email if a user exists with that phone) — async so a
+    # slow provider can't stall the HTTP response past the client timeout.
+    _deliver_async("send_sms", send_sms, to=phone, message=f"Your verification code is: {otp}")
 
-    # try find user by phone to send email if available
     user = db.query(User).filter(User.phone == phone).first()
     if user:
-        try:
-            send_email(
-                to=user.email,
-                subject="Your verification code",
-                body=f"Your verification code is: {otp}",
-            )
-        except Exception as e:
-            logger.exception("send_email failed for %s: %s", user.email, e)
+        _deliver_async(
+            "send_email",
+            send_email,
+            to=user.email,
+            subject="Your verification code",
+            body=f"Your verification code is: {otp}",
+        )
 
     return {
         "message": "OTP sent successfully",
-        "dev_otp": otp if settings.DEBUG else None,
+        "dev_otp": otp if not settings.is_production and settings.DEBUG else None,
     }
 
 
@@ -972,27 +1204,25 @@ def forgot_password(
     db.add(otp_request)
     db.commit()
 
-    # send password-reset OTP via email and SMS
-    try:
-        send_email(
-            to=user.email,
-            subject="Password reset code",
-            body=f"Your password reset code is: {otp}",
-        )
-    except Exception as e:
-        logger.exception("send_email failed for %s: %s", user.email, e)
+    # send password-reset OTP via email and SMS — both async
+    _deliver_async(
+        "send_email",
+        send_email,
+        to=user.email,
+        subject="Password reset code",
+        body=f"Your password reset code is: {otp}",
+    )
 
-    try:
-        send_sms(
-            to=user.phone,
-            message=f"Your password reset code is: {otp}",
-        )
-    except Exception as e:
-        logger.exception("send_sms failed for %s: %s", user.phone, e)
+    _deliver_async(
+        "send_sms",
+        send_sms,
+        to=user.phone,
+        message=f"Your password reset code is: {otp}",
+    )
 
     return {
         "message": "Password reset OTP sent",
-        "dev_otp": otp if settings.DEBUG else None,
+        "dev_otp": otp if not settings.is_production and settings.DEBUG else None,
     }
 
 
@@ -1002,6 +1232,10 @@ def reset_password(data: ResetPasswordRequest, db: Session = Depends(get_db)):
 
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
+
+    identifier = (user.phone or user.email or "").strip().lower()
+    if identifier:
+        _check_otp_lockout(identifier)
 
     otp_request = (
         db.query(OTPRequest)
@@ -1015,6 +1249,8 @@ def reset_password(data: ResetPasswordRequest, db: Session = Depends(get_db)):
     )
 
     if not otp_request or not verify_otp_hash(data.otp_code, otp_request.otp_hash):
+        if identifier:
+            _record_otp_failure(identifier)
         raise HTTPException(status_code=400, detail="Invalid OTP")
 
     if otp_request.expires_at < datetime.now(timezone.utc):

@@ -8,6 +8,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from api.deps import get_db, get_current_user
+from api.permissions import get_user_role_names
 from api.enums import PermissionCode
 from api.models import SystemSetting, User
 from api.permissions import require_permission
@@ -82,7 +83,7 @@ def list_settings(
     current_user: User = Depends(get_current_user),
 ):
     """List system settings. Non-admin users only see public settings."""
-    is_admin = current_user.account_type in ("admin", "super_admin")
+    is_admin = bool({"admin", "super_admin"} & get_user_role_names(current_user))
     q = db.query(SystemSetting)
     if not is_admin or public_only:
         q = q.filter(SystemSetting.is_public.is_(True))
@@ -119,7 +120,7 @@ def get_setting(
     setting = db.query(SystemSetting).filter(SystemSetting.key == key).first()
     if not setting:
         raise HTTPException(404, f"Setting '{key}' not found")
-    if not setting.is_public and current_user.account_type not in ("admin", "super_admin"):
+    if not setting.is_public and not {"admin", "super_admin"} & get_user_role_names(current_user):
         raise HTTPException(403, "Not authorized to view this setting")
     return setting
 

@@ -6,6 +6,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy import text
 from sqlalchemy.orm import Session, selectinload
 
 from api.config import settings
@@ -37,13 +38,15 @@ from api.services.notification_service import notification_service
 
 router = APIRouter(prefix="/orders", tags=["Orders"])
 
+# `refunded` is intentionally absent: it is terminal state owned exclusively by
+# the refund engine (Refund record + wallet debit + commission reversal + restock).
 ALLOWED_TRANSITIONS: dict[OrderStatus, set[OrderStatus]] = {
     OrderStatus.pending: {OrderStatus.cancelled},
-    OrderStatus.paid: {OrderStatus.processing, OrderStatus.refunded},
-    OrderStatus.processing: {OrderStatus.received_at_hub, OrderStatus.shipped, OrderStatus.cancelled, OrderStatus.refunded},
-    OrderStatus.received_at_hub: {OrderStatus.shipped, OrderStatus.cancelled, OrderStatus.refunded},
+    OrderStatus.paid: {OrderStatus.processing},
+    OrderStatus.processing: {OrderStatus.received_at_hub, OrderStatus.shipped, OrderStatus.cancelled},
+    OrderStatus.received_at_hub: {OrderStatus.shipped, OrderStatus.cancelled},
     OrderStatus.shipped: {OrderStatus.delivered},
-    OrderStatus.delivered: {OrderStatus.refunded},
+    OrderStatus.delivered: set(),
     OrderStatus.cancelled: set(),
     OrderStatus.refunded: set(),
 }
@@ -132,15 +135,18 @@ def _validate_coupon(coupon: Coupon, subtotal: Decimal) -> Decimal:
 
 
 def _generate_order_number(db: Session, order: Order) -> str:
-    """Generate a commercial order reference: XM-YYMMDD-NNNNN."""
+    """Generate a commercial order reference: XM-YYMMDD-NNNNN.
+
+    Uses a dedicated Postgres sequence — count-based generation races under
+    concurrency and collides on the unique constraint.
+    """
     created = order.created_at or datetime.now(timezone.utc)
     yy = str(created.year)[2:]
     mm = str(created.month).zfill(2)
     dd = str(created.day).zfill(2)
-    day_start = created.replace(hour=0, minute=0, second=0, microsecond=0)
-    count = db.query(Order).filter(Order.created_at >= day_start).count()
-    seq = str(count + 1).zfill(5)
-    return f"XM-{yy}{mm}{dd}-{seq}"
+    db.execute(text("CREATE SEQUENCE IF NOT EXISTS order_number_seq"))
+    seq_val = db.execute(text("SELECT nextval('order_number_seq')")).scalar()
+    return f"XM-{yy}{mm}{dd}-{seq_val:05d}"
 
 
 def _release_reserved_inventory(db: Session, order: Order) -> None:
@@ -276,6 +282,21 @@ def create_order(
         for cart_item in list(cart.items):
             db.delete(cart_item)
         cart.coupon_code = None
+
+        if settings.MONITORING_ENABLED:
+            try:
+                from api.services.monitoring import record_business_event
+                from api.enums import AuditSeverity
+                record_business_event(
+                    db, action="order.created",
+                    description="Order created",
+                    severity=AuditSeverity.info,
+                    actor_user_id=current_user.id,
+                    resource_type="order", resource_id=str(order.id),
+                    event_metadata={"total": str(order.total_amount)},
+                )
+            except Exception:
+                pass
 
         db.commit()
         db.refresh(order)
@@ -413,12 +434,12 @@ def update_order_status(
         new_status = data.status
         is_buyer = order.user_id == current_user.id
         is_operator = _is_privileged_order_operator(db, current_user)
-        is_seller = _is_order_seller(current_user, order)
 
         if is_buyer:
             if new_status != OrderStatus.cancelled or order.status != OrderStatus.pending:
                 raise HTTPException(status_code=403, detail="Buyers may only cancel pending orders")
-        elif not is_operator and not is_seller:
+        elif not is_operator:
+            # Sellers manage their slice through /seller-orders, never the whole order.
             raise HTTPException(status_code=403, detail="Not authorized to update this order")
 
         # Payment callbacks own the pending -> paid transition.

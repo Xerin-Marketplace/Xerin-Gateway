@@ -61,6 +61,7 @@ class PermissionCode(str, enum.Enum):
 
     manage_products = "manage_products"
     can_view_products = "can_view_products"
+    admin_catalog_read = "admin_catalog:read"
     can_approve_products = "can_approve_products"
     can_reject_products = "can_reject_products"
     seller_products_create = "seller_products:create"
@@ -95,6 +96,9 @@ class PermissionCode(str, enum.Enum):
     promotions_update = "promotions:update"
     promotions_delete = "promotions:delete"
     campaigns_manage = "campaigns:manage"
+
+    advertisements_read = "advertisements:read"
+    advertisements_manage = "advertisements:manage"
 
     notifications_read = "notifications:read"
     notifications_manage = "notifications:manage"
@@ -148,6 +152,7 @@ class PermissionCode(str, enum.Enum):
     analytics_seller_read = "analytics:seller_read"
     audit_logs_read = "audit_logs:read"
     security_events_read = "security_events:read"
+    monitoring_read = "monitoring:read"
 
     # Shipping and delivery
     shipping_read = "shipping:read"
@@ -357,6 +362,7 @@ class InventoryMovementType(str, enum.Enum):
 
 class AuditSeverity(str, enum.Enum):
     info = "info"
+    notice = "notice"
     warning = "warning"
     critical = "critical"
 
@@ -366,6 +372,16 @@ class SecurityEventType(str, enum.Enum):
     authorization_denied = "authorization_denied"
     suspicious_request = "suspicious_request"
     sensitive_action = "sensitive_action"
+    sql_injection_attempt = "sql_injection_attempt"
+    xss_attempt = "xss_attempt"
+    path_traversal_attempt = "path_traversal_attempt"
+    command_injection_attempt = "command_injection_attempt"
+    brute_force = "brute_force"
+    rate_limit_abuse = "rate_limit_abuse"
+    invalid_webhook = "invalid_webhook"
+    privilege_escalation = "privilege_escalation"
+    suspicious_upload = "suspicious_upload"
+    payment_anomaly = "payment_anomaly"
 
 
 class NotificationChannel(str, enum.Enum):
@@ -603,3 +619,12 @@ class SurgePricingType(str, enum.Enum):
 class SurgeScheduleType(str, enum.Enum):
     always = "always"
     time_based = "time_based"
+
+
+class BrokerStatus(str, enum.Enum):
+    pending_kyc = "pending_kyc"
+    kyc_submitted = "kyc_submitted"
+    under_review = "under_review"
+    approved = "approved"
+    rejected = "rejected"
+    suspended = "suspended"

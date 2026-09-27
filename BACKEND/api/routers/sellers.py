@@ -1,3 +1,4 @@
+import io
 from uuid import UUID, uuid4
 from datetime import datetime, timezone
 from pathlib import Path
@@ -15,6 +16,7 @@ from fastapi import (
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 from api.schemas import SellerProfileUpdate, SellerProfileResponse
+from api.config import settings
 from api.deps import get_db, get_current_user
 from api.models import (
     User,
@@ -50,6 +52,7 @@ REQUIRED_KYC_DOCUMENTS = [
     "tin",
     "business_profile",
     "business_registration",
+    "national_id",
 ]
 
 
@@ -408,6 +411,31 @@ async def _save_kyc_upload(
             detail="KYC document must not exceed 15 MB",
         )
 
+    if extension == ".pdf":
+        if content[:4] != b"%PDF":
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="The uploaded file is not a valid PDF",
+            )
+    else:
+        try:
+            from PIL import Image
+            with Image.open(io.BytesIO(content)) as probe:
+                detected = (probe.format or "").upper()
+                probe.verify()
+            if detected not in {"JPEG", "PNG"}:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Only real JPEG or PNG images are allowed",
+                )
+        except HTTPException:
+            raise
+        except Exception:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="The uploaded file is not a valid image",
+            )
+
     file_name = (
         f"{seller_id}_{document_type}_{uuid4().hex}{extension}"
     )
@@ -549,10 +577,11 @@ async def upload_bulk_kyc_documents(
     tin_file: UploadFile = File(...),
     business_profile_file: UploadFile = File(...),
     business_registration_file: UploadFile = File(...),
+    national_id_file: UploadFile | None = File(default=None),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """Create or replace all three required KYC documents in one request."""
+    """Create or replace the required KYC documents in one request."""
     seller = get_my_seller(db, current_user)
     _ensure_kyc_is_editable(seller)
 
@@ -561,6 +590,8 @@ async def upload_bulk_kyc_documents(
         "business_profile": business_profile_file,
         "business_registration": business_registration_file,
     }
+    if national_id_file is not None and national_id_file.filename:
+        files_map["national_id"] = national_id_file
 
     saved_urls: dict[str, str] = {}
     old_urls: list[str] = []
@@ -992,6 +1023,22 @@ def admin_approve_seller(
     seller.status = SellerStatus.approved
     seller.approved_at = datetime.now(timezone.utc)
     _assign_role(db, seller.user_id, "seller")
+
+    if settings.MONITORING_ENABLED:
+        try:
+            from api.services.monitoring import record_business_event
+            from api.enums import AuditSeverity
+            record_business_event(
+                db, action="admin.seller_approved",
+                description="Seller approved",
+                severity=AuditSeverity.notice,
+                actor_user_id=current_user.id,
+                resource_type="seller", resource_id=str(seller.id),
+                dedup_key=f"admin.seller_approved:{seller.id}",
+            )
+        except Exception:
+            pass
+
     db.commit()
     db.refresh(seller)
 
@@ -1019,6 +1066,21 @@ def admin_reject_seller(
         "status": "rejected",
         "rejection_reason": reason,
     })
+
+    if settings.MONITORING_ENABLED:
+        try:
+            from api.services.monitoring import record_business_event
+            from api.enums import AuditSeverity
+            record_business_event(
+                db, action="admin.seller_rejected",
+                description="Seller rejected",
+                severity=AuditSeverity.notice,
+                actor_user_id=current_user.id,
+                resource_type="seller", resource_id=str(seller.id),
+                dedup_key=f"admin.seller_rejected:{seller.id}",
+            )
+        except Exception:
+            pass
 
     db.commit()
     db.refresh(seller)
