@@ -7,15 +7,16 @@ branch — those endpoints return honest empty lists.
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from decimal import Decimal
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
-from api.deps import get_db
+from api.deps import get_current_user, get_db
 from api.enums import PermissionCode
-from api.models import Currency, FxRate
+from api.models import Currency, FxRate, SystemSetting
 from api.permissions import require_permission
 from api.services.fx import rate_to_tzs
 
@@ -211,3 +212,138 @@ def payments_dashboard(_=Depends(_finance)):
         "seller_earnings": 0,
         "currency": "TZS",
     }
+
+
+# ---------------------------------------------------------------------------
+# Finance settings singleton (backed by system_settings rows, key "finance.*")
+# ---------------------------------------------------------------------------
+
+_SETTINGS_KEY = "finance_settings"
+
+_FINANCE_SETTING_DEFAULTS: dict[str, object] = {
+    "default_payment_provider_code": None,
+    "settlement_currency": "TZS",
+    "minimum_payout_amount": 1000.0,
+    "payout_fee_type": "fixed",
+    "payout_fee_value": 0.0,
+    "payout_processing_days": 7,
+    "auto_payout_enabled": False,
+    "escrow_enabled": True,
+    "auto_release_enabled": True,
+    "allow_partial_release": True,
+    "hold_commission_until_release": True,
+}
+
+_FINANCE_BOOL = {
+    "auto_payout_enabled",
+    "escrow_enabled",
+    "auto_release_enabled",
+    "allow_partial_release",
+    "hold_commission_until_release",
+}
+_FINANCE_NUM = {
+    "minimum_payout_amount",
+    "payout_fee_value",
+    "payout_processing_days",
+}
+
+
+def _finance_settings_map(db: Session) -> dict[str, str]:
+    rows = (
+        db.query(SystemSetting)
+        .filter(SystemSetting.key.like("finance.%"))
+        .all()
+    )
+    return {r.key.split(".", 1)[1]: (r.value or "") for r in rows}
+
+
+def _cast_setting(name: str, raw: str) -> object:
+    if name in _FINANCE_BOOL:
+        return raw.strip().lower() in ("1", "true", "yes", "on")
+    if name in _FINANCE_NUM:
+        try:
+            return float(raw)
+        except (TypeError, ValueError):
+            return _FINANCE_SETTING_DEFAULTS[name]
+    return raw if raw != "" else None
+
+
+def _finance_settings_payload(db: Session) -> dict:
+    stored = _finance_settings_map(db)
+    out: dict[str, object] = {
+        "id": _SETTINGS_KEY,
+        "singleton_key": _SETTINGS_KEY,
+    }
+    latest = None
+    for name, default in _FINANCE_SETTING_DEFAULTS.items():
+        raw = stored.get(name)
+        out[name] = _cast_setting(name, raw) if raw is not None else default
+    rows = db.query(SystemSetting).filter(SystemSetting.key.like("finance.%")).all()
+    for r in rows:
+        if r.updated_at and (latest is None or r.updated_at > latest):
+            latest = r.updated_at
+    now = datetime.now(timezone.utc)
+    out["created_at"] = (latest or now).isoformat()
+    out["updated_at"] = latest.isoformat() if latest else None
+    return out
+
+
+class FinanceSettingsPatch(BaseModel):
+    default_payment_provider_code: str | None = None
+    settlement_currency: str | None = None
+    minimum_payout_amount: float | None = None
+    payout_fee_type: str | None = None
+    payout_fee_value: float | None = None
+    payout_processing_days: int | None = None
+    auto_payout_enabled: bool | None = None
+    escrow_enabled: bool | None = None
+    auto_release_enabled: bool | None = None
+    allow_partial_release: bool | None = None
+    hold_commission_until_release: bool | None = None
+
+
+@router.get("/finance/settings")
+def get_finance_settings(db: Session = Depends(get_db), _=Depends(_finance)):
+    return _finance_settings_payload(db)
+
+
+@router.patch("/finance/settings")
+def update_finance_settings(
+    data: FinanceSettingsPatch,
+    db: Session = Depends(get_db),
+    _=Depends(_finance),
+    current_user=Depends(get_current_user),
+):
+    updates = data.model_dump(exclude_unset=True)
+    for name, value in updates.items():
+        if value is None and name != "default_payment_provider_code":
+            continue
+        key = f"finance.{name}"
+        row = db.query(SystemSetting).filter(SystemSetting.key == key).first()
+        if value is None:
+            str_value = ""
+        elif isinstance(value, bool):
+            str_value = "true" if value else "false"
+        else:
+            str_value = str(value)
+        if row:
+            row.value = str_value
+            row.updated_by_id = current_user.id
+        else:
+            db.add(
+                SystemSetting(
+                    key=key,
+                    value=str_value,
+                    data_type="boolean"
+                    if name in _FINANCE_BOOL
+                    else "number"
+                    if name in _FINANCE_NUM
+                    else "string",
+                    category="finance",
+                    description=f"Finance setting: {name}",
+                    is_public=False,
+                    updated_by_id=current_user.id,
+                )
+            )
+    db.commit()
+    return _finance_settings_payload(db)
