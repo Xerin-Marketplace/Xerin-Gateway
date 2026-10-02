@@ -116,6 +116,17 @@ class Settings(BaseSettings):
     AZAMPAY_CALLBACK_SECRET: str | None = None
     AZAMPAY_LANGUAGE: str = "en"
     AZAMPAY_SANDBOX_AUTH_URL: str = "https://authenticator-sandbox.azampay.co.tz/AppRegistration/GenerateToken"
+
+    # Selcom (default gateway: USSD push mobile money + hosted card checkout)
+    DEFAULT_PAYMENT_PROVIDER: str = "selcom"
+    SELCOM_API_KEY: str | None = None
+    SELCOM_API_SECRET: str | None = None
+    SELCOM_VENDOR: str | None = None
+    SELCOM_BASE_URL: str = "https://apigw.selcommobile.com/v1"
+    SELCOM_WEBHOOK_URL: str | None = None
+    SELCOM_REDIRECT_URL: str | None = None
+    SELCOM_CANCEL_URL: str | None = None
+    SELCOM_ORDER_EXPIRY_MINUTES: int = 60
     AZAMPAY_LIVE_AUTH_URL: str = "https://authenticator.azampay.co.tz/AppRegistration/GenerateToken"
     AZAMPAY_SANDBOX_BASE_URL: str = "https://sandbox.azampay.co.tz"
     AZAMPAY_LIVE_BASE_URL: str = "https://checkout.azampay.co.tz"

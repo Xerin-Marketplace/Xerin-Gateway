@@ -36,6 +36,7 @@ from api.schemas import (
 )
 from api.enums import InventoryReservationStatus, SellerOrderStatus
 from api.services.azampay_service import AzamPayAPIError, AzamPayClient, AzamPayConfigurationError
+from api.services.selcom_service import SelcomAPIError, SelcomClient, SelcomConfigurationError
 from api.services.inventory_reservations import commit_order_reservations, ensure_order_reservations_active, release_order_reservations
 from api.services.commission_engine import calculate_order_commissions
 
@@ -198,11 +199,13 @@ def initiate_payment(data: PaymentInitiateRequest, db: Session = Depends(get_db)
     ensure_order_reservations_active(db, order)
 
     method = data.method if isinstance(data.method, PaymentMethod) else PaymentMethod(data.method)
-    provider = (data.provider or ("azampay" if method in {PaymentMethod.mobile_money, PaymentMethod.card} else "")).lower().strip() or None
+    mno = data.provider  # mobile-money label chosen by the customer (M-Pesa, Tigo, ...)
+    gateway = (
+        settings.DEFAULT_PAYMENT_PROVIDER if method in {PaymentMethod.mobile_money, PaymentMethod.card}
+        else (data.provider or "")
+    ).lower().strip() or None
     if method == PaymentMethod.mobile_money and (not data.provider or not data.phone_number):
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail="provider and phone_number are required for mobile money")
-    if method in {PaymentMethod.mobile_money, PaymentMethod.card} and provider != "azampay" and method == PaymentMethod.card:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail="Card payments currently support AzamPay only")
 
     existing = db.query(Payment).filter(
         Payment.order_id == order.id,
@@ -218,7 +221,7 @@ def initiate_payment(data: PaymentInitiateRequest, db: Session = Depends(get_db)
         amount=order.total,
         currency=order.currency,
         method=method,
-        provider="azampay" if method in {PaymentMethod.mobile_money, PaymentMethod.card} else provider,
+        provider=gateway,
         status=PaymentStatus.pending,
     )
     db.add(payment)
@@ -228,12 +231,63 @@ def initiate_payment(data: PaymentInitiateRequest, db: Session = Depends(get_db)
         "payment_reference": str(payment.id),
         "method": method.value,
         "provider": payment.provider,
-        "mno": data.provider if method == PaymentMethod.mobile_money else None,
+        "mno": mno if method == PaymentMethod.mobile_money else None,
         "phone": data.phone_number,
     })
 
     if method == PaymentMethod.cash_on_delivery:
         _commit(db)
+        db.refresh(payment)
+        return payment
+
+    if payment.provider == "selcom":
+        selcom = SelcomClient()
+        selcom_order_id = str(payment.id)
+        buyer_name = f"{current_user.first_name or ''} {current_user.last_name or ''}".strip()
+        try:
+            created = selcom.create_order_minimal(
+                order_id=selcom_order_id,
+                amount=order.total,
+                currency=order.currency,
+                buyer_email=current_user.email or "",
+                buyer_name=buyer_name,
+                buyer_phone=data.phone_number or current_user.phone or "",
+                no_of_items=len(order.items),
+                merchant_remarks=f"Xerin Mart order {order.order_number or order.id}",
+            )
+            provider_payload = {
+                "create_order": created.raw,
+                "checkout_url": created.payment_gateway_url,
+                "selcom_order_id": selcom_order_id,
+                "reference": created.reference,
+                "mno": mno if method == PaymentMethod.mobile_money else None,
+            }
+            if method == PaymentMethod.mobile_money:
+                push = selcom.wallet_pull(
+                    transid=selcom_order_id,
+                    order_id=selcom_order_id,
+                    msisdn=data.phone_number or current_user.phone or "",
+                )
+                provider_payload["wallet_push"] = push.raw
+                provider_payload["message"] = push.message or "USSD push sent to your phone"
+        except ValueError as exc:
+            db.rollback()
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)) from exc
+        except SelcomConfigurationError as exc:
+            db.rollback()
+            raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
+        except SelcomAPIError as exc:
+            db.rollback()
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail={"message": str(exc), "provider": "selcom", "provider_status": exc.status_code},
+            ) from exc
+
+        payment.status = PaymentStatus.processing
+        payment.provider_transaction_id = selcom_order_id
+        payment.provider_response = provider_payload
+        _record_transaction(db, payment, "provider_request", PaymentStatus.processing.value, order.total, provider_payload)
+        _commit(db, conflict_detail="Selcom transaction conflict")
         db.refresh(payment)
         return payment
 
@@ -491,6 +545,85 @@ def azampay_callback(
     return _apply_payment_callback("azampay", callback_data, db)
 
 
+SELCOM_SUCCESS_STATUSES = {"COMPLETED"}
+SELCOM_FAILED_STATUSES = {"FAIL", "FAILED", "REJECTED"}
+SELCOM_CANCELLED_STATUSES = {"CANCELLED", "USERCANCELED", "USERCANCELLED"}
+
+
+def _map_selcom_status(payment_status: str, result: str) -> PaymentStatus:
+    status_value = (payment_status or "").upper()
+    result_value = (result or "").upper()
+    if status_value in SELCOM_SUCCESS_STATUSES or result_value == "SUCCESS":
+        return PaymentStatus.completed
+    if status_value in SELCOM_FAILED_STATUSES or result_value == "FAIL":
+        return PaymentStatus.failed
+    if status_value in SELCOM_CANCELLED_STATUSES:
+        return PaymentStatus.cancelled
+    return PaymentStatus.processing
+
+
+@router.post("/selcom/callback", response_model=PaymentResponse)
+def selcom_callback(
+    payload: dict,
+    timestamp: str | None = Header(default=None),
+    digest: str | None = Header(default=None),
+    signed_fields: str | None = Header(default=None, alias="Signed-Fields"),
+    db: Session = Depends(get_db),
+):
+    """Selcom payment webhook — fires on successful transactions.
+
+    Authenticated with the same SELCOM signature headers as the API
+    (Digest = HMAC-SHA256 over timestamp + signed payload fields).
+    """
+    client = SelcomClient()
+    if not client.verify_webhook(
+        timestamp=timestamp,
+        digest=digest,
+        signed_fields=signed_fields,
+        payload=payload,
+    ):
+        if settings.MONITORING_ENABLED:
+            try:
+                from api.services.monitoring import record_security_alert
+                from api.enums import SecurityEventType, AuditSeverity
+                record_security_alert(
+                    db,
+                    event_type=SecurityEventType.invalid_webhook,
+                    description="Selcom callback with an invalid or missing signature",
+                    severity=AuditSeverity.critical,
+                    request_path="/payments/selcom/callback",
+                    http_method="POST",
+                    dedup_key="security.invalid_webhook:selcom",
+                )
+                db.commit()
+            except Exception:
+                db.rollback()
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid Selcom callback signature")
+
+    order_ref = str(payload.get("order_id") or "").strip()
+    if not order_ref:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail="Selcom callback is missing order_id")
+    try:
+        payment_id = UUID(order_ref)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail="Invalid Selcom order_id") from exc
+
+    mapped = _map_selcom_status(
+        str(payload.get("payment_status") or ""),
+        str(payload.get("result") or ""),
+    )
+    transaction_id = str(payload.get("reference") or payload.get("transid") or order_ref)
+
+    callback_data = PaymentCallbackRequest(
+        payment_id=payment_id,
+        provider="selcom",
+        transaction_id=transaction_id,
+        status=mapped,
+        payload=payload,
+    )
+    return _apply_payment_callback("selcom", callback_data, db)
+
+
 @router.get("/admin/all", response_model=list[PaymentResponse])
 def list_payments(
     order_id: UUID | None = None,
@@ -514,4 +647,27 @@ def get_payment(payment_id: UUID, db: Session = Depends(get_db), current_user: U
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Payment not found")
     if payment.user_id != current_user.id:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized to view this payment")
+
+    # Selcom webhook only fires on success — poll order status so a
+    # cancelled/failed USSD push doesn't leave the payment processing forever.
+    if payment.provider == "selcom" and payment.status in {PaymentStatus.pending, PaymentStatus.processing}:
+        try:
+            status_data = SelcomClient().order_status(str(payment.id))
+            entry = (status_data.get("data") or [{}])[0]
+            mapped = _map_selcom_status(str(entry.get("payment_status") or ""), "")
+            if mapped != PaymentStatus.processing:
+                payment = _apply_payment_callback(
+                    "selcom",
+                    PaymentCallbackRequest(
+                        payment_id=payment.id,
+                        provider="selcom",
+                        transaction_id=str(entry.get("reference") or entry.get("transid") or payment.id),
+                        status=mapped,
+                        payload=entry,
+                    ),
+                    db,
+                )
+        except Exception:
+            logger.exception("selcom order-status refresh failed for payment %s", payment.id)
+
     return payment

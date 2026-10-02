@@ -1,7 +1,7 @@
 # Xerin Mart — Beta Test Plan
 
 End-to-end verification checklist for the beta launch. Run every flow on the
-staging/production environment with **real** AzamPay sandbox or live test
+staging/production environment with **real** Selcom test
 numbers before inviting layman testers.
 
 Legend: ✅ pass · ❌ fail · ⚠️ pass with issues (record details)
@@ -16,7 +16,7 @@ Legend: ✅ pass · ❌ fail · ⚠️ pass with issues (record details)
 | Storefront loads | `https://xerinmarketplace.com` | `200`, shows "Xerin Mart" |
 | SMTP works | send_email test via `.venv/bin/python` (see ops runbook) | Test mail arrives |
 | SMS works | send_sms test via `.venv/bin/python` | SMS arrives on test phone |
-| AzamPay configured | `.env` has `AZAMPAY_*` + callback URL `https://api.xerinmarketplace.com/api/v1/payments/azampay/callback` | Keys present |
+| Selcom configured | `.env` has `SELCOM_*` + callback URL `https://api.xerinmarketplace.com/api/v1/payments/selcom/callback` | Keys present |
 | KYC notification templates seeded | `SELECT count(*) FROM notification_templates WHERE event LIKE 'kyc_%'` | `6` |
 | Admin account exists | admin login at `/admin` | Dashboard loads |
 
@@ -60,7 +60,7 @@ Create these test accounts and record credentials in the shared sheet:
 | 3.1 | C-01 browses store, opens product, add to cart | Cart shows item + total | |
 | 3.2 | C-01 adds delivery address | Address saved | |
 | 3.3 | Checkout → `POST /orders` | Order created, `pending payment` | |
-| 3.4 | `POST /payments/initiate` (AzamPay MNO, test phone) | Push prompt sent to phone | |
+| 3.4 | `POST /payments/initiate` (Selcom MNO, test phone) | Push prompt sent to phone | |
 | 3.5 | Confirm on phone / sandbox callback → `POST /payments/azampay/callback` | Payment `confirmed`, order `paid` | |
 | 3.6 | Notifications | C-01 gets order confirmation (email+in-app); S-01 gets new-order alert | |
 | 3.7 | S-01 accepts order → processing → ready-to-ship → dispatch | Status transitions work, C-01 notified each step | |
