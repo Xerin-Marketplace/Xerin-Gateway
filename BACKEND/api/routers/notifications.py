@@ -324,6 +324,13 @@ def seed_default_templates(
         (NotificationEvent.cancellation_requested, NotificationChannel.sms, None, "Your order ${order_number} has been cancelled."),
         # OTP
         (NotificationEvent.otp_verification, NotificationChannel.sms, None, "Your Xerin verification code is: ${otp_code}. Valid for 10 minutes."),
+        # KYC lifecycle
+        (NotificationEvent.kyc_submitted, NotificationChannel.sms, None, "Hi ${user_name}, we received your ${account_label} verification documents. They are now under review — we will notify you once approved."),
+        (NotificationEvent.kyc_submitted, NotificationChannel.email, "Verification Under Review - Xerin Mart", "Dear ${user_name},\n\nThank you for submitting your ${account_label} verification documents. Our team is reviewing them now and we will notify you by SMS and email once a decision is made.\n\nXerin Mart Team"),
+        (NotificationEvent.kyc_approved, NotificationChannel.sms, None, "Congratulations ${user_name}! Your ${account_label} account has been verified. You can now use all features on Xerin Mart."),
+        (NotificationEvent.kyc_approved, NotificationChannel.email, "Your Account Is Verified - Xerin Mart", "Dear ${user_name},\n\nGreat news! Your ${account_label} verification has been approved. Your account is now fully active.\n\nWelcome aboard!\n\nXerin Mart Team"),
+        (NotificationEvent.kyc_rejected, NotificationChannel.sms, None, "Hi ${user_name}, your ${account_label} verification was not approved. Reason: ${reason}. Please update your details and resubmit."),
+        (NotificationEvent.kyc_rejected, NotificationChannel.email, "Verification Update - Xerin Mart", "Dear ${user_name},\n\nUnfortunately your ${account_label} verification was not approved.\n\nReason: ${reason}\n\nPlease update your documents or details and resubmit. If you need help, contact support.\n\nXerin Mart Team"),
     ]
 
     created = 0

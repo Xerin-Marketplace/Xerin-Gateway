@@ -7,7 +7,8 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
 from api.deps import get_db
-from api.enums import DriverDocumentStatus, DriverVerificationStatus, PermissionCode
+from api.enums import DriverDocumentStatus, DriverVerificationStatus, NotificationChannel, NotificationEvent, PermissionCode
+from api.services.notification_service import notification_service
 from api.models import Driver, DriverDocument, DriverKYC, User
 from api.permissions import require_permission
 from api.schemas import (
@@ -64,6 +65,18 @@ def submit_driver_kyc(
     )
     db.add(kyc)
     db.commit()
+    try:
+        notification_service.notify(
+            db=db,
+            user_id=driver.user_id,
+            event=NotificationEvent.kyc_submitted,
+            title="Verification under review",
+            message="We received your driver verification details. Our team is reviewing them now.",
+            data={"account_label": "driver"},
+            channels=[NotificationChannel.in_app, NotificationChannel.email],
+        )
+    except Exception:
+        pass
     db.refresh(kyc)
     return kyc
 
@@ -112,6 +125,37 @@ def review_driver_kyc(
         driver.verification_status = DriverVerificationStatus.rejected
 
     db.commit()
+    try:
+        if data.is_approved:
+            notification_service.notify(
+                db=db,
+                user_id=driver.user_id,
+                event=NotificationEvent.kyc_approved,
+                title="Your account is verified",
+                message="Congratulations! Your driver verification has been approved. You can now accept deliveries on Xerin Delivery.",
+                data={"account_label": "driver"},
+                channels=[
+                    NotificationChannel.in_app,
+                    NotificationChannel.email,
+                    NotificationChannel.sms,
+                ],
+            )
+        else:
+            notification_service.notify(
+                db=db,
+                user_id=driver.user_id,
+                event=NotificationEvent.kyc_rejected,
+                title="Verification update",
+                message=f"Your driver verification was not approved. Reason: {data.rejection_reason}",
+                data={"account_label": "driver", "reason": data.rejection_reason or ""},
+                channels=[
+                    NotificationChannel.in_app,
+                    NotificationChannel.email,
+                    NotificationChannel.sms,
+                ],
+            )
+    except Exception:
+        pass
     db.refresh(driver.kyc)
     return driver.kyc
 

@@ -43,6 +43,8 @@ from api.schemas import (
     SellerApplicationStatusResponse,
     canonical_account_number,
 )
+from api.services.notification_service import notification_service
+from api.enums import NotificationEvent, NotificationChannel
 
 router = APIRouter(prefix="/sellers", tags=["Sellers"])
 
@@ -447,6 +449,7 @@ async def _save_kyc_upload(
 
 
 def _synchronize_seller_kyc_status(db: Session, seller: Seller) -> None:
+    previous_status = seller.status
     uploaded_types = {
         row.document_type
         for row in db.query(SellerKYCDocument).filter(
@@ -465,6 +468,21 @@ def _synchronize_seller_kyc_status(db: Session, seller: Seller) -> None:
         else SellerStatus.pending
     )
     seller.approved_at = None
+
+    if seller.status == SellerStatus.under_review and previous_status != SellerStatus.under_review:
+        try:
+            notification_service.notify(
+                db=db,
+                user_id=seller.user_id,
+                event=NotificationEvent.kyc_submitted,
+                title="Verification under review",
+                message="We received your store verification documents. Our team is reviewing them now.",
+                data={"account_label": "store"},
+                action_url="/seller/kyc",
+                channels=[NotificationChannel.in_app, NotificationChannel.email],
+            )
+        except Exception:
+            pass
 
 
 @router.post(
@@ -1042,6 +1060,24 @@ def admin_approve_seller(
     seller.approved_at = datetime.now(timezone.utc)
     _assign_role(db, seller.user_id, "seller")
 
+    try:
+        notification_service.notify(
+            db=db,
+            user_id=seller.user_id,
+            event=NotificationEvent.kyc_approved,
+            title="Your store is verified",
+            message="Congratulations! Your seller verification has been approved. Your store is now live on Xerin Mart.",
+            data={"account_label": "store"},
+            action_url="/seller/dashboard",
+            channels=[
+                NotificationChannel.in_app,
+                NotificationChannel.email,
+                NotificationChannel.sms,
+            ],
+        )
+    except Exception:
+        pass
+
     if settings.MONITORING_ENABLED:
         try:
             from api.services.monitoring import record_business_event
@@ -1084,6 +1120,24 @@ def admin_reject_seller(
         "status": "rejected",
         "rejection_reason": reason,
     })
+
+    try:
+        notification_service.notify(
+            db=db,
+            user_id=seller.user_id,
+            event=NotificationEvent.kyc_rejected,
+            title="Verification update",
+            message=f"Your store verification was not approved. Reason: {reason}",
+            data={"account_label": "store", "reason": reason},
+            action_url="/seller/kyc",
+            channels=[
+                NotificationChannel.in_app,
+                NotificationChannel.email,
+                NotificationChannel.sms,
+            ],
+        )
+    except Exception:
+        pass
 
     if settings.MONITORING_ENABLED:
         try:

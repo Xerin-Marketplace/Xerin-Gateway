@@ -28,6 +28,8 @@ from api.models import (
 )
 from api.permissions import require_permission
 from api.schemas import canonical_account_number
+from api.services.notification_service import notification_service
+from api.enums import NotificationChannel, NotificationEvent
 
 router = APIRouter(prefix="/brokers", tags=["Brokers"])
 
@@ -261,6 +263,19 @@ def submit_kyc(db: Session = Depends(get_db), current_user: User = Depends(get_c
     broker.status = BrokerStatus.kyc_submitted
     broker.status_reason = None
     db.commit()
+    try:
+        notification_service.notify(
+            db=db,
+            user_id=broker.user_id,
+            event=NotificationEvent.kyc_submitted,
+            title="Verification under review",
+            message="We received your Winga verification documents. Our team is reviewing them now.",
+            data={"account_label": "Winga"},
+            action_url="/broker/kyc",
+            channels=[NotificationChannel.in_app, NotificationChannel.email],
+        )
+    except Exception:
+        pass
     db.refresh(broker)
     return _serialize_broker(broker)
 
@@ -376,6 +391,23 @@ def admin_approve_broker(
     broker.status_reason = data.reason
     broker.approved_at = datetime.now(timezone.utc)
     db.commit()
+    try:
+        notification_service.notify(
+            db=db,
+            user_id=broker.user_id,
+            event=NotificationEvent.kyc_approved,
+            title="Your account is verified",
+            message="Congratulations! Your Winga verification has been approved. You can now use all Winga features on Xerin Mart.",
+            data={"account_label": "Winga"},
+            action_url="/broker",
+            channels=[
+                NotificationChannel.in_app,
+                NotificationChannel.email,
+                NotificationChannel.sms,
+            ],
+        )
+    except Exception:
+        pass
     db.refresh(broker)
     return _serialize_broker(broker)
 
@@ -392,6 +424,23 @@ def admin_reject_broker(
     broker.status_reason = data.reason
     broker.rejected_at = datetime.now(timezone.utc)
     db.commit()
+    try:
+        notification_service.notify(
+            db=db,
+            user_id=broker.user_id,
+            event=NotificationEvent.kyc_rejected,
+            title="Verification update",
+            message=f"Your Winga verification was not approved. Reason: {data.reason}",
+            data={"account_label": "Winga", "reason": data.reason or ""},
+            action_url="/broker/kyc",
+            channels=[
+                NotificationChannel.in_app,
+                NotificationChannel.email,
+                NotificationChannel.sms,
+            ],
+        )
+    except Exception:
+        pass
     db.refresh(broker)
     return _serialize_broker(broker)
 

@@ -431,6 +431,10 @@ class NotificationEvent(str, enum.Enum):
     admin_delivery_alert = "admin_delivery_alert"
     seller_order_ready = "seller_order_ready"
     otp_verification = "otp_verification"
+    # KYC lifecycle (sellers, brokers, drivers)
+    kyc_submitted = "kyc_submitted"
+    kyc_approved = "kyc_approved"
+    kyc_rejected = "kyc_rejected"
 
 
 class QuestionStatus(str, enum.Enum):
