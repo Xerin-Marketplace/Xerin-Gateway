@@ -41,6 +41,7 @@ from api.schemas import (
     PaginatedSellerResponse,
     SellerApplicationRequest,
     SellerApplicationStatusResponse,
+    canonical_account_number,
 )
 
 router = APIRouter(prefix="/sellers", tags=["Sellers"])
@@ -818,6 +819,23 @@ def create_payout_account(
 ):
     seller = get_my_seller(db, current_user)
 
+    canonical = canonical_account_number(data.account_number, data.account_type)
+    dup = next(
+        (
+            a
+            for a in db.query(SellerPayoutAccount)
+            .filter(SellerPayoutAccount.seller_id == seller.id)
+            .all()
+            if canonical_account_number(a.account_number, a.account_type) == canonical
+        ),
+        None,
+    )
+    if dup:
+        raise HTTPException(
+            status_code=409,
+            detail="This account number is already saved on your profile.",
+        )
+
     if data.is_default:
         db.query(SellerPayoutAccount).filter(
             SellerPayoutAccount.seller_id == seller.id
@@ -828,7 +846,7 @@ def create_payout_account(
         account_type=data.account_type,
         provider=data.provider,
         account_name=data.account_name,
-        account_number=data.account_number,
+        account_number=canonical,
         currency=data.currency,
         is_default=data.is_default,
     )

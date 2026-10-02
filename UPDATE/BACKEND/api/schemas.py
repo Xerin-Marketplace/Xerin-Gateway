@@ -117,6 +117,21 @@ def _validate_password(value: str) -> str:
     return value
 
 
+def canonical_account_number(value: str | None, account_type: str | None = None) -> str:
+    """Canonical form of a payout account number for duplicate detection and
+    storage. Mobile-money numbers are reduced to digits and Tanzanian local
+    format (07XX) is normalised to international (2557XX) so that
+    "0712…", "+255 712…" and "255712…" are treated as the same account.
+    Other account numbers (e.g. bank) are only stripped of spaces/dashes."""
+    v = (value or "").strip().replace(" ", "").replace("-", "")
+    if account_type == "mobile_money":
+        digits = "".join(ch for ch in v if ch.isdigit())
+        if digits.startswith("0"):
+            digits = "255" + digits[1:]
+        return digits
+    return v
+
+
 def _normalise_currency(value: str) -> str:
     value = value.strip().upper()
     if len(value) != 3 or not value.isalpha():

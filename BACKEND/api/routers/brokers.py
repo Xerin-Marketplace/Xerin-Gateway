@@ -27,6 +27,7 @@ from api.models import (
     User,
 )
 from api.permissions import require_permission
+from api.schemas import canonical_account_number
 
 router = APIRouter(prefix="/brokers", tags=["Brokers"])
 
@@ -606,20 +607,56 @@ def broker_create_payout_account(
     broker = _get_my_broker(db, current_user)
     if data.account_type not in ("mobile_money", "bank"):
         raise HTTPException(status_code=422, detail="account_type must be mobile_money or bank")
-    dup = db.query(BrokerPayoutAccount).filter(
-        BrokerPayoutAccount.broker_id == broker.id,
-        BrokerPayoutAccount.account_number == data.account_number.strip(),
-        BrokerPayoutAccount.is_active.is_(True),
-    ).first()
-    if dup:
-        raise HTTPException(status_code=409, detail="That payout account already exists.")
+
+    canonical = canonical_account_number(data.account_number, data.account_type)
+    existing = next(
+        (
+            a
+            for a in db.query(BrokerPayoutAccount)
+            .filter(BrokerPayoutAccount.broker_id == broker.id)
+            .all()
+            if canonical_account_number(a.account_number, a.account_type) == canonical
+        ),
+        None,
+    )
+    if existing and existing.is_active:
+        raise HTTPException(
+            status_code=409,
+            detail="This account number is already saved on your profile.",
+        )
+    if existing:
+        # A deactivated account with the same number exists — reactivate and
+        # update it instead of creating a duplicate row.
+        existing.account_type = data.account_type
+        existing.provider = data.provider.strip()
+        existing.account_name = data.account_name.strip()
+        existing.account_number = canonical
+        existing.currency = data.currency
+        existing.is_active = True
+        if data.is_default:
+            db.query(BrokerPayoutAccount).filter(
+                BrokerPayoutAccount.broker_id == broker.id
+            ).update({"is_default": False})
+            existing.is_default = True
+        # Details may have changed — require re-verification.
+        existing.verification_status = "pending"
+        existing.verification_note = None
+        existing.verified_at = None
+        db.commit()
+        db.refresh(existing)
+        return _serialize_account(existing)
+
+    if data.is_default:
+        db.query(BrokerPayoutAccount).filter(
+            BrokerPayoutAccount.broker_id == broker.id
+        ).update({"is_default": False})
 
     account = BrokerPayoutAccount(
         broker_id=broker.id,
         account_type=data.account_type,
         provider=data.provider.strip(),
         account_name=data.account_name.strip(),
-        account_number=data.account_number.strip(),
+        account_number=canonical,
         currency=data.currency,
         is_default=data.is_default,
     )
@@ -653,6 +690,31 @@ def broker_update_payout_account(
     ).first()
     if not account:
         raise HTTPException(status_code=404, detail="Payout account not found")
+    if data.account_number is not None or data.account_type is not None:
+        new_type = data.account_type or account.account_type
+        canonical = canonical_account_number(
+            data.account_number or account.account_number, new_type
+        )
+        dup = next(
+            (
+                a
+                for a in db.query(BrokerPayoutAccount)
+                .filter(
+                    BrokerPayoutAccount.broker_id == broker.id,
+                    BrokerPayoutAccount.id != account.id,
+                    BrokerPayoutAccount.is_active.is_(True),
+                )
+                .all()
+                if canonical_account_number(a.account_number, a.account_type) == canonical
+            ),
+            None,
+        )
+        if dup:
+            raise HTTPException(
+                status_code=409,
+                detail="This account number is already saved on your profile.",
+            )
+        data.account_number = canonical
     for field in ("account_type", "provider", "account_name", "account_number", "currency"):
         value = getattr(data, field)
         if value is not None:
