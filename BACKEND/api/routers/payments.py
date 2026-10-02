@@ -201,7 +201,7 @@ def initiate_payment(data: PaymentInitiateRequest, db: Session = Depends(get_db)
     method = data.method if isinstance(data.method, PaymentMethod) else PaymentMethod(data.method)
     mno = data.provider  # mobile-money label chosen by the customer (M-Pesa, Tigo, ...)
     gateway = (
-        settings.DEFAULT_PAYMENT_PROVIDER if method in {PaymentMethod.mobile_money, PaymentMethod.card}
+        settings.payment_provider if method in {PaymentMethod.mobile_money, PaymentMethod.card}
         else (data.provider or "")
     ).lower().strip() or None
     if method == PaymentMethod.mobile_money and (not data.provider or not data.phone_number):
@@ -241,6 +241,16 @@ def initiate_payment(data: PaymentInitiateRequest, db: Session = Depends(get_db)
         return payment
 
     if payment.provider == "selcom":
+        if (
+            settings.SELCOM_MAX_AMOUNT_TZS
+            and str(order.currency).upper() == "TZS"
+            and Decimal(order.total) > Decimal(str(settings.SELCOM_MAX_AMOUNT_TZS))
+        ):
+            db.rollback()
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail=f"Amount exceeds the maximum allowed for mobile payments (TSh {settings.SELCOM_MAX_AMOUNT_TZS:,.0f})",
+            )
         selcom = SelcomClient()
         selcom_order_id = str(payment.id)
         buyer_name = f"{current_user.first_name or ''} {current_user.last_name or ''}".strip()
@@ -563,6 +573,7 @@ def _map_selcom_status(payment_status: str, result: str) -> PaymentStatus:
 
 
 @router.post("/selcom/callback", response_model=PaymentResponse)
+@router.post("/selcom/webhook", response_model=PaymentResponse, include_in_schema=False)
 def selcom_callback(
     payload: dict,
     timestamp: str | None = Header(default=None),

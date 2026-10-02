@@ -64,12 +64,12 @@ class SelcomClient:
         self.base_url = settings.SELCOM_BASE_URL.rstrip("/")
         self.api_key = settings.SELCOM_API_KEY or ""
         self.api_secret = settings.SELCOM_API_SECRET or ""
-        self.vendor = settings.SELCOM_VENDOR or ""
+        self.vendor = settings.selcom_vendor
 
     def _ensure_configured(self) -> None:
         if not self.api_key or not self.api_secret or not self.vendor:
             raise SelcomConfigurationError(
-                "Selcom is not configured. Set SELCOM_API_KEY, SELCOM_API_SECRET and SELCOM_VENDOR."
+                "Selcom is not configured. Set SELCOM_API_KEY, SELCOM_API_SECRET and SELCOM_VENDOR_ID."
             )
 
     @staticmethod
@@ -101,9 +101,9 @@ class SelcomClient:
         url = f"{self.base_url}{path}"
         try:
             if method == "GET":
-                resp = requests.get(url, params=payload, headers=headers, timeout=30)
+                resp = requests.get(url, params=payload, headers=headers, timeout=settings.SELCOM_TIMEOUT_SECONDS)
             else:
-                resp = requests.post(url, json=payload, headers=headers, timeout=30)
+                resp = requests.post(url, json=payload, headers=headers, timeout=settings.SELCOM_TIMEOUT_SECONDS)
         except requests.RequestException as exc:
             raise SelcomAPIError(f"Selcom request failed: {exc}") from exc
 
@@ -158,7 +158,7 @@ class SelcomClient:
             payload["merchant_remarks"] = merchant_remarks
         payload["expiry"] = str(settings.SELCOM_ORDER_EXPIRY_MINUTES)
 
-        data = self._request("POST", "/checkout/create-order-minimal", payload)
+        data = self._request("POST", settings.SELCOM_CREATE_ORDER_PATH, payload)
         gateway_url = None
         try:
             first = (data.get("data") or [{}])[0]
@@ -180,7 +180,7 @@ class SelcomClient:
         """Trigger a USSD push to the customer's mobile wallet (M-Pesa, Tigo, etc.)."""
         data = self._request(
             "POST",
-            "/checkout/wallet-payment",
+            settings.SELCOM_WALLET_PAYMENT_PATH,
             {"transid": transid, "order_id": order_id, "msisdn": normalize_msisdn(msisdn)},
         )
         return SelcomResult(
@@ -194,7 +194,7 @@ class SelcomClient:
 
     def order_status(self, order_id: str) -> dict[str, Any]:
         """Poll a Selcom order status — needed because the webhook only fires on success."""
-        return self._request("GET", "/checkout/order-status", {"order_id": order_id})
+        return self._request("GET", settings.SELCOM_ORDER_STATUS_PATH, {"order_id": order_id})
 
     # ------------------------------------------------------------------
     # Webhooks

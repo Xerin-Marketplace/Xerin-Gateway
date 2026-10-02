@@ -118,15 +118,34 @@ class Settings(BaseSettings):
     AZAMPAY_SANDBOX_AUTH_URL: str = "https://authenticator-sandbox.azampay.co.tz/AppRegistration/GenerateToken"
 
     # Selcom (default gateway: USSD push mobile money + hosted card checkout)
-    DEFAULT_PAYMENT_PROVIDER: str = "selcom"
+    DEFAULT_PAYMENT_PROVIDER: str | None = None
+    MNO_PAYMENT_PROVIDER: str | None = None
     SELCOM_API_KEY: str | None = None
     SELCOM_API_SECRET: str | None = None
     SELCOM_VENDOR: str | None = None
-    SELCOM_BASE_URL: str = "https://apigw.selcommobile.com/v1"
+    SELCOM_VENDOR_ID: str | None = None
+    SELCOM_BASE_URL: str = "https://apigw.selcommobile.com"
+    SELCOM_CREATE_ORDER_PATH: str = "/v1/checkout/create-order-minimal"
+    SELCOM_WALLET_PAYMENT_PATH: str = "/v1/checkout/wallet-payment"
+    SELCOM_ORDER_STATUS_PATH: str = "/v1/checkout/order-status"
     SELCOM_WEBHOOK_URL: str | None = None
     SELCOM_REDIRECT_URL: str | None = None
     SELCOM_CANCEL_URL: str | None = None
     SELCOM_ORDER_EXPIRY_MINUTES: int = 60
+    SELCOM_TIMEOUT_SECONDS: int = 30
+    SELCOM_MAX_AMOUNT_TZS: float | None = None
+
+    @property
+    def payment_provider(self) -> str:
+        return (
+            self.DEFAULT_PAYMENT_PROVIDER
+            or self.MNO_PAYMENT_PROVIDER
+            or "selcom"
+        ).strip().lower()
+
+    @property
+    def selcom_vendor(self) -> str:
+        return self.SELCOM_VENDOR or self.SELCOM_VENDOR_ID or ""
     AZAMPAY_LIVE_AUTH_URL: str = "https://authenticator.azampay.co.tz/AppRegistration/GenerateToken"
     AZAMPAY_SANDBOX_BASE_URL: str = "https://sandbox.azampay.co.tz"
     AZAMPAY_LIVE_BASE_URL: str = "https://checkout.azampay.co.tz"
