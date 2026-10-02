@@ -32,6 +32,93 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+# ---------------------------------------------------------------- job registry
+# Live status for the scheduler's recurring jobs, surfaced via /monitoring/jobs.
+
+_JOB_INTERVALS: dict[str, int] = {
+    "monitoring.tick": 30,
+    "monitoring.weekly_report": 3600,
+    "monitoring.housekeeping": 21600,
+}
+_job_state: dict[str, dict] = {}
+_paused_jobs: set[str] = set()
+
+
+def _job_row(name: str) -> dict:
+    st = _job_state.get(name)
+    interval = _JOB_INTERVALS[name]
+    now = _now()
+    if st is None:
+        st = {
+            "id": name,
+            "job_type": name,
+            "queue": "scheduler",
+            "status": "queued",
+            "attempts": 0,
+            "max_attempts": 3,
+            "failure_reason": None,
+            "scheduled_at": now.isoformat(),
+            "started_at": None,
+            "completed_at": None,
+            "created_at": now.isoformat(),
+        }
+        _job_state[name] = st
+    if st["status"] not in ("running",):
+        st["status"] = "paused" if name in _paused_jobs else (
+            st.get("status") if st.get("status") in ("failed", "succeeded") else "queued"
+        )
+        completed = st.get("completed_at")
+        base = datetime.fromisoformat(completed) if completed else now
+        st["scheduled_at"] = (base + timedelta(seconds=interval)).isoformat()
+    return st
+
+
+def _record_run(name: str, fn) -> None:
+    st = _job_row(name)
+    st["attempts"] += 1
+    st["status"] = "running"
+    st["started_at"] = _now().isoformat()
+    st["failure_reason"] = None
+    try:
+        fn()
+        st["status"] = "succeeded"
+    except Exception as exc:
+        st["status"] = "failed"
+        st["failure_reason"] = str(exc)[:500]
+        raise
+    finally:
+        st["completed_at"] = _now().isoformat()
+
+
+def job_statuses() -> list[dict]:
+    """Snapshot of all scheduler jobs for the admin jobs endpoint."""
+    return [dict(_job_row(name)) for name in _JOB_INTERVALS]
+
+
+def trigger_job(name: str) -> dict | None:
+    """Run a scheduler job on demand in a background thread."""
+    fns = {
+        "monitoring.tick": _tick,
+        "monitoring.weekly_report": _maybe_send_weekly_report,
+        "monitoring.housekeeping": _housekeeping,
+    }
+    fn = fns.get(name)
+    if fn is None:
+        return None
+    _paused_jobs.discard(name)
+    threading.Thread(
+        target=lambda: _record_run(name, fn), name=f"job-{name}", daemon=True,
+    ).start()
+    return _job_row(name)
+
+
+def pause_job(name: str) -> dict | None:
+    if name not in _JOB_INTERVALS:
+        return None
+    _paused_jobs.add(name)
+    return _job_row(name)
+
+
 def start_monitoring_scheduler() -> None:
     """Spawn the background loop once per process. Safe to call repeatedly."""
     global _loop_started
@@ -50,22 +137,29 @@ def _loop() -> None:
     last_report_check: datetime | None = None
     last_housekeeping: datetime | None = None
     while True:
-        try:
-            _tick()
-        except Exception:
-            logger.exception("Monitoring scheduler tick failed")
+        if "monitoring.tick" not in _paused_jobs:
+            try:
+                _record_run("monitoring.tick", _tick)
+            except Exception:
+                logger.exception("Monitoring scheduler tick failed")
         now = _now()
         # Weekly report: check at most once per hour.
-        if last_report_check is None or now - last_report_check >= timedelta(hours=1):
+        if (
+            "monitoring.weekly_report" not in _paused_jobs
+            and (last_report_check is None or now - last_report_check >= timedelta(hours=1))
+        ):
             try:
-                _maybe_send_weekly_report()
+                _record_run("monitoring.weekly_report", _maybe_send_weekly_report)
             except Exception:
                 logger.exception("Weekly report check failed")
             last_report_check = now
         # Housekeeping (retention + schema snapshot): once per 6h.
-        if last_housekeeping is None or now - last_housekeeping >= timedelta(hours=6):
+        if (
+            "monitoring.housekeeping" not in _paused_jobs
+            and (last_housekeeping is None or now - last_housekeeping >= timedelta(hours=6))
+        ):
             try:
-                _housekeeping()
+                _record_run("monitoring.housekeeping", _housekeeping)
             except Exception:
                 logger.exception("Monitoring housekeeping failed")
             last_housekeeping = now

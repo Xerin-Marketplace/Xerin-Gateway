@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
@@ -256,3 +256,37 @@ def list_weekly_reports(
         }
         for r in rows
     ]
+
+
+# ------------------------------------------------------------------ jobs
+
+@router.get("/jobs")
+def list_background_jobs(
+    _: User = Depends(require_permission(PermissionCode.monitoring_read.value)),
+):
+    from api.services import scheduler
+    return scheduler.job_statuses()
+
+
+@router.post("/jobs/{job_id}/retry")
+def retry_background_job(
+    job_id: str,
+    _: User = Depends(require_permission(PermissionCode.monitoring_read.value)),
+):
+    from api.services import scheduler
+    row = scheduler.trigger_job(job_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="Unknown job")
+    return row
+
+
+@router.post("/jobs/{job_id}/cancel")
+def cancel_background_job(
+    job_id: str,
+    _: User = Depends(require_permission(PermissionCode.monitoring_read.value)),
+):
+    from api.services import scheduler
+    row = scheduler.pause_job(job_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="Unknown job")
+    return row
