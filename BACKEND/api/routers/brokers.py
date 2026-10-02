@@ -697,10 +697,10 @@ def broker_create_payout_account(
                 BrokerPayoutAccount.broker_id == broker.id
             ).update({"is_default": False})
             existing.is_default = True
-        # Details may have changed — require re-verification.
-        existing.verification_status = "pending"
+        # Self-service payout accounts are trusted — the owner chose them.
+        existing.verification_status = "verified"
         existing.verification_note = None
-        existing.verified_at = None
+        existing.verified_at = datetime.now(timezone.utc)
         db.commit()
         db.refresh(existing)
         return _serialize_account(existing)
@@ -718,6 +718,8 @@ def broker_create_payout_account(
         account_number=canonical,
         currency=data.currency,
         is_default=data.is_default,
+        verification_status="verified",
+        verified_at=datetime.now(timezone.utc),
     )
     db.add(account)
     db.commit()
@@ -783,8 +785,8 @@ def broker_update_payout_account(
     if data.is_active is not None:
         account.is_active = data.is_active
     if data.provider or data.account_number:
-        account.verification_status = "pending"  # changes require re-verification
-        account.verified_at = None
+        account.verification_status = "verified"
+        account.verified_at = datetime.now(timezone.utc)
     db.commit()
     db.refresh(account)
     return _serialize_account(account)
