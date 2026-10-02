@@ -101,6 +101,8 @@ class Settings(BaseSettings):
 
     # Payment webhook security
     PAYMENT_WEBHOOK_SECRET: str | None = None
+    PAYMENT_ORDER_TIMEOUT_MINUTES: int = 30
+    PAYMENT_ATTEMPT_RETRY_AFTER_SECONDS: int = 90
 
     # AzamPay (MNO push + hosted card checkout)
     AZAMPAY_SANDBOX: bool = True

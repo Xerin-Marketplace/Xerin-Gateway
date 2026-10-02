@@ -77,6 +77,12 @@ def _tick() -> None:
     db = SessionLocal()
     try:
         process_pending_alerts(db)
+        from api.scripts.cancel_unpaid_orders import cancel_unpaid_orders
+        cancel_unpaid_orders(db)
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
     finally:
         db.close()
 
