@@ -1,7 +1,9 @@
 import secrets
+import uuid
+from pathlib import Path
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
 from sqlalchemy.orm import Session
 
 from api.deps import get_db, get_current_user
@@ -54,6 +56,7 @@ def get_my_profile(
         "last_name": current_user.last_name,
         "email": current_user.email,
         "phone": current_user.phone,
+        "avatar_url": current_user.avatar_url,
         "is_verified": current_user.is_verified,
         "status": current_user.status.value if current_user.status else None,
         "is_seller": seller is not None,
@@ -114,6 +117,70 @@ def update_my_profile(
     db.refresh(current_user)
 
     return current_user
+
+
+@router.post("/users/me/avatar")
+def upload_my_avatar(
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(
+        require_permission(PermissionCode.update_profile.value)
+    ),
+):
+    """Upload a profile avatar. Stored under uploads/avatars and served at /uploads."""
+    from api.config import settings
+
+    raw = file.file.read()
+    if not raw:
+        raise HTTPException(status_code=400, detail="Uploaded file is empty")
+    if len(raw) > settings.MAX_UPLOAD_SIZE_MB * 1024 * 1024:
+        raise HTTPException(
+            status_code=413,
+            detail=f"Image must not exceed {settings.MAX_UPLOAD_SIZE_MB} MB",
+        )
+
+    mime = file.content_type or ""
+    if mime == "image/jpeg" or raw[:3] == b"\xff\xd8\xff":
+        ext = ".jpg"
+    elif mime == "image/png" or raw[:8] == b"\x89PNG\r\n\x1a\n":
+        ext = ".png"
+    elif mime == "image/webp" or raw[8:12] == b"WEBP":
+        ext = ".webp"
+    else:
+        raise HTTPException(status_code=400, detail="Only JPEG, PNG or WEBP images are allowed")
+
+    target_dir = settings.upload_path / "avatars" / str(current_user.id)
+    target_dir.mkdir(parents=True, exist_ok=True)
+    for old in target_dir.iterdir():
+        if old.name.startswith("avatar."):
+            old.unlink(missing_ok=True)
+    file_name = f"avatar{ext}"
+    (target_dir / file_name).write_bytes(raw)
+
+    current_user.avatar_url = f"/uploads/avatars/{current_user.id}/{file_name}"
+    db.commit()
+    db.refresh(current_user)
+    return {"avatar_url": current_user.avatar_url}
+
+
+@router.delete("/users/me/avatar")
+def delete_my_avatar(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(
+        require_permission(PermissionCode.update_profile.value)
+    ),
+):
+    if current_user.avatar_url:
+        from api.config import settings
+
+        path = settings.upload_path / current_user.avatar_url.lstrip("/").removeprefix("uploads/")
+        try:
+            Path(path).unlink(missing_ok=True)
+        except Exception:
+            pass
+    current_user.avatar_url = None
+    db.commit()
+    return {"avatar_url": None}
 
 
 @router.post(

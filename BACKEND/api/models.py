@@ -50,6 +50,7 @@ class User(Base):
     email = Column(String(255), unique=True, index=True, nullable=False)
     phone = Column(String(30), unique=True, index=True)
     password_hash = Column(Text, nullable=False)
+    avatar_url = Column(String(500), nullable=True)
     status = Column(Enum(UserStatus), default=UserStatus.pending_verification)
     is_verified = Column(Boolean, default=False)
     last_login_at = Column(DateTime(timezone=True))

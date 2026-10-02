@@ -57,6 +57,7 @@ def _serialize_broker(broker: Broker, user: User | None = None):
         "last_name": getattr(u, "last_name", None),
         "email": getattr(u, "email", None),
         "phone": getattr(u, "phone", None),
+        "avatar_url": getattr(u, "avatar_url", None),
         "country": broker.country,
         "region": broker.region,
         "city": broker.city,

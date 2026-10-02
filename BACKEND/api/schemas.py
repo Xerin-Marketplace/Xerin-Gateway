@@ -238,6 +238,7 @@ class UserResponse(BaseModel):
     last_name: str
     email: EmailStr
     phone: str | None
+    avatar_url: str | None = None
     is_verified: bool
     status: str
 
@@ -731,6 +732,7 @@ class UserMeResponse(BaseModel):
     last_name: str
     email: EmailStr
     phone: str | None
+    avatar_url: str | None = None
     is_verified: bool
     status: str | None
     is_seller: bool
