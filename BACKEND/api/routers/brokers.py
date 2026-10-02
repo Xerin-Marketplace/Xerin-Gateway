@@ -37,6 +37,16 @@ REQUIRED_KYC_DOCS = ["national_id", "profile_photo", "selfie"]
 ALLOWED_DOC_MIME = {"image/jpeg", "image/png", "image/webp", "application/pdf"}
 
 
+def _empty_page(page: int, page_size: int) -> dict:
+    return {
+        "total": 0,
+        "page": page,
+        "page_size": page_size,
+        "total_pages": 0,
+        "results": [],
+    }
+
+
 def _serialize_broker(broker: Broker, user: User | None = None):
     u = user or broker.user
     return {
