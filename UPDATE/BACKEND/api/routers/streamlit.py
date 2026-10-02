@@ -1,4 +1,4 @@
-"""XERIN Marketplace Backend — complete Streamlit API tester.
+"""Xerin Mart Backend — complete Streamlit API tester.
 
 Run:
     pip install streamlit requests
@@ -59,7 +59,7 @@ BACKEND_MODULES = {
     "Inventory": ["inventory CRUD", "seller stock", "adjustments", "restocking", "low-stock reporting"],
     "Shipping & delivery": ["zones", "methods", "rates", "quotes", "shipments", "delivery provider integration"],
     "Payments & refunds": ["payment initiation", "callbacks", "payment administration", "refund workflow"],
-    "Marketplace finance": ["commissions", "seller wallet", "payouts", "wallet adjustments"],
+    "Finance": ["commissions", "seller wallet", "payouts", "wallet adjustments"],
     "Administration": ["users", "roles", "permissions", "sellers", "products", "catalog data"],
     "Analytics & audit": ["admin analytics", "seller analytics", "reconciliation", "audit logs", "security events"],
 }
@@ -663,8 +663,8 @@ with st.sidebar:
 
 
 # ------------------------------- Main -----------------------------------
-st.title("XERIN Marketplace — Complete Backend Tester")
-st.caption("A schema-driven test client for every FastAPI endpoint in your marketplace backend.")
+st.title("Xerin Mart — Complete Backend Tester")
+st.caption("A schema-driven test client for every FastAPI endpoint in your Xerin Mart backend.")
 
 if st.session_state.openapi is None and not st.session_state.openapi_error:
     fetch_openapi(show_message=False)

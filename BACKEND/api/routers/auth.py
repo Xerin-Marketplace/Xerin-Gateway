@@ -34,6 +34,7 @@ from api.models import (
     SecurityEvent,
 )
 from api.schemas import *
+from api.schemas import _normalise_phone
 from api.security import (
     hash_password,
     verify_password,
@@ -385,7 +386,7 @@ def register(data: RegisterRequest, db: Session = Depends(get_db)):
         "send_sms",
         send_sms,
         to=phone,
-        message=f"Use this OTP to verify your Xerin Marketplace account: {otp}",
+        message=f"Use this OTP to verify your Xerin Mart account: {otp}",
     )
 
     return RegistrationResponse(
@@ -560,7 +561,7 @@ async def register_seller(
         "send_sms",
         send_sms,
         to=phone,
-        message=f"Use this OTP to verify your Xerin Marketplace seller account: {otp}",
+        message=f"Use this OTP to verify your Xerin Mart seller account: {otp}",
     )
 
     return SellerRegistrationResponse(
@@ -1166,6 +1167,119 @@ def verify_otp(data: VerifyOTPRequest, db: Session = Depends(get_db)):
     if user:
         user.is_verified = True
         user.status = UserStatus.active
+
+    db.commit()
+    _clear_otp_failures(phone)
+
+    return {"message": "OTP verified successfully"}
+
+
+def _resolve_user_by_identifier(db: Session, identifier: str) -> User | None:
+    """Resolve a user account by phone number or email address."""
+    ident = identifier.strip()
+    if not ident:
+        return None
+    try:
+        phone = _normalise_phone(ident)
+    except ValueError:
+        phone = None
+    if phone:
+        user = db.query(User).filter(User.phone == phone).first()
+        if user:
+            return user
+    if "@" in ident:
+        return db.query(User).filter(User.email.ilike(ident)).first()
+    return None
+
+
+@router.post("/resend-verification")
+def resend_verification(
+    request: Request,
+    data: ResendVerificationRequest,
+    db: Session = Depends(get_db),
+):
+    """Resend an account-verification OTP using a registered email or phone."""
+    ip = _client_ip(request)
+    _rate_limit(f"resend-verification:ip:{ip}", max_calls=10, window_seconds=5 * 60)
+
+    user = _resolve_user_by_identifier(db, data.identifier)
+
+    # Always return the same response so the endpoint can't be used to
+    # enumerate which emails/phones are registered.
+    if user and user.phone:
+        _rate_limit(
+            f"resend-verification:phone:{user.phone}",
+            max_calls=3,
+            window_seconds=5 * 60,
+        )
+        _invalidate_existing_otps(db, user.phone, purpose="generic")
+        _clear_otp_failures(user.phone)
+
+        otp = generate_otp()
+        db.add(
+            OTPRequest(
+                phone=user.phone,
+                otp_hash=hash_otp(otp),
+                purpose="generic",
+                expires_at=datetime.now(timezone.utc) + timedelta(minutes=5),
+                verified=False,
+            )
+        )
+        db.commit()
+
+        _deliver_async(
+            "send_sms",
+            send_sms,
+            to=user.phone,
+            message=f"Your verification code is: {otp}",
+        )
+        if user.email:
+            _deliver_async(
+                "send_email",
+                send_email,
+                to=user.email,
+                subject="Your verification code",
+                body=f"Your verification code is: {otp}",
+            )
+
+    return {"message": "If the account exists, a new verification code has been sent."}
+
+
+@router.post("/verify-account-otp")
+def verify_account_otp(
+    data: VerifyAccountOTPRequest,
+    db: Session = Depends(get_db),
+):
+    """Verify an existing account using an OTP sent to its registered phone."""
+    user = _resolve_user_by_identifier(db, data.identifier)
+    if not user or not user.phone:
+        raise HTTPException(status_code=400, detail="Invalid OTP")
+
+    phone = user.phone
+    _check_otp_lockout(phone)
+
+    otp_request = (
+        db.query(OTPRequest)
+        .filter(
+            OTPRequest.phone == phone,
+            OTPRequest.purpose == "generic",
+            OTPRequest.verified.is_(False),
+        )
+        .order_by(OTPRequest.created_at.desc())
+        .first()
+    )
+
+    if not otp_request or not verify_otp_hash(data.otp_code, otp_request.otp_hash):
+        _record_otp_failure(phone)
+        raise HTTPException(status_code=400, detail="Invalid OTP")
+
+    if otp_request.expires_at < datetime.now(timezone.utc):
+        _record_otp_failure(phone)
+        raise HTTPException(status_code=400, detail="OTP expired")
+
+    otp_request.verified = True
+    user.is_verified = True
+    user.status = UserStatus.active
 
     db.commit()
     _clear_otp_failures(phone)

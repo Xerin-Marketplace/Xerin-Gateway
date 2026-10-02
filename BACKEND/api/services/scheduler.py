@@ -117,7 +117,7 @@ def build_weekly_report(db: Session, start: datetime, end: datetime) -> WeeklyRe
     from api.services.email_alerts import send_weekly_report
 
     stats = _collect_stats(db, start, end)
-    subject = f"Xerin Marketplace — Weekly Report {start.date()} → {end.date()}"
+    subject = f"Xerin Mart — Weekly Report {start.date()} → {end.date()}"
     body = _render_weekly_report(stats, start, end)
 
     report = WeeklyReport(
@@ -206,7 +206,7 @@ def _render_weekly_report(stats: dict, start: datetime, end: datetime) -> str:
         return f"\n{title}\n{'-' * len(title)}"
 
     parts = [
-        "XERIN MARKETPLACE — WEEKLY OPERATIONS REPORT",
+        "XERIN MART — WEEKLY OPERATIONS REPORT",
         line,
         f"Period      : {start.date()} → {end.date()}",
         f"Generated   : {_now().isoformat(timespec='seconds')}",
@@ -249,7 +249,7 @@ def _render_weekly_report(stats: dict, start: datetime, end: datetime) -> str:
     for action, n in stats["audit"]["top_actions"]:
         parts.append(f"    {n:>5}  {action}")
 
-    parts.append(f"\n{line}\nAutomated report — Xerin Marketplace monitoring")
+    parts.append(f"\n{line}\nAutomated report — Xerin Mart monitoring")
     return "\n".join(parts)
 
 

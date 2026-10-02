@@ -40,7 +40,7 @@ DEFAULT_ROLE_PERMISSIONS: dict[str, set[str]] = {
         PermissionCode.search_history_manage.value,
     },
     "broker": {
-        # Winga — promotes products, earns commission. Base marketplace
+        # Winga — promotes products, earns commission. Base store
         # browsing permissions; broker-scoped ops are granted via
         # broker-specific codes as that module ships.
         PermissionCode.view_profile.value,

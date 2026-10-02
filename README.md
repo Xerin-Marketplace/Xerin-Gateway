@@ -136,7 +136,7 @@ The system is built on a **relational PostgreSQL schema** with well-structured r
 - Real-time order tracking (WebSockets)
 - Recommendation engine
 - Advanced analytics dashboard
-- Multi-vendor marketplace support
+- Multi-vendor e-commerce support
 
 ---
 

@@ -9,7 +9,7 @@ from api.permissions import require_permission
 from api.schemas import AnalyticsOverviewResponse, AnalyticsRankingRow, AnalyticsSeriesPoint, ReconciliationResponse
 from api.services.analytics_service import admin_overview, product_rankings, reconciliation, resolve_range, sales_series, seller_overview, seller_rankings
 
-router = APIRouter(prefix="/analytics", tags=["Marketplace Analytics"])
+router = APIRouter(prefix="/analytics", tags=["Store Analytics"])
 
 
 def period(start_at: datetime | None, end_at: datetime | None):

@@ -168,6 +168,15 @@ class VerifyOTPRequest(BaseModel):
     otp_code: str
 
 
+class ResendVerificationRequest(BaseModel):
+    identifier: str = Field(min_length=3, max_length=320)
+
+
+class VerifyAccountOTPRequest(BaseModel):
+    identifier: str = Field(min_length=3, max_length=320)
+    otp_code: str = Field(min_length=4, max_length=10)
+
+
 class ForgotPasswordRequest(BaseModel):
     email: EmailStr
 

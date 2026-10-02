@@ -183,6 +183,15 @@ class VerifyOTPRequest(BaseModel):
     _clean_phone = field_validator("phone")(_normalise_phone)
 
 
+class ResendVerificationRequest(BaseModel):
+    identifier: str = Field(min_length=3, max_length=320)
+
+
+class VerifyAccountOTPRequest(BaseModel):
+    identifier: str = Field(min_length=3, max_length=320)
+    otp_code: str = Field(min_length=4, max_length=10)
+
+
 class ForgotPasswordRequest(BaseModel):
     email: EmailStr
 

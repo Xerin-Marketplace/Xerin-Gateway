@@ -1,4 +1,4 @@
-"""Seed demo marketplace data for development/testing environments.
+"""Seed demo store data for development/testing environments.
 
 Creates a demo seller, store, categories and products with inventory so the
 storefront has real content to render. Idempotent — safe to run repeatedly.
@@ -110,7 +110,7 @@ def seed_demo() -> None:
 
         seller_role = db.query(Role).filter(Role.name == "seller").first()
         if seller_role is None:
-            seller_role = Role(name="seller", description="Marketplace seller")
+            seller_role = Role(name="seller", description="Xerin Mart seller")
             db.add(seller_role)
             db.flush()
         if not db.query(UserRole).filter(
@@ -237,7 +237,7 @@ def seed_demo() -> None:
 
         demo_ads = [
             dict(
-                advertiser_name="Xerin Marketplace",
+                advertiser_name="Xerin Mart",
                 title="This Week's Top Deals",
                 description="Hand-picked products from verified sellers with protected checkout and tracked delivery.",
                 image_url="https://xerinmarketplace.com/images/hero/headphone.png",
@@ -248,7 +248,7 @@ def seed_demo() -> None:
                 priority=10,
             ),
             dict(
-                advertiser_name="Xerin Marketplace",
+                advertiser_name="Xerin Mart",
                 title="New Seller Arrivals",
                 description="Fresh stock from sellers near you — delivered and tracked.",
                 image_url="https://xerinmarketplace.com/images/hero/Tshirtremove.png",
@@ -259,7 +259,7 @@ def seed_demo() -> None:
                 priority=5,
             ),
             dict(
-                advertiser_name="Xerin Marketplace",
+                advertiser_name="Xerin Mart",
                 title="Sell on Xerin",
                 description="Open your store, reach thousands of buyers, and get paid through protected checkout.",
                 image_url="https://xerinmarketplace.com/images/hero/hero-01.png",
