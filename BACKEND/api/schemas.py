@@ -789,6 +789,23 @@ class CategoryResponse(BaseModel):
     model_config = ORM_CONFIG
 
 
+class CategoryTreeResponse(BaseModel):
+    """Category with nested children + a rolled-up product count — powers
+    the two-pane Categories screen (left rail / right subcategory grid)."""
+
+    id: UUID
+    parent_id: Optional[UUID]
+    name: str
+    slug: str
+    image_url: Optional[str] = None
+    thumbnail_url: Optional[str] = None
+    created_at: datetime
+    product_count: int = 0
+    children: list["CategoryTreeResponse"] = Field(default_factory=list)
+
+    model_config = ORM_CONFIG
+
+
 class BrandCreate(BaseModel):
     name: str
     slug: str
@@ -881,6 +898,36 @@ class ProductResponse(BaseModel):
     approved_by_user_id: Optional[UUID] = None
     images: list["ProductImageResponse"] = Field(default_factory=list)
     created_at: datetime
+
+    model_config = ORM_CONFIG
+
+
+class ProductFeedItem(BaseModel):
+    """Marketplace feed card: base product fields + computed aggregates
+    (sold count, rating) so the mobile home/category grids can render an
+    Alibaba-style product card in one request."""
+
+    id: UUID
+    seller_id: UUID
+    category_id: UUID
+    category_name: Optional[str] = None
+    brand_id: Optional[UUID]
+    sku: str
+    name: str
+    slug: str
+    description: Optional[str]
+    price: Decimal
+    sale_price: Optional[Decimal]
+    discount_percent: Optional[int] = None
+    currency: str
+    weight: Optional[Decimal]
+    status: ProductStatus
+    is_active: bool
+    images: list["ProductImageResponse"] = Field(default_factory=list)
+    created_at: datetime
+    sold_count: int = 0
+    rating: float = 0.0
+    review_count: int = 0
 
     model_config = ORM_CONFIG
 

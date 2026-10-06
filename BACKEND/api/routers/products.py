@@ -5,7 +5,7 @@ from itertools import product as cartesian_product
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
-from sqlalchemy import or_
+from sqlalchemy import func, or_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -17,15 +17,18 @@ from api.models import (
     Category,
     Currency,
     FxRate,
+    OrderItem,
     Product,
     ProductImage,
     ProductOption,
     ProductOptionValue,
+    ProductReview,
     ProductStatus,
     ProductTag,
     ProductVariant,
     ProductVariantValue,
     Inventory,
+    ReviewStatus,
     Seller,
     SellerStatus,
     User,
@@ -36,7 +39,9 @@ from api.schemas import (
     BrandResponse,
     CategoryCreate,
     CategoryResponse,
+    CategoryTreeResponse,
     ProductCreate,
+    ProductFeedItem,
     ProductImageCreate,
     ProductImageReorderRequest,
     ProductImageResponse,
@@ -287,6 +292,43 @@ def get_categories(db: Session = Depends(get_db)):
     return db.query(Category).order_by(Category.name.asc()).all()
 
 
+@router.get("/categories/tree", response_model=list[CategoryTreeResponse])
+def get_categories_tree(db: Session = Depends(get_db)):
+    """Top-level categories with nested children + live product counts.
+
+    Powers the two-pane Categories screen (left rail of top-level
+    categories, right grid of subcategories with imagery).
+    """
+    categories = db.query(Category).order_by(Category.name.asc()).all()
+    by_parent: dict[UUID | None, list[Category]] = {}
+    for cat in categories:
+        by_parent.setdefault(cat.parent_id, []).append(cat)
+
+    counts = dict(
+        db.query(Product.category_id, func.count(Product.id))
+        .filter(Product.is_active.is_(True), Product.status == ProductStatus.approved)
+        .group_by(Product.category_id)
+        .all()
+    )
+
+    def _node(cat: Category) -> CategoryTreeResponse:
+        children = [_node(child) for child in by_parent.get(cat.id, [])]
+        child_product_total = sum(child.product_count for child in children)
+        return CategoryTreeResponse(
+            id=cat.id,
+            parent_id=cat.parent_id,
+            name=cat.name,
+            slug=cat.slug,
+            image_url=cat.image_url,
+            thumbnail_url=cat.thumbnail_url,
+            created_at=cat.created_at,
+            product_count=counts.get(cat.id, 0) + child_product_total,
+            children=children,
+        )
+
+    return [_node(cat) for cat in by_parent.get(None, [])]
+
+
 @router.get("/categories/{category_id}", response_model=CategoryResponse)
 def get_category(category_id: UUID, db: Session = Depends(get_db)):
     category = db.query(Category).filter(Category.id == category_id).first()
@@ -382,6 +424,102 @@ def list_products(
     if seller_id:
         query = query.filter(Product.seller_id == seller_id)
     return query.order_by(Product.created_at.desc()).offset(skip).limit(limit).all()
+
+
+@router.get("/feed", response_model=list[ProductFeedItem])
+def product_feed(
+    db: Session = Depends(get_db),
+    section: str | None = Query(default=None, pattern="^(deals|new|best_sellers|all)$"),
+    search: str | None = Query(default=None, max_length=200),
+    category_id: UUID | None = Query(default=None),
+    skip: int = Query(default=0, ge=0),
+    limit: int = Query(default=20, ge=1, le=100),
+):
+    """Marketplace home/category feed card — adds computed sold-count and
+    rating aggregates on top of the base product so the mobile home page
+    can render Alibaba-style product cards (price, sold count, rating)
+    without N+1 requests.
+    """
+    query = db.query(Product).filter(Product.is_active.is_(True), Product.status == ProductStatus.approved)
+    if search and search.strip():
+        term = search.strip()
+        query = query.filter(or_(Product.name.ilike(f"%{term}%"), Product.description.ilike(f"%{term}%"), Product.sku.ilike(f"%{term}%")))
+    if category_id:
+        query = query.filter(Product.category_id == category_id)
+
+    if section == "deals":
+        query = query.filter(Product.sale_price.isnot(None))
+    elif section == "new":
+        query = query.order_by(Product.created_at.desc())
+
+    products = query.order_by(Product.created_at.desc()).offset(skip).limit(limit).all()
+    ids = [p.id for p in products]
+
+    sold_map: dict[UUID, int] = {}
+    rating_map: dict[UUID, float] = {}
+    review_count_map: dict[UUID, int] = {}
+    category_name_map: dict[UUID, str] = {}
+
+    if ids:
+        sold_map = dict(
+            db.query(OrderItem.product_id, func.coalesce(func.sum(OrderItem.quantity), 0))
+            .filter(OrderItem.product_id.in_(ids))
+            .group_by(OrderItem.product_id)
+            .all()
+        )
+        rating_rows = (
+            db.query(ProductReview.product_id, func.avg(ProductReview.rating), func.count(ProductReview.id))
+            .filter(ProductReview.product_id.in_(ids), ProductReview.status == ReviewStatus.approved)
+            .group_by(ProductReview.product_id)
+            .all()
+        )
+        for pid, avg_rating, count in rating_rows:
+            rating_map[pid] = float(avg_rating or 0)
+            review_count_map[pid] = int(count or 0)
+
+        category_ids = {p.category_id for p in products if p.category_id}
+        if category_ids:
+            category_name_map = dict(
+                db.query(Category.id, Category.name).filter(Category.id.in_(category_ids)).all()
+            )
+
+    if section == "best_sellers":
+        products.sort(key=lambda p: sold_map.get(p.id, 0), reverse=True)
+
+    items: list[ProductFeedItem] = []
+    for p in products:
+        discount_percent = None
+        if p.sale_price is not None and p.price:
+            try:
+                discount_percent = round(float((p.price - p.sale_price) / p.price) * 100)
+            except (ZeroDivisionError, TypeError):
+                discount_percent = None
+        items.append(
+            ProductFeedItem(
+                id=p.id,
+                seller_id=p.seller_id,
+                category_id=p.category_id,
+                category_name=category_name_map.get(p.category_id),
+                brand_id=p.brand_id,
+                sku=p.sku,
+                name=p.name,
+                slug=p.slug,
+                description=p.description,
+                price=p.price,
+                sale_price=p.sale_price,
+                discount_percent=discount_percent,
+                currency=p.currency,
+                weight=p.weight,
+                status=p.status,
+                is_active=p.is_active,
+                images=p.images,
+                created_at=p.created_at,
+                sold_count=sold_map.get(p.id, 0),
+                rating=round(rating_map.get(p.id, 0.0), 1),
+                review_count=review_count_map.get(p.id, 0),
+            )
+        )
+    return items
 
 
 @router.get("/my-products", response_model=list[ProductResponse])
