@@ -38,8 +38,8 @@ class Settings(BaseSettings):
     REFRESH_TOKEN_EXPIRE_DAYS: int = Field(default=7, ge=1)
 
     # Browser and proxy security
-    CORS_ORIGINS: str = "http://localhost:3000,http://127.0.0.1:3000,https://xerinmarketplace.com,https://www.xerinmarketplace.com"
-    TRUSTED_HOSTS: str = "localhost,127.0.0.1,xerinmarketplace.com,www.xerinmarketplace.com,api.xerinmarketplace.com"
+    CORS_ORIGINS: str = "http://localhost:3000,http://127.0.0.1:3000,https://xerinmart.com,https://www.xerinmart.com,https://xerinmarketplace.com,https://www.xerinmarketplace.com"
+    TRUSTED_HOSTS: str = "localhost,127.0.0.1,xerinmart.com,www.xerinmart.com,xerinmarketplace.com,www.xerinmarketplace.com,api.xerinmarketplace.com"
     TRUST_PROXY_HEADERS: bool = False
 
     # Local uploads (temporary until object storage is introduced)

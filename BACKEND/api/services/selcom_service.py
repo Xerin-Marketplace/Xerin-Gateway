@@ -141,7 +141,7 @@ class SelcomClient:
         payload: dict[str, Any] = {
             "vendor": self.vendor,
             "order_id": order_id,
-            "buyer_email": buyer_email or "customer@xerinmarketplace.com",
+            "buyer_email": buyer_email or "customer@xerinmart.com",
             "buyer_name": buyer_name or "Customer",
             "buyer_phone": normalize_msisdn(buyer_phone) if buyer_phone else "",
             "amount": str(int(float(amount))),
