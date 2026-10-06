@@ -127,6 +127,8 @@ class PermissionCode(str, enum.Enum):
     admin_dashboard_security_read = "admin_dashboard_security:read"
     admin_system_alerts_manage = "admin_system_alerts:manage"
     admin_activity_logs_read = "admin_activity_logs:read"
+    support_tickets_read = "support_tickets:read"
+    support_tickets_manage = "support_tickets:manage"
 
     # Commerce
     orders_read = "orders:read"

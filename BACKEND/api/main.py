@@ -57,6 +57,7 @@ from api.routers import (
     delivery_fare,
     brokers,
     monitoring,
+    support,
 )
 
 logging.basicConfig(
@@ -254,5 +255,7 @@ for router in (
     settings_router.router,
     driver_kyc.router,
     delivery_fare.router,
+    support.router,
+    support.admin_router,
 ):
     api.include_router(router, prefix=settings.API_PREFIX)

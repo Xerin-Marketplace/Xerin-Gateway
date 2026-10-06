@@ -1246,8 +1246,12 @@ class CartResponse(BaseModel):
     id: UUID
     user_id: UUID
     coupon_code: Optional[str]
+    promotion_code: Optional[str] = None
+    promotion: Optional[dict] = None
     items: list[CartItemResponse]
     subtotal: Decimal
+    coupon_discount_amount: Decimal = Decimal("0.00")
+    promotion_discount_amount: Decimal = Decimal("0.00")
     discount_amount: Decimal
     total: Decimal
 
@@ -4013,3 +4017,86 @@ class BrokerOnboardingRequest(BaseModel):
     city: str = Field(min_length=2, max_length=100)
     district: Optional[str] = None
     ward: Optional[str] = None
+
+
+class SupportTicketMessageCreate(BaseModel):
+    message: str
+    visibility: str = "all"  # all | internal (internal is staff-only)
+
+
+class SupportTicketMessageResponse(BaseModel):
+    id: UUID
+    sender_id: Optional[UUID] = None
+    sender_name: Optional[str] = None
+    sender_role: Optional[str] = None
+    message: str
+    visibility: str = "all"
+    created_at: datetime
+
+    model_config = ORM_CONFIG
+
+
+class SupportTicketParticipantResponse(BaseModel):
+    id: Optional[UUID] = None
+    user_id: Optional[UUID] = None
+    name: Optional[str] = None
+    email: Optional[str] = None
+    role: str
+
+
+class SupportTicketCreate(BaseModel):
+    subject: str
+    description: Optional[str] = None
+    category: Optional[str] = None
+    channel: str = "customer"
+    priority: str = "medium"
+    order_id: Optional[UUID] = None
+    seller_id: Optional[UUID] = None
+    shipment_id: Optional[UUID] = None
+
+
+class SupportTicketUpdate(BaseModel):
+    status: Optional[str] = None
+    priority: Optional[str] = None
+    assigned_to_id: Optional[UUID] = None
+    resolution_note: Optional[str] = None
+
+
+class SupportTicketResponse(BaseModel):
+    id: UUID
+    ticket_number: str
+    user_id: UUID
+    customer_name: Optional[str] = None
+    customer_email: Optional[str] = None
+    subject: str
+    description: Optional[str] = None
+    category: Optional[str] = None
+    channel: Optional[str] = None
+    priority: str
+    status: str
+    assigned_to_id: Optional[UUID] = None
+    assigned_to_name: Optional[str] = None
+    order_id: Optional[UUID] = None
+    seller_id: Optional[UUID] = None
+    seller_name: Optional[str] = None
+    shipment_id: Optional[UUID] = None
+    logistics_provider: Optional[str] = None
+    participants: list[SupportTicketParticipantResponse] = Field(default_factory=list)
+    messages: list[SupportTicketMessageResponse] = Field(default_factory=list)
+    resolution_note: Optional[str] = None
+    first_response_due_at: Optional[datetime] = None
+    resolution_due_at: Optional[datetime] = None
+    resolved_at: Optional[datetime] = None
+    closed_at: Optional[datetime] = None
+    created_at: datetime
+    updated_at: Optional[datetime] = None
+
+    model_config = ORM_CONFIG
+
+
+class PaginatedSupportTickets(BaseModel):
+    total: int
+    page: int
+    page_size: int
+    total_pages: int
+    results: list[SupportTicketResponse]

@@ -10,6 +10,7 @@ from sqlalchemy import func, or_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, joinedload, selectinload
 
+from api.config import settings
 from api.deps import get_current_user, get_db
 from api.enums import (
     DeliveryTripStatus,
@@ -37,6 +38,7 @@ from api.models import (
     SellerStockTransfer,
     SellerStockTransferItem,
     Shipment,
+    ShippingZone,
     User,
     Vehicle,
     Warehouse,
@@ -249,6 +251,45 @@ def _logistics_actor(db: Session, user: User):
 def _delivery_otp_required(db: Session) -> bool:
     row = db.query(SystemSetting).filter(SystemSetting.key == "delivery_otp_required").first()
     return bool(row and str(row.value).lower() in ("true", "1", "yes"))
+
+
+# =========================================================
+# REFERENCE DATA
+# =========================================================
+
+_COUNTRY_CODES = {
+    "tanzania": "TZ", "kenya": "KE", "uganda": "UG", "rwanda": "RW",
+    "burundi": "BI", "zambia": "ZM", "malawi": "MW", "mozambique": "MZ",
+    "democratic republic of the congo": "CD", "drc": "CD",
+    "china": "CN", "united arab emirates": "AE", "uae": "AE",
+    "india": "IN", "turkey": "TR", "united states": "US", "usa": "US",
+    "united kingdom": "GB", "uk": "GB", "germany": "DE", "south africa": "ZA",
+}
+
+
+@router.get("/country-options")
+def country_options(db: Session = Depends(get_db)):
+    """Countries the marketplace can ship to — derived from active shipping
+    zones so it tracks admin zone configuration automatically."""
+    countries = [
+        row[0]
+        for row in db.query(ShippingZone.country)
+        .filter(ShippingZone.is_active.is_(True), ShippingZone.country.isnot(None))
+        .distinct()
+        .order_by(ShippingZone.country.asc())
+        .all()
+        if row[0]
+    ]
+    if not countries:
+        countries = [settings.DEFAULT_COUNTRY or "Tanzania"]
+
+    return [
+        {
+            "code": _COUNTRY_CODES.get(name.strip().lower(), name.strip().upper()[:2]),
+            "name": name.strip(),
+        }
+        for name in countries
+    ]
 
 
 # =========================================================

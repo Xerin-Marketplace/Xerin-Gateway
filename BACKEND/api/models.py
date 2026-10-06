@@ -579,6 +579,7 @@ class Cart(Base):
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     user_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), unique=True, nullable=False)
     coupon_code = Column(String(50), nullable=True)
+    promotion_code = Column(String(50), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
 
@@ -3002,3 +3003,54 @@ class WeeklyReport(Base):
         CheckConstraint("status IN ('pending','sent','failed','skipped')", name="ck_weekly_report_status"),
         UniqueConstraint("period_start", "period_end", name="uq_weekly_report_period"),
     )
+
+
+class SupportTicket(Base):
+    __tablename__ = "support_tickets"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    ticket_number = Column(String(32), unique=True, nullable=False, index=True)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    subject = Column(String(255), nullable=False)
+    description = Column(Text)
+    category = Column(String(64))
+    channel = Column(String(32), nullable=False, default="customer")
+    priority = Column(String(16), nullable=False, default="medium", index=True)
+    status = Column(String(32), nullable=False, default="open", index=True)
+    assigned_to_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), index=True)
+    order_id = Column(UUID(as_uuid=True), ForeignKey("orders.id", ondelete="SET NULL"))
+    seller_id = Column(UUID(as_uuid=True), ForeignKey("sellers.id", ondelete="SET NULL"))
+    shipment_id = Column(UUID(as_uuid=True), ForeignKey("shipments.id", ondelete="SET NULL"))
+    resolution_note = Column(Text)
+    first_response_due_at = Column(DateTime(timezone=True))
+    resolution_due_at = Column(DateTime(timezone=True))
+    resolved_at = Column(DateTime(timezone=True))
+    closed_at = Column(DateTime(timezone=True))
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+    user = relationship("User", foreign_keys=[user_id])
+    assigned_to = relationship("User", foreign_keys=[assigned_to_id])
+    order = relationship("Order", foreign_keys=[order_id])
+    seller = relationship("Seller", foreign_keys=[seller_id])
+    shipment = relationship("Shipment", foreign_keys=[shipment_id])
+    messages = relationship(
+        "SupportTicketMessage",
+        back_populates="ticket",
+        cascade="all, delete-orphan",
+        order_by="SupportTicketMessage.created_at",
+    )
+
+
+class SupportTicketMessage(Base):
+    __tablename__ = "support_ticket_messages"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    ticket_id = Column(UUID(as_uuid=True), ForeignKey("support_tickets.id", ondelete="CASCADE"), nullable=False, index=True)
+    sender_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"))
+    message = Column(Text, nullable=False)
+    visibility = Column(String(16), nullable=False, default="all")
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    ticket = relationship("SupportTicket", back_populates="messages")
+    sender = relationship("User", foreign_keys=[sender_id])

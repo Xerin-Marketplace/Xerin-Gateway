@@ -220,6 +220,9 @@ DEFAULT_ROLE_PERMISSIONS: dict[str, set[str]] = {
         # Advertising
         PermissionCode.advertisements_read.value,
         PermissionCode.advertisements_manage.value,
+        # Support tickets
+        PermissionCode.support_tickets_read.value,
+        PermissionCode.support_tickets_manage.value,
     },
     "super_admin": {permission.value for permission in PermissionCode},
 }
