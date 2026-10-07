@@ -20,6 +20,7 @@ from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
 from api.database import SessionLocal
+from api.enums import StoreStatus
 from api.models import (
     Category,
     Inventory,
@@ -285,7 +286,10 @@ def seed() -> None:
             db.add(seller)
             db.flush()
 
-        if not db.query(Store).filter(Store.slug == "xerin-flagship-store").first():
+        demo_store = (
+            db.query(Store).filter(Store.slug == "xerin-flagship-store").first()
+        )
+        if not demo_store:
             db.add(Store(
                 seller_id=seller.id,
                 store_name="Xerin Flagship Store",
@@ -293,9 +297,16 @@ def seed() -> None:
                 description="Official demo storefront — quality products at great prices.",
                 country="Tanzania",
                 region="Dar es Salaam",
+                status=StoreStatus.active,
+                is_verified=True,
                 theme_color="#F97316",
                 secondary_color="#ffffff",
             ))
+        elif demo_store.status != StoreStatus.active:
+            # Backfill: an approved seller's store must be publicly active —
+            # earlier seeds left it in draft so it never appeared in /stores.
+            demo_store.status = StoreStatus.active
+            demo_store.is_verified = True
 
         customer = db.query(User).filter(User.email == DEMO_CUSTOMER_EMAIL).first()
         if not customer:

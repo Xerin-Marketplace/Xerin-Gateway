@@ -14,12 +14,14 @@ from fastapi import (
     UploadFile,
     status,
 )
-from sqlalchemy import or_
+from sqlalchemy import func, or_
 from sqlalchemy.orm import Session, selectinload
 
 from api.deps import get_db
 from api.enums import DayOfWeek, PermissionCode, StoreStatus
 from api.models import (
+    Product,
+    ProductStatus,
     Seller,
     SellerStatus,
     Store,
@@ -592,6 +594,22 @@ def list_public_stores(
         .all()
     )
 
+    product_counts: dict = {}
+    seller_ids = [s.seller_id for s in stores]
+    if seller_ids:
+        product_counts = dict(
+            db.query(Product.seller_id, func.count(Product.id))
+            .filter(
+                Product.seller_id.in_(seller_ids),
+                Product.status == ProductStatus.approved,
+                Product.is_active.is_(True),
+            )
+            .group_by(Product.seller_id)
+            .all()
+        )
+    for store in stores:
+        store.product_count = int(product_counts.get(store.seller_id, 0))
+
     return {
         "total": total,
         "page": page,
@@ -943,5 +961,16 @@ def get_public_store(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Store not found",
         )
+
+    store.product_count = int(
+        db.query(func.count(Product.id))
+        .filter(
+            Product.seller_id == store.seller_id,
+            Product.status == ProductStatus.approved,
+            Product.is_active.is_(True),
+        )
+        .scalar()
+        or 0
+    )
 
     return store

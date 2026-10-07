@@ -5,13 +5,13 @@ from itertools import product as cartesian_product
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
-from sqlalchemy import func, or_
+from sqlalchemy import func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from api.deps import get_current_user, get_db
 from api.services.fx import rate_to_tzs
-from api.enums import PermissionCode
+from api.enums import PermissionCode, StoreStatus
 from api.models import (
     Brand,
     Category,
@@ -31,6 +31,7 @@ from api.models import (
     ReviewStatus,
     Seller,
     SellerStatus,
+    Store,
     User,
 )
 from api.permissions import require_permission
@@ -432,6 +433,7 @@ def product_feed(
     section: str | None = Query(default=None, pattern="^(deals|new|best_sellers|all)$"),
     search: str | None = Query(default=None, max_length=200),
     category_id: UUID | None = Query(default=None),
+    origin: str | None = Query(default=None, pattern="^(abroad|local)$"),
     skip: int = Query(default=0, ge=0),
     limit: int = Query(default=20, ge=1, le=100),
 ):
@@ -439,6 +441,10 @@ def product_feed(
     rating aggregates on top of the base product so the mobile home page
     can render Alibaba-style product cards (price, sold count, rating)
     without N+1 requests.
+
+    ``origin`` filters by the seller store's country: ``abroad`` returns
+    only products whose store is registered outside Tanzania, ``local``
+    returns Tanzanian (or country-less, assumed local) stores.
     """
     query = db.query(Product).filter(Product.is_active.is_(True), Product.status == ProductStatus.approved)
     if search and search.strip():
@@ -446,6 +452,19 @@ def product_feed(
         query = query.filter(or_(Product.name.ilike(f"%{term}%"), Product.description.ilike(f"%{term}%"), Product.sku.ilike(f"%{term}%")))
     if category_id:
         query = query.filter(Product.category_id == category_id)
+
+    if origin:
+        foreign_sellers = select(Store.seller_id).where(
+            Store.status == StoreStatus.active,
+            Store.country.isnot(None),
+            func.lower(Store.country).notin_(("tanzania", "tz")),
+        )
+        if origin == "abroad":
+            query = query.filter(Product.seller_id.in_(foreign_sellers))
+        else:
+            # Local = anything not explicitly registered as a foreign store
+            # (Tanzanian stores, no country set, or no store profile yet).
+            query = query.filter(Product.seller_id.notin_(foreign_sellers))
 
     if section == "deals":
         query = query.filter(Product.sale_price.isnot(None))
@@ -483,6 +502,16 @@ def product_feed(
                 db.query(Category.id, Category.name).filter(Category.id.in_(category_ids)).all()
             )
 
+    store_map: dict[UUID, Store] = {}
+    seller_ids = {p.seller_id for p in products if p.seller_id}
+    if seller_ids:
+        store_map = {
+            s.seller_id: s
+            for s in db.query(Store)
+            .filter(Store.seller_id.in_(seller_ids), Store.status == StoreStatus.active)
+            .all()
+        }
+
     if section == "best_sellers":
         products.sort(key=lambda p: sold_map.get(p.id, 0), reverse=True)
 
@@ -494,6 +523,7 @@ def product_feed(
                 discount_percent = round(float((p.price - p.sale_price) / p.price) * 100)
             except (ZeroDivisionError, TypeError):
                 discount_percent = None
+        store = store_map.get(p.seller_id)
         items.append(
             ProductFeedItem(
                 id=p.id,
@@ -501,6 +531,11 @@ def product_feed(
                 category_id=p.category_id,
                 category_name=category_name_map.get(p.category_id),
                 brand_id=p.brand_id,
+                store_name=store.store_name if store else None,
+                store_slug=store.slug if store else None,
+                store_country=store.country if store else None,
+                store_region=store.region if store else None,
+                store_district=store.district if store else None,
                 sku=p.sku,
                 name=p.name,
                 slug=p.slug,
