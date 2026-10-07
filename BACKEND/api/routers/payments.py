@@ -170,18 +170,9 @@ def payment_name_lookup(
 
     try:
         result = client.name_lookup(
-            phone_number=data.phone_number,
+            phone_number=data.account_number,
             provider=provider,
         )
-
-        return {
-            "success": True,
-            "account_name": result.get("accountName"),
-            "provider": provider,
-            "phone_number": data.phone_number,
-            "message": result.get("message"),
-        }
-
     except AzamPayAPIError as exc:
         raise HTTPException(
             status_code=502,
@@ -190,6 +181,22 @@ def payment_name_lookup(
                 "message": str(exc),
             },
         )
+    except Exception as exc:
+        raise HTTPException(
+            status_code=502,
+            detail={
+                "provider": "azampay",
+                "message": "Name lookup is unavailable right now.",
+            },
+        ) from exc
+
+    return {
+        "success": True,
+        "account_name": result.get("accountName") or result.get("name"),
+        "provider": provider,
+        "account_number": data.account_number,
+        "message": result.get("message"),
+    }
 
 @router.post("/initiate", response_model=PaymentResponse, status_code=status.HTTP_201_CREATED)
 def initiate_payment(data: PaymentInitiateRequest, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
