@@ -940,7 +940,7 @@ def get_seller_order_lines(
             (SellerOrder.order_id == OrderItem.order_id)
             & (SellerOrder.seller_id == OrderItem.seller_id),
         )
-        .order_by(OrderItem.created_at.desc())
+        .order_by(Order.created_at.desc())
         .limit(500)
         .all()
     )
@@ -956,7 +956,7 @@ def get_seller_order_lines(
             "amount": float(item.total_price or 0),
             "currency": order.currency or "TZS",
             "status": seller_order_status.value if seller_order_status else (order.status.value if order.status else "pending"),
-            "created_at": item.created_at.isoformat() if item.created_at else None,
+            "created_at": order.created_at.isoformat() if order.created_at else None,
         }
         for item, order, seller, seller_order_status in rows
     ]
