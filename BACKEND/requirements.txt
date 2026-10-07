@@ -46,7 +46,11 @@ pydantic_core==2.46.4
 pydeck==0.9.2
 python-dateutil==2.9.0.post0
 python-dotenv==1.2.2
+<<<<<<< HEAD
 python-jose==3.5.0
+=======
+pyjwt==2.10.1
+>>>>>>> fa81b5316dcf22128c1b9837c537b0cb5987b79e
 python-multipart==0.0.32
 PyYAML==6.0.3
 redis==8.0.1

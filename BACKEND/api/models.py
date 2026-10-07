@@ -1,0 +1,3003 @@
+import uuid
+import enum
+from decimal import Decimal
+
+from sqlalchemy import Column, String, Boolean, Date, DateTime, ForeignKey, Enum, Text, UniqueConstraint, CheckConstraint, Index
+from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.sql import func
+from sqlalchemy.orm import relationship
+import datetime
+from sqlalchemy import Float, Time
+from sqlalchemy import Numeric, Integer
+from sqlalchemy.dialects.postgresql import JSONB
+from api.database import Base
+from api.enums import (
+    DayOfWeek, StoreStatus, ShippingRateType, ShipmentStatus, InventoryReservationStatus,
+    CommissionScope, CommissionRuleType, MarketplaceTransactionType,
+    WalletTransactionType, PayoutStatus, RefundStatus, RefundReason, InventoryMovementType,
+    AuditSeverity, SecurityEventType, SellerOrderStatus, DeliveryStatus, ReviewStatus, ReviewReportReason,
+    NotificationChannel, NotificationDeliveryStatus, NotificationEvent, QuestionStatus, QuestionReportReason,
+    FulfilmentType, WarehouseStatus, InboundShipmentStatus, PutawayTaskStatus,
+    PickListStatus, PackagingType, InventoryAdjustmentType, WarehouseInventoryMovementType,
+    DriverStatus, DriverVerificationStatus, VehicleType, DeliveryTripStatus, StockTransferStatus,
+    DriverDocumentType, DriverDocumentStatus, VehicleOwnership, VehicleRequestStatus,
+    FareType, SurgePricingType, SurgeScheduleType,
+    BrokerStatus,
+)
+
+
+class UserStatus(str, enum.Enum):
+    active = "active"
+    inactive = "inactive"
+    suspended = "suspended"
+    pending_verification = "pending_verification"
+
+
+class SellerStatus(str, enum.Enum):
+    pending = "pending"
+    under_review = "under_review"
+    approved = "approved"
+    rejected = "rejected"
+    suspended = "suspended"
+
+
+class User(Base):
+    __tablename__ = "users"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    first_name = Column(String(100))
+    last_name = Column(String(100))
+    email = Column(String(255), unique=True, index=True, nullable=False)
+    phone = Column(String(30), unique=True, index=True)
+    password_hash = Column(Text, nullable=False)
+    status = Column(Enum(UserStatus), default=UserStatus.pending_verification)
+    is_verified = Column(Boolean, default=False)
+    last_login_at = Column(DateTime(timezone=True))
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+    addresses = relationship("Address", back_populates="user")
+    seller_profile = relationship("Seller", back_populates="user", uselist=False)
+    roles = relationship("UserRole", back_populates="user")
+    wishlist_products = relationship("WishlistProduct", back_populates="user", cascade="all, delete-orphan")
+    favorite_stores = relationship("FavoriteStore", back_populates="user", cascade="all, delete-orphan")
+    notifications = relationship("Notification", back_populates="user", cascade="all, delete-orphan")
+    notification_preference = relationship("NotificationPreference", back_populates="user", uselist=False, cascade="all, delete-orphan")
+    device_tokens = relationship("DeviceToken", back_populates="user", cascade="all, delete-orphan")
+    
+class Role(Base):
+    __tablename__ = "roles"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    name = Column(String(50), unique=True, nullable=False)  # admin, customer, seller
+    description = Column(Text, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class UserRole(Base):
+    __tablename__ = "user_roles"
+
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), primary_key=True)
+    role_id = Column(UUID(as_uuid=True), ForeignKey("roles.id"), primary_key=True)
+
+    user = relationship("User", back_populates="roles")
+    role = relationship("Role")
+    
+class Permission(Base):
+    __tablename__ = "permissions"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    code = Column(String(100), unique=True, nullable=False)
+    name = Column(String(150), nullable=False)
+    description = Column(Text, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    
+class UserPermission(Base):
+    __tablename__ = "user_permissions"
+
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), primary_key=True)
+    permission_id = Column(UUID(as_uuid=True), ForeignKey("permissions.id"), primary_key=True)
+
+    user = relationship("User")
+    permission = relationship("Permission")    
+
+
+class RolePermission(Base):
+    __tablename__ = "role_permissions"
+
+    role_id = Column(UUID(as_uuid=True), ForeignKey("roles.id"), primary_key=True)
+    permission_id = Column(UUID(as_uuid=True), ForeignKey("permissions.id"), primary_key=True)
+
+    role = relationship("Role")
+    permission = relationship("Permission")  
+
+class Session(Base):
+    __tablename__ = "sessions"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    token_hash = Column(String(64), nullable=False, unique=True, index=True)
+    expires_at = Column(DateTime(timezone=True), nullable=False, index=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class UserAuthProvider(Base):
+    """External identity provider links (Google, Apple, ...) keyed by the
+    provider's stable user id — never by email alone."""
+    __tablename__ = "user_auth_providers"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    provider = Column(String(30), nullable=False, index=True)
+    provider_user_id = Column(String(255), nullable=False)
+    email = Column(String(255), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    __table_args__ = (
+        UniqueConstraint("provider", "provider_user_id", name="uq_auth_provider_identity"),
+    )
+
+    user = relationship("User")
+
+
+class OTPRequest(Base):
+    __tablename__ = "otp_requests"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=True, index=True)
+    phone = Column(String(30), nullable=False, index=True)
+    otp_hash = Column(String(64), nullable=False)
+    # What this OTP is for: "register", "password_reset", "phone_verify", etc.
+    # Prevents an OTP issued for one flow (e.g. forgot-password) from being
+    # accepted in an unrelated flow (e.g. account verification).
+    purpose = Column(String(50), nullable=False, server_default="generic")
+    expires_at = Column(DateTime(timezone=True), nullable=False, index=True)
+    verified = Column(Boolean, default=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class Address(Base):
+    __tablename__ = "addresses"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    label = Column(String(50), nullable=True)
+    recipient_name = Column(String(150), nullable=True)
+    recipient_phone = Column(String(30), nullable=True)
+    country = Column(String(100), nullable=False, server_default="Tanzania")
+    region = Column(String(100), nullable=False)
+    district = Column(String(100), nullable=True)
+    ward = Column(String(100), nullable=True)
+    city = Column(String(100), nullable=False)
+    street = Column(Text, nullable=False)
+    landmark = Column(String(255), nullable=True)
+    postal_code = Column(String(50), nullable=True)
+    latitude = Column(Numeric(10, 7), nullable=True)
+    longitude = Column(Numeric(10, 7), nullable=True)
+    is_default = Column(Boolean, nullable=False, default=False, server_default="false")
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+    user = relationship("User", back_populates="addresses")
+
+
+class Seller(Base):
+    __tablename__ = "sellers"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id"),
+        unique=True,
+        nullable=False
+    )
+    business_name = Column(String(255), nullable=False)
+    contact_email = Column(String(255))
+    contact_phone = Column(String(30))
+    status = Column(Enum(SellerStatus), default=SellerStatus.pending)
+    agreement_accepted = Column(Boolean, default=False)
+    approved_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+    user = relationship("User", back_populates="seller_profile")
+    business_categories = relationship(
+    "SellerBusinessCategory",
+    back_populates="seller",
+    cascade="all, delete-orphan"
+    )
+    kyc_documents = relationship(
+        "SellerKYCDocument",
+        back_populates="seller",
+        cascade="all, delete-orphan"
+    )
+    payout_accounts = relationship(
+        "SellerPayoutAccount",
+        back_populates="seller",
+        cascade="all, delete-orphan"
+    )
+    commission_rules = relationship("CommissionRule", back_populates="seller")
+    commission_records = relationship("OrderItemCommission", back_populates="seller")
+    wallet = relationship("SellerWallet", back_populates="seller", uselist=False, cascade="all, delete-orphan")
+    profile = relationship(
+    "SellerProfile",
+    back_populates="seller",
+    uselist=False,
+    cascade="all, delete-orphan"
+)
+    
+    store = relationship(
+    "Store",
+    back_populates="seller",
+    uselist=False,
+    cascade="all, delete-orphan",
+)
+    
+class SellerProfile(Base):
+    __tablename__ = "seller_profiles"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    seller_id = Column(UUID(as_uuid=True), ForeignKey("sellers.id"), unique=True, nullable=False)
+
+    business_description = Column(Text, nullable=True)
+    business_country = Column(String(100), nullable=True)
+    business_region = Column(String(100), nullable=True)
+    business_city = Column(String(100), nullable=True)
+    business_address = Column(Text, nullable=True)
+    product_description = Column(Text, nullable=True)
+    years_in_business = Column(String(50), nullable=True)
+    website_url = Column(Text, nullable=True)
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+    seller = relationship("Seller", back_populates="profile")
+
+
+class SellerKYCDocument(Base):
+    __tablename__ = "seller_kyc_documents"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    seller_id = Column(UUID(as_uuid=True), ForeignKey("sellers.id", ondelete="CASCADE"), nullable=False, index=True)
+
+    document_type = Column(String(100), nullable=False)
+    document_url = Column(Text, nullable=False)
+    status = Column(String(50), default="pending")
+    rejection_reason = Column(Text, nullable=True)
+
+    uploaded_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    seller = relationship("Seller", back_populates="kyc_documents")
+
+
+class Broker(Base):
+    __tablename__ = "brokers"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), unique=True, nullable=False, index=True)
+    broker_code = Column(String(30), unique=True, nullable=False, index=True)
+
+    country = Column(String(100), nullable=False)
+    region = Column(String(100), nullable=False)
+    city = Column(String(100), nullable=False)
+    district = Column(String(100), nullable=True)
+    ward = Column(String(150), nullable=True)
+    nida_number = Column(String(50), nullable=True)
+
+    status = Column(Enum(BrokerStatus), default=BrokerStatus.pending_kyc, nullable=False, index=True)
+    status_reason = Column(Text, nullable=True)
+    approved_at = Column(DateTime(timezone=True), nullable=True)
+    rejected_at = Column(DateTime(timezone=True), nullable=True)
+    suspended_at = Column(DateTime(timezone=True), nullable=True)
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+    user = relationship("User")
+    kyc_documents = relationship("BrokerKycDocument", back_populates="broker", cascade="all, delete-orphan")
+
+
+class BrokerKycDocument(Base):
+    __tablename__ = "broker_kyc_documents"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    broker_id = Column(UUID(as_uuid=True), ForeignKey("brokers.id", ondelete="CASCADE"), nullable=False, index=True)
+
+    document_type = Column(String(100), nullable=False)
+    document_path = Column(Text, nullable=False)
+    original_filename = Column(String(255), nullable=True)
+    mime_type = Column(String(100), nullable=True)
+
+    status = Column(String(50), default="pending", nullable=False)  # pending | approved | rejected
+    rejection_reason = Column(Text, nullable=True)
+    reviewed_at = Column(DateTime(timezone=True), nullable=True)
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    broker = relationship("Broker", back_populates="kyc_documents")
+
+
+class SellerPayoutAccount(Base):
+    __tablename__ = "seller_payout_accounts"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    seller_id = Column(UUID(as_uuid=True), ForeignKey("sellers.id", ondelete="CASCADE"), nullable=False, index=True)
+
+    account_type = Column(String(50), nullable=False)
+    provider = Column(String(100), nullable=False)
+    account_name = Column(String(255), nullable=False)
+    account_number = Column(String(255), nullable=False)
+    currency = Column(String(10), default="TZS")
+    is_default = Column(Boolean, default=False)
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    seller = relationship("Seller", back_populates="payout_accounts")
+    
+    
+class SellerBusinessCategory(Base):
+    __tablename__ = "seller_business_categories"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+
+    seller_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("sellers.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True
+    )
+
+    business_category_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("business_categories.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True
+    )
+
+    seller = relationship("Seller", back_populates="business_categories")
+    business_category = relationship("BusinessCategory")
+
+    __table_args__ = (
+        UniqueConstraint("seller_id", "business_category_id", name="uq_seller_business_category"),
+    )
+
+
+class ProductStatus(str, enum.Enum):
+    draft = "draft"
+    pending_review = "pending_review"
+    approved = "approved"
+    rejected = "rejected"
+    inactive = "inactive"
+    
+    
+class BusinessCategory(Base):
+    __tablename__ = "business_categories"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    name = Column(String(150), unique=True, nullable=False)
+    slug = Column(String(150), unique=True, index=True, nullable=False)
+    description = Column(Text, nullable=True)
+    active = Column(Boolean, default=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class Category(Base):
+    __tablename__ = "categories"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    parent_id = Column(UUID(as_uuid=True), ForeignKey("categories.id"), nullable=True)
+    name = Column(String(150), nullable=False)
+    slug = Column(String(150), unique=True, index=True, nullable=False)
+    image_url = Column(String(500), nullable=True)
+    thumbnail_url = Column(String(500), nullable=True)
+    image_storage_key = Column(String(500), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class Brand(Base):
+    __tablename__ = "brands"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    name = Column(String(150), nullable=False)
+    slug = Column(String(150), unique=True, index=True, nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class Product(Base):
+    __tablename__ = "products"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    seller_id = Column(UUID(as_uuid=True), ForeignKey("sellers.id"), nullable=False)
+    category_id = Column(UUID(as_uuid=True), ForeignKey("categories.id"), nullable=False)
+    brand_id = Column(UUID(as_uuid=True), ForeignKey("brands.id"), nullable=True)
+
+    sku = Column(String(100), unique=True, index=True, nullable=False)
+    name = Column(String(255), nullable=False)
+    slug = Column(String(255), unique=True, index=True, nullable=False)
+    description = Column(Text)
+
+    price = Column(Numeric(18, 2), nullable=False)
+    sale_price = Column(Numeric(18, 2), nullable=True)
+    currency = Column(String(10), default="TZS")
+    weight = Column(Numeric(10, 2), nullable=True)
+
+    status = Column(Enum(ProductStatus), default=ProductStatus.draft, nullable=False)
+    rejection_reason = Column(Text, nullable=True)
+    is_active = Column(Boolean, default=True)
+    submitted_at = Column(DateTime(timezone=True), nullable=True)
+    approved_at = Column(DateTime(timezone=True), nullable=True)
+    approved_by_user_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+    seller = relationship("Seller")
+    category = relationship("Category")
+    brand = relationship("Brand")
+    images = relationship("ProductImage", back_populates="product", cascade="all, delete-orphan")
+    variants = relationship("ProductVariant", back_populates="product", cascade="all, delete-orphan")
+    options = relationship("ProductOption", back_populates="product", cascade="all, delete-orphan", order_by="ProductOption.display_order")
+    tags = relationship("ProductTag", back_populates="product", cascade="all, delete-orphan")
+    wishlist_entries = relationship("WishlistProduct", back_populates="product", cascade="all, delete-orphan")
+
+    __table_args__ = (
+        CheckConstraint("price >= 0", name="ck_product_price_nonnegative"),
+        CheckConstraint("sale_price IS NULL OR sale_price >= 0", name="ck_product_sale_price_nonnegative"),
+        CheckConstraint("sale_price IS NULL OR sale_price <= price", name="ck_product_sale_price_lte_price"),
+    )
+
+
+class ProductImage(Base):
+    __tablename__ = "product_images"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    product_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("products.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    image_url = Column(Text, nullable=False)
+    thumbnail_url = Column(Text, nullable=True)
+    storage_key = Column(Text, nullable=True, unique=True)
+    original_filename = Column(String(255), nullable=True)
+    mime_type = Column(String(100), nullable=True)
+    file_size = Column(Integer, nullable=True)
+    width = Column(Integer, nullable=True)
+    height = Column(Integer, nullable=True)
+    alt_text = Column(String(255), nullable=True)
+    display_order = Column(Integer, nullable=False, default=0)
+    is_primary = Column(Boolean, nullable=False, default=False)
+    uploaded_by_user_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+    product = relationship("Product", back_populates="images")
+
+    __table_args__ = (
+        CheckConstraint("display_order >= 0", name="ck_product_image_display_order_nonnegative"),
+        CheckConstraint("file_size IS NULL OR file_size >= 0", name="ck_product_image_file_size_nonnegative"),
+    )
+
+
+class ProductOption(Base):
+    __tablename__ = "product_options"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    product_id = Column(UUID(as_uuid=True), ForeignKey("products.id", ondelete="CASCADE"), nullable=False, index=True)
+    name = Column(String(100), nullable=False)
+    display_order = Column(Integer, nullable=False, default=0)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+    product = relationship("Product", back_populates="options")
+    values = relationship("ProductOptionValue", back_populates="option", cascade="all, delete-orphan", order_by="ProductOptionValue.display_order")
+
+    __table_args__ = (
+        UniqueConstraint("product_id", "name", name="uq_product_option_name"),
+        CheckConstraint("display_order >= 0", name="ck_product_option_display_order_nonnegative"),
+    )
+
+
+class ProductOptionValue(Base):
+    __tablename__ = "product_option_values"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    option_id = Column(UUID(as_uuid=True), ForeignKey("product_options.id", ondelete="CASCADE"), nullable=False, index=True)
+    value = Column(String(100), nullable=False)
+    display_order = Column(Integer, nullable=False, default=0)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    option = relationship("ProductOption", back_populates="values")
+    variant_values = relationship("ProductVariantValue", back_populates="option_value")
+
+    __table_args__ = (
+        UniqueConstraint("option_id", "value", name="uq_product_option_value"),
+        CheckConstraint("display_order >= 0", name="ck_product_option_value_display_order_nonnegative"),
+    )
+
+
+class ProductVariant(Base):
+    __tablename__ = "product_variants"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    product_id = Column(UUID(as_uuid=True), ForeignKey("products.id", ondelete="CASCADE"), nullable=False, index=True)
+    variant_name = Column(String(255), nullable=False)
+    sku = Column(String(100), unique=True, index=True, nullable=False)
+    barcode = Column(String(100), unique=True, nullable=True, index=True)
+    price = Column(Numeric(18, 2), nullable=True)
+    sale_price = Column(Numeric(18, 2), nullable=True)
+    weight = Column(Numeric(10, 3), nullable=True)
+    image_id = Column(UUID(as_uuid=True), ForeignKey("product_images.id", ondelete="SET NULL"), nullable=True)
+    attributes = Column(JSONB, nullable=True)
+    is_active = Column(Boolean, nullable=False, default=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+    product = relationship("Product", back_populates="variants")
+    image = relationship("ProductImage")
+    option_values = relationship("ProductVariantValue", back_populates="variant", cascade="all, delete-orphan")
+
+    __table_args__ = (
+        CheckConstraint("price IS NULL OR price >= 0", name="ck_variant_price_nonnegative"),
+        CheckConstraint("sale_price IS NULL OR sale_price >= 0", name="ck_variant_sale_price_nonnegative"),
+        CheckConstraint("sale_price IS NULL OR price IS NULL OR sale_price <= price", name="ck_variant_sale_price_lte_price"),
+        CheckConstraint("weight IS NULL OR weight >= 0", name="ck_variant_weight_nonnegative"),
+    )
+
+
+class ProductVariantValue(Base):
+    __tablename__ = "product_variant_values"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    variant_id = Column(UUID(as_uuid=True), ForeignKey("product_variants.id", ondelete="CASCADE"), nullable=False, index=True)
+    option_value_id = Column(UUID(as_uuid=True), ForeignKey("product_option_values.id", ondelete="RESTRICT"), nullable=False, index=True)
+
+    variant = relationship("ProductVariant", back_populates="option_values")
+    option_value = relationship("ProductOptionValue", back_populates="variant_values")
+
+    __table_args__ = (UniqueConstraint("variant_id", "option_value_id", name="uq_variant_option_value"),)
+
+
+class ProductTag(Base):
+    __tablename__ = "product_tags"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    product_id = Column(UUID(as_uuid=True), ForeignKey("products.id"), nullable=False)
+    tag = Column(String(100), index=True, nullable=False)
+
+    product = relationship("Product", back_populates="tags")
+
+
+# =========================================================
+# CART
+# =========================================================
+
+class Cart(Base):
+    __tablename__ = "carts"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), unique=True, nullable=False)
+    coupon_code = Column(String(50), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+    user = relationship("User")
+    items = relationship("CartItem", back_populates="cart", cascade="all, delete-orphan")
+
+
+class CartItem(Base):
+    __tablename__ = "cart_items"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    cart_id = Column(UUID(as_uuid=True), ForeignKey("carts.id", ondelete="CASCADE"), nullable=False, index=True)
+    product_id = Column(UUID(as_uuid=True), ForeignKey("products.id"), nullable=False)
+    variant_id = Column(UUID(as_uuid=True), ForeignKey("product_variants.id"), nullable=True)
+    quantity = Column(Integer, nullable=False, default=1)
+    unit_price = Column(Numeric(18, 2), nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+    cart = relationship("Cart", back_populates="items")
+    product = relationship("Product")
+    variant = relationship("ProductVariant")
+
+    __table_args__ = (
+        UniqueConstraint("cart_id", "product_id", "variant_id", name="uq_cart_item_product_variant"),
+        CheckConstraint("quantity > 0", name="ck_cart_item_quantity_positive"),
+        CheckConstraint("unit_price >= 0", name="ck_cart_item_unit_price_nonnegative"),
+    )
+
+
+
+# =========================================================
+# SHIPPING CONFIGURATION
+# =========================================================
+
+class ShippingZone(Base):
+    __tablename__ = "shipping_zones"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    name = Column(String(120), nullable=False, unique=True)
+    country = Column(String(100), nullable=False, server_default="Tanzania")
+    regions = Column(JSONB, nullable=False, default=list, server_default="[]")
+    cities = Column(JSONB, nullable=False, default=list, server_default="[]")
+    is_active = Column(Boolean, nullable=False, default=True, server_default="true")
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+    rates = relationship("ShippingRate", back_populates="zone", cascade="all, delete-orphan")
+
+
+class ShippingMethod(Base):
+    __tablename__ = "shipping_methods"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    name = Column(String(120), nullable=False, unique=True)
+    description = Column(Text, nullable=True)
+    carrier_name = Column(String(120), nullable=True)
+    min_delivery_days = Column(Integer, nullable=False, default=1)
+    max_delivery_days = Column(Integer, nullable=False, default=7)
+    is_active = Column(Boolean, nullable=False, default=True, server_default="true")
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+    rates = relationship("ShippingRate", back_populates="method", cascade="all, delete-orphan")
+
+    __table_args__ = (
+        CheckConstraint("min_delivery_days >= 0", name="ck_shipping_method_min_days_nonnegative"),
+        CheckConstraint("max_delivery_days >= min_delivery_days", name="ck_shipping_method_days_valid"),
+    )
+
+
+class ShippingRate(Base):
+    __tablename__ = "shipping_rates"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    zone_id = Column(UUID(as_uuid=True), ForeignKey("shipping_zones.id", ondelete="CASCADE"), nullable=False, index=True)
+    method_id = Column(UUID(as_uuid=True), ForeignKey("shipping_methods.id", ondelete="CASCADE"), nullable=False, index=True)
+    rate_type = Column(Enum(ShippingRateType), nullable=False, default=ShippingRateType.flat)
+    base_amount = Column(Numeric(18, 2), nullable=False, default=0)
+    amount_per_kg = Column(Numeric(18, 2), nullable=False, default=0)
+    free_shipping_threshold = Column(Numeric(18, 2), nullable=True)
+    min_weight_kg = Column(Numeric(10, 3), nullable=True)
+    max_weight_kg = Column(Numeric(10, 3), nullable=True)
+    is_active = Column(Boolean, nullable=False, default=True, server_default="true")
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+    zone = relationship("ShippingZone", back_populates="rates")
+    method = relationship("ShippingMethod", back_populates="rates")
+
+    __table_args__ = (
+        UniqueConstraint("zone_id", "method_id", name="uq_shipping_rate_zone_method"),
+        CheckConstraint("base_amount >= 0", name="ck_shipping_rate_base_nonnegative"),
+        CheckConstraint("amount_per_kg >= 0", name="ck_shipping_rate_perkg_nonnegative"),
+        CheckConstraint("free_shipping_threshold IS NULL OR free_shipping_threshold >= 0", name="ck_shipping_rate_threshold_nonnegative"),
+        CheckConstraint("min_weight_kg IS NULL OR min_weight_kg >= 0", name="ck_shipping_rate_min_weight_nonnegative"),
+        CheckConstraint("max_weight_kg IS NULL OR max_weight_kg >= min_weight_kg", name="ck_shipping_rate_weight_range"),
+    )
+
+# =========================================================
+# ORDERS
+# =========================================================
+
+class OrderStatus(str, enum.Enum):
+    pending = "pending"
+    paid = "paid"
+    processing = "processing"
+    received_at_hub = "received_at_hub"
+    shipped = "shipped"
+    delivered = "delivered"
+    cancelled = "cancelled"
+    refunded = "refunded"
+
+
+class Order(Base):
+    __tablename__ = "orders"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    order_number = Column(String(20), unique=True, index=True, nullable=True)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
+    shipping_address_id = Column(UUID(as_uuid=True), ForeignKey("addresses.id"), nullable=True)
+    shipping_rate_id = Column(UUID(as_uuid=True), ForeignKey("shipping_rates.id", ondelete="RESTRICT"), nullable=True, index=True)
+    shipping_method_id = Column(UUID(as_uuid=True), ForeignKey("shipping_methods.id", ondelete="RESTRICT"), nullable=True, index=True)
+    shipping_method_name = Column(String(120), nullable=True)
+    shipping_carrier = Column(String(120), nullable=True)
+    estimated_delivery_from = Column(DateTime(timezone=True), nullable=True)
+    estimated_delivery_to = Column(DateTime(timezone=True), nullable=True)
+
+    status = Column(Enum(OrderStatus), default=OrderStatus.pending, nullable=False)
+    currency = Column(String(10), default="TZS", nullable=False)
+    subtotal = Column(Numeric(18, 2), nullable=False, default=0)
+    discount_amount = Column(Numeric(18, 2), nullable=False, default=0)
+    shipping_amount = Column(Numeric(18, 2), nullable=False, default=0)
+    tax_amount = Column(Numeric(18, 2), nullable=False, default=0)
+    total = Column(Numeric(18, 2), nullable=False, default=0)
+
+    coupon_code = Column(String(50), nullable=True)
+    notes = Column(Text, nullable=True)
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+    user = relationship("User")
+    shipping_address = relationship("Address")
+    items = relationship("OrderItem", back_populates="order", cascade="all, delete-orphan")
+    status_history = relationship("OrderStatusHistory", back_populates="order", cascade="all, delete-orphan")
+    payments = relationship("Payment", back_populates="order")
+    shipping_rate = relationship("ShippingRate")
+    shipping_method = relationship("ShippingMethod")
+    shipments = relationship("Shipment", back_populates="order", cascade="all, delete-orphan")
+    inventory_reservations = relationship("InventoryReservation", back_populates="order", cascade="all, delete-orphan")
+    refunds = relationship("Refund", back_populates="order", cascade="all, delete-orphan")
+    seller_orders = relationship("SellerOrder", back_populates="order", cascade="all, delete-orphan")
+
+
+class OrderItem(Base):
+    __tablename__ = "order_items"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    order_id = Column(UUID(as_uuid=True), ForeignKey("orders.id", ondelete="CASCADE"), nullable=False, index=True)
+    product_id = Column(UUID(as_uuid=True), ForeignKey("products.id"), nullable=False)
+    variant_id = Column(UUID(as_uuid=True), ForeignKey("product_variants.id"), nullable=True)
+    seller_id = Column(UUID(as_uuid=True), ForeignKey("sellers.id"), nullable=False)
+
+    product_name = Column(String(255), nullable=False)
+    variant_name = Column(String(100), nullable=True)
+    quantity = Column(Integer, nullable=False)
+    unit_price = Column(Numeric(18, 2), nullable=False)
+    total_price = Column(Numeric(18, 2), nullable=False)
+
+    order = relationship("Order", back_populates="items")
+    product = relationship("Product")
+    variant = relationship("ProductVariant")
+    seller = relationship("Seller")
+    commission = relationship("OrderItemCommission", back_populates="order_item", uselist=False, cascade="all, delete-orphan")
+    refund_items = relationship("RefundItem", back_populates="order_item")
+
+    __table_args__ = (
+        CheckConstraint("quantity > 0", name="ck_order_item_quantity_positive"),
+        CheckConstraint("unit_price >= 0", name="ck_order_item_unit_price_nonnegative"),
+        CheckConstraint("total_price >= 0", name="ck_order_item_total_price_nonnegative"),
+    )
+
+
+class SellerOrder(Base):
+    __tablename__ = "seller_orders"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    order_id = Column(UUID(as_uuid=True), ForeignKey("orders.id", ondelete="CASCADE"), nullable=False, index=True)
+    seller_id = Column(UUID(as_uuid=True), ForeignKey("sellers.id", ondelete="RESTRICT"), nullable=False, index=True)
+    status = Column(Enum(SellerOrderStatus), nullable=False, default=SellerOrderStatus.new, server_default="new", index=True)
+    seller_subtotal = Column(Numeric(18, 2), nullable=False, default=0, server_default="0")
+    item_count = Column(Integer, nullable=False, default=0, server_default="0")
+    accepted_at = Column(DateTime(timezone=True), nullable=True)
+    processing_at = Column(DateTime(timezone=True), nullable=True)
+    ready_to_ship_at = Column(DateTime(timezone=True), nullable=True)
+    shipped_at = Column(DateTime(timezone=True), nullable=True)
+    delivered_at = Column(DateTime(timezone=True), nullable=True)
+    cancellation_requested_at = Column(DateTime(timezone=True), nullable=True)
+    cancellation_reason = Column(Text, nullable=True)
+    seller_notes = Column(Text, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+    order = relationship("Order", back_populates="seller_orders")
+    seller = relationship("Seller")
+
+    __table_args__ = (
+        UniqueConstraint("order_id", "seller_id", name="uq_seller_order_order_seller"),
+        CheckConstraint("seller_subtotal >= 0", name="ck_seller_order_subtotal_nonnegative"),
+        CheckConstraint("item_count >= 0", name="ck_seller_order_item_count_nonnegative"),
+    )
+
+
+class OrderStatusHistory(Base):
+    __tablename__ = "order_status_history"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    order_id = Column(UUID(as_uuid=True), ForeignKey("orders.id", ondelete="CASCADE"), nullable=False, index=True)
+    status = Column(String(50), nullable=False)
+    notes = Column(Text, nullable=True)
+    created_by_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    order = relationship("Order", back_populates="status_history")
+    created_by = relationship("User")
+
+
+
+# =========================================================
+# SHIPMENTS AND TRACKING
+# =========================================================
+
+class Shipment(Base):
+    __tablename__ = "shipments"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    order_id = Column(UUID(as_uuid=True), ForeignKey("orders.id", ondelete="CASCADE"), nullable=False, index=True)
+    seller_id = Column(UUID(as_uuid=True), ForeignKey("sellers.id", ondelete="RESTRICT"), nullable=False, index=True)
+    shipping_method_id = Column(UUID(as_uuid=True), ForeignKey("shipping_methods.id", ondelete="RESTRICT"), nullable=True)
+    status = Column(Enum(ShipmentStatus), nullable=False, default=ShipmentStatus.pending, server_default="pending", index=True)
+    carrier_name = Column(String(120), nullable=True)
+    tracking_number = Column(String(150), nullable=True, unique=True, index=True)
+    estimated_delivery_from = Column(DateTime(timezone=True), nullable=True)
+    estimated_delivery_to = Column(DateTime(timezone=True), nullable=True)
+    dispatched_at = Column(DateTime(timezone=True), nullable=True)
+    delivered_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+    order = relationship("Order", back_populates="shipments")
+    seller = relationship("Seller")
+    shipping_method = relationship("ShippingMethod")
+    items = relationship("ShipmentItem", back_populates="shipment", cascade="all, delete-orphan")
+    tracking_events = relationship("ShipmentTrackingEvent", back_populates="shipment", cascade="all, delete-orphan", order_by="ShipmentTrackingEvent.created_at")
+
+    __table_args__ = (
+        UniqueConstraint("order_id", "seller_id", name="uq_shipment_order_seller"),
+    )
+
+
+class ShipmentItem(Base):
+    __tablename__ = "shipment_items"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    shipment_id = Column(UUID(as_uuid=True), ForeignKey("shipments.id", ondelete="CASCADE"), nullable=False, index=True)
+    order_item_id = Column(UUID(as_uuid=True), ForeignKey("order_items.id", ondelete="CASCADE"), nullable=False, unique=True, index=True)
+    quantity = Column(Integer, nullable=False)
+
+    shipment = relationship("Shipment", back_populates="items")
+    order_item = relationship("OrderItem")
+
+    __table_args__ = (CheckConstraint("quantity > 0", name="ck_shipment_item_quantity_positive"),)
+
+
+class ShipmentTrackingEvent(Base):
+    __tablename__ = "shipment_tracking_events"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    shipment_id = Column(UUID(as_uuid=True), ForeignKey("shipments.id", ondelete="CASCADE"), nullable=False, index=True)
+    status = Column(Enum(ShipmentStatus), nullable=False)
+    location = Column(String(255), nullable=True)
+    notes = Column(Text, nullable=True)
+    created_by_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    shipment = relationship("Shipment", back_populates="tracking_events")
+    created_by = relationship("User")
+
+# =========================================================
+# EXTERNAL DELIVERY INTEGRATION
+# =========================================================
+
+class DeliveryJob(Base):
+    __tablename__ = "delivery_jobs"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    shipment_id = Column(UUID(as_uuid=True), ForeignKey("shipments.id", ondelete="CASCADE"), nullable=False, unique=True, index=True)
+    seller_order_id = Column(UUID(as_uuid=True), ForeignKey("seller_orders.id", ondelete="CASCADE"), nullable=False, index=True)
+    provider = Column(String(100), nullable=False, index=True)
+    external_delivery_id = Column(String(255), nullable=False, index=True)
+    status = Column(Enum(DeliveryStatus), nullable=False, default=DeliveryStatus.created, server_default="created", index=True)
+    tracking_number = Column(String(150), nullable=True, index=True)
+    tracking_url = Column(Text, nullable=True)
+    delivery_fee = Column(Numeric(18, 2), nullable=True)
+    currency = Column(String(10), nullable=False, default="TZS", server_default="TZS")
+    courier_name = Column(String(150), nullable=True)
+    courier_phone = Column(String(50), nullable=True)
+    estimated_pickup_at = Column(DateTime(timezone=True), nullable=True)
+    estimated_delivery_at = Column(DateTime(timezone=True), nullable=True)
+    failure_reason = Column(Text, nullable=True)
+    request_payload = Column(JSONB, nullable=True)
+    provider_response = Column(JSONB, nullable=True)
+    last_synced_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+    shipment = relationship("Shipment")
+    seller_order = relationship("SellerOrder")
+
+    __table_args__ = (
+        UniqueConstraint("provider", "external_delivery_id", name="uq_delivery_job_provider_external_id"),
+        CheckConstraint("delivery_fee IS NULL OR delivery_fee >= 0", name="ck_delivery_job_fee_nonnegative"),
+    )
+
+
+# =========================================================
+# INVENTORY
+# =========================================================
+
+class Inventory(Base):
+    __tablename__ = "inventory"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    product_id = Column(UUID(as_uuid=True), ForeignKey("products.id"), nullable=False, index=True)
+    variant_id = Column(UUID(as_uuid=True), ForeignKey("product_variants.id"), nullable=True)
+
+    quantity = Column(Integer, nullable=False, default=0)
+    reserved_quantity = Column(Integer, nullable=False, default=0)
+    available_quantity = Column(Integer, nullable=False, default=0)
+
+    warehouse_location = Column(String(255), nullable=True)
+    low_stock_threshold = Column(Integer, default=10)
+    restock_date = Column(DateTime(timezone=True), nullable=True)
+
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+    updated_by_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
+
+    product = relationship("Product")
+    variant = relationship("ProductVariant")
+    updated_by = relationship("User")
+    reservations = relationship("InventoryReservation", back_populates="inventory")
+
+    __table_args__ = (
+        CheckConstraint("quantity >= 0", name="ck_inventory_quantity_nonnegative"),
+        CheckConstraint("reserved_quantity >= 0", name="ck_inventory_reserved_nonnegative"),
+        CheckConstraint("reserved_quantity <= quantity", name="ck_inventory_reserved_lte_quantity"),
+        CheckConstraint("available_quantity = quantity - reserved_quantity", name="ck_inventory_available_consistent"),
+        Index("ix_inventory_product_variant", "product_id", "variant_id", unique=True),
+        Index(
+            "uq_inventory_product_without_variant",
+            "product_id",
+            unique=True,
+            postgresql_where=(variant_id.is_(None)),
+        ),
+    )
+
+
+class InventoryReservation(Base):
+    __tablename__ = "inventory_reservations"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    inventory_id = Column(UUID(as_uuid=True), ForeignKey("inventory.id", ondelete="RESTRICT"), nullable=False, index=True)
+    order_id = Column(UUID(as_uuid=True), ForeignKey("orders.id", ondelete="CASCADE"), nullable=False, index=True)
+    order_item_id = Column(UUID(as_uuid=True), ForeignKey("order_items.id", ondelete="CASCADE"), nullable=False, unique=True, index=True)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="RESTRICT"), nullable=False, index=True)
+    quantity = Column(Integer, nullable=False)
+    status = Column(Enum(InventoryReservationStatus), nullable=False, default=InventoryReservationStatus.active, server_default="active", index=True)
+    expires_at = Column(DateTime(timezone=True), nullable=False, index=True)
+    committed_at = Column(DateTime(timezone=True), nullable=True)
+    released_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+    inventory = relationship("Inventory", back_populates="reservations")
+    order = relationship("Order", back_populates="inventory_reservations")
+    order_item = relationship("OrderItem")
+    user = relationship("User")
+
+    __table_args__ = (
+        CheckConstraint("quantity > 0", name="ck_inventory_reservation_quantity_positive"),
+        Index("ix_inventory_reservation_active_expiry", "status", "expires_at"),
+    )
+
+
+# =========================================================
+# PAYMENTS
+# =========================================================
+
+class PaymentStatus(str, enum.Enum):
+    pending = "pending"
+    processing = "processing"
+    completed = "completed"
+    failed = "failed"
+    refunded = "refunded"
+    cancelled = "cancelled"
+
+
+class PaymentMethod(str, enum.Enum):
+    mobile_money = "mobile_money"
+    bank_transfer = "bank_transfer"
+    card = "card"
+    cash_on_delivery = "cash_on_delivery"
+    xerin_pay = "xerin_pay"
+
+
+class Payment(Base):
+    __tablename__ = "payments"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    order_id = Column(UUID(as_uuid=True), ForeignKey("orders.id", ondelete="CASCADE"), nullable=False, index=True)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
+
+    amount = Column(Numeric(18, 2), nullable=False)
+    currency = Column(String(10), default="TZS", nullable=False)
+    method = Column(Enum(PaymentMethod), nullable=False)
+    provider = Column(String(100), nullable=True)  # e.g. "mpesa", "airtel_money"
+    status = Column(Enum(PaymentStatus), default=PaymentStatus.pending, nullable=False)
+
+    provider_transaction_id = Column(String(255), nullable=True, unique=True, index=True)
+    provider_response = Column(JSONB, nullable=True)
+    failure_reason = Column(Text, nullable=True)
+
+    paid_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    __table_args__ = (
+        Index(
+            "uq_active_payment_per_order",
+            "order_id",
+            unique=True,
+            postgresql_where=(status.in_([
+                PaymentStatus.pending, PaymentStatus.processing, PaymentStatus.completed,
+            ])),
+        ),
+    )
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+    order = relationship("Order", back_populates="payments")
+    user = relationship("User")
+    transactions = relationship("PaymentTransaction", back_populates="payment", cascade="all, delete-orphan")
+
+    __table_args__ = (
+        CheckConstraint("amount >= 0", name="ck_payment_amount_nonnegative"),
+    )
+
+
+class PaymentTransaction(Base):
+    __tablename__ = "payment_transactions"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    payment_id = Column(UUID(as_uuid=True), ForeignKey("payments.id", ondelete="CASCADE"), nullable=False, index=True)
+    transaction_type = Column(String(50), nullable=False)  # initiate, callback, refund, etc.
+    status = Column(String(50), nullable=False)
+    amount = Column(Numeric(18, 2), nullable=True)
+    provider_response = Column(JSONB, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    payment = relationship("Payment", back_populates="transactions")
+
+
+# =========================================================
+# MARKETPLACE COMMISSIONS AND LEDGER
+# =========================================================
+
+class CommissionRule(Base):
+    __tablename__ = "commission_rules"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    name = Column(String(150), nullable=False)
+    scope = Column(Enum(CommissionScope, values_callable=lambda e: [m.value for m in e]), nullable=False, index=True)
+    rule_type = Column(Enum(CommissionRuleType, values_callable=lambda e: [m.value for m in e]), nullable=False, default=CommissionRuleType.percentage)
+    rate = Column(Numeric(10, 4), nullable=False)
+    seller_id = Column(UUID(as_uuid=True), ForeignKey("sellers.id", ondelete="CASCADE"), nullable=True, index=True)
+    category_id = Column(UUID(as_uuid=True), ForeignKey("categories.id", ondelete="CASCADE"), nullable=True, index=True)
+    product_id = Column(UUID(as_uuid=True), ForeignKey("products.id", ondelete="CASCADE"), nullable=True, index=True)
+    priority = Column(Integer, nullable=False, default=0, server_default="0")
+    is_active = Column(Boolean, nullable=False, default=True, server_default="true", index=True)
+    starts_at = Column(DateTime(timezone=True), nullable=True)
+    ends_at = Column(DateTime(timezone=True), nullable=True)
+    created_by_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+    seller = relationship("Seller", back_populates="commission_rules")
+    category = relationship("Category")
+    product = relationship("Product")
+    created_by = relationship("User")
+
+    __table_args__ = (
+        CheckConstraint("rate >= 0", name="ck_commission_rule_rate_nonnegative"),
+        CheckConstraint("rule_type <> 'percentage' OR rate <= 100", name="ck_commission_percentage_lte_100"),
+        CheckConstraint("ends_at IS NULL OR starts_at IS NULL OR ends_at > starts_at", name="ck_commission_rule_date_range"),
+        CheckConstraint("(scope = 'global' AND seller_id IS NULL AND category_id IS NULL AND product_id IS NULL) OR (scope = 'seller' AND seller_id IS NOT NULL AND category_id IS NULL AND product_id IS NULL) OR (scope = 'category' AND category_id IS NOT NULL AND seller_id IS NULL AND product_id IS NULL) OR (scope = 'product' AND product_id IS NOT NULL AND seller_id IS NULL AND category_id IS NULL)", name="ck_commission_rule_scope_target"),
+    )
+
+
+class OrderItemCommission(Base):
+    __tablename__ = "order_item_commissions"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    order_id = Column(UUID(as_uuid=True), ForeignKey("orders.id", ondelete="CASCADE"), nullable=False, index=True)
+    order_item_id = Column(UUID(as_uuid=True), ForeignKey("order_items.id", ondelete="CASCADE"), nullable=False, unique=True, index=True)
+    seller_id = Column(UUID(as_uuid=True), ForeignKey("sellers.id", ondelete="RESTRICT"), nullable=False, index=True)
+    commission_rule_id = Column(UUID(as_uuid=True), ForeignKey("commission_rules.id", ondelete="SET NULL"), nullable=True)
+    currency = Column(String(10), nullable=False)
+    gross_amount = Column(Numeric(18, 2), nullable=False)
+    commission_rate = Column(Numeric(10, 4), nullable=False)
+    commission_amount = Column(Numeric(18, 2), nullable=False)
+    seller_net_amount = Column(Numeric(18, 2), nullable=False)
+    processing_fee = Column(Numeric(18, 2), nullable=False, default=0, server_default="0")
+    tax_amount = Column(Numeric(18, 2), nullable=False, default=0, server_default="0")
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    order_item = relationship("OrderItem", back_populates="commission")
+    seller = relationship("Seller", back_populates="commission_records")
+    rule = relationship("CommissionRule")
+    transactions = relationship("MarketplaceTransaction", back_populates="commission_record", cascade="all, delete-orphan")
+
+    __table_args__ = (
+        CheckConstraint("gross_amount >= 0", name="ck_item_commission_gross_nonnegative"),
+        CheckConstraint("commission_amount >= 0", name="ck_item_commission_amount_nonnegative"),
+        CheckConstraint("seller_net_amount >= 0", name="ck_item_commission_net_nonnegative"),
+    )
+
+
+class MarketplaceTransaction(Base):
+    __tablename__ = "marketplace_transactions"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    order_id = Column(UUID(as_uuid=True), ForeignKey("orders.id", ondelete="CASCADE"), nullable=False, index=True)
+    order_item_id = Column(UUID(as_uuid=True), ForeignKey("order_items.id", ondelete="CASCADE"), nullable=True, index=True)
+    seller_id = Column(UUID(as_uuid=True), ForeignKey("sellers.id", ondelete="RESTRICT"), nullable=True, index=True)
+    commission_record_id = Column(UUID(as_uuid=True), ForeignKey("order_item_commissions.id", ondelete="CASCADE"), nullable=True, index=True)
+    transaction_type = Column(Enum(MarketplaceTransactionType), nullable=False, index=True)
+    currency = Column(String(10), nullable=False)
+    amount = Column(Numeric(18, 2), nullable=False)
+    reference = Column(String(180), nullable=False, unique=True, index=True)
+    description = Column(Text, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    commission_record = relationship("OrderItemCommission", back_populates="transactions")
+
+    __table_args__ = (CheckConstraint("amount >= 0", name="ck_marketplace_transaction_amount_nonnegative"),)
+
+
+# =========================================================
+# COUPONS
+# =========================================================
+
+class Coupon(Base):
+    __tablename__ = "coupons"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    code = Column(String(50), unique=True, index=True, nullable=False)
+    description = Column(Text, nullable=True)
+
+    discount_type = Column(String(20), nullable=False)  # percentage, fixed_amount
+    discount_value = Column(Numeric(18, 2), nullable=False)
+    minimum_order_amount = Column(Numeric(18, 2), nullable=True)
+    maximum_discount_amount = Column(Numeric(18, 2), nullable=True)
+
+    usage_limit = Column(Integer, nullable=True)
+    usage_count = Column(Integer, default=0, nullable=False)
+    is_active = Column(Boolean, default=True)
+
+    valid_from = Column(DateTime(timezone=True), nullable=True)
+    valid_until = Column(DateTime(timezone=True), nullable=True)
+
+    created_by_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    created_by = relationship("User")
+
+    __table_args__ = (
+        CheckConstraint("discount_value > 0", name="ck_coupon_discount_value_positive"),
+        CheckConstraint("usage_limit IS NULL OR usage_limit >= 0", name="ck_coupon_usage_limit_nonnegative"),
+        CheckConstraint("usage_count >= 0", name="ck_coupon_usage_count_nonnegative"),
+        CheckConstraint("valid_until IS NULL OR valid_from IS NULL OR valid_until > valid_from", name="ck_coupon_valid_range"),
+    )
+    
+    
+class Store(Base):
+    __tablename__ = "stores"
+
+    id = Column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=uuid.uuid4,
+    )
+
+    seller_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("sellers.id", ondelete="CASCADE"),
+        unique=True,
+        nullable=False,
+        index=True,
+    )
+
+    store_name = Column(String(255), nullable=False)
+    slug = Column(String(255), unique=True, index=True, nullable=False)
+
+    description = Column(Text, nullable=True)
+    about = Column(Text, nullable=True)
+
+    logo_url = Column(Text, nullable=True)
+    banner_url = Column(Text, nullable=True)
+    theme_color = Column(String(7), nullable=False, default="#111827", server_default="#111827")
+    secondary_color = Column(String(7), nullable=False, default="#ffffff", server_default="#ffffff")
+
+    contact_email = Column(String(255), nullable=True)
+    contact_phone = Column(String(30), nullable=True)
+    whatsapp_phone = Column(String(30), nullable=True)
+    website_url = Column(Text, nullable=True)
+
+    country = Column(String(100), nullable=True)
+    region = Column(String(100), nullable=True)
+    district = Column(String(100), nullable=True)
+    ward = Column(String(100), nullable=True)
+    street = Column(Text, nullable=True)
+
+    latitude = Column(Float, nullable=True)
+    longitude = Column(Float, nullable=True)
+
+    opening_time = Column(Time, nullable=True)
+    closing_time = Column(Time, nullable=True)
+
+    shipping_policy = Column(Text, nullable=True)
+    return_policy = Column(Text, nullable=True)
+    privacy_policy = Column(Text, nullable=True)
+
+    facebook_url = Column(Text, nullable=True)
+    instagram_url = Column(Text, nullable=True)
+    twitter_url = Column(Text, nullable=True)
+    tiktok_url = Column(Text, nullable=True)
+    youtube_url = Column(Text, nullable=True)
+
+    status = Column(
+        Enum(StoreStatus),
+        nullable=False,
+        default=StoreStatus.draft,
+        index=True,
+    )
+
+    is_verified = Column(Boolean, default=False, nullable=False)
+    is_featured = Column(Boolean, default=False, nullable=False)
+
+    rating = Column(Numeric(3, 2), default=0, nullable=False)
+    review_count = Column(Integer, default=0, nullable=False)
+    followers_count = Column(Integer, default=0, nullable=False)
+
+    vacation_mode = Column(Boolean, nullable=False, default=False, server_default="false")
+    accept_orders = Column(Boolean, nullable=False, default=True, server_default="true")
+    processing_days = Column(Integer, nullable=False, default=1, server_default="1")
+    seo_title = Column(String(255), nullable=True)
+    seo_description = Column(String(500), nullable=True)
+
+    created_at = Column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+    )
+
+    updated_at = Column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+    seller = relationship(
+        "Seller",
+        back_populates="store",
+    )
+    
+    gallery_images = relationship(
+        "StoreGalleryImage",
+        back_populates="store",
+        cascade="all, delete-orphan",
+        order_by="StoreGalleryImage.display_order",
+    )
+
+    opening_hours = relationship(
+        "StoreOpeningHour",
+        back_populates="store",
+        cascade="all, delete-orphan",
+        order_by="StoreOpeningHour.day_number",
+    )
+    favorite_entries = relationship("FavoriteStore", back_populates="store", cascade="all, delete-orphan")
+    
+class StoreGalleryImage(Base):
+    __tablename__ = "store_gallery_images"
+
+    id = Column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=uuid.uuid4,
+    )
+
+    store_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("stores.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+
+    image_url = Column(
+        Text,
+        nullable=False,
+    )
+
+    caption = Column(
+        String(255),
+        nullable=True,
+    )
+
+    display_order = Column(
+        Integer,
+        nullable=False,
+        default=0,
+    )
+
+    is_active = Column(
+        Boolean,
+        nullable=False,
+        default=True,
+    )
+
+    created_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+
+    updated_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+
+    store = relationship(
+        "Store",
+        back_populates="gallery_images",
+    )
+
+
+class StoreOpeningHour(Base):
+    __tablename__ = "store_opening_hours"
+
+    id = Column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=uuid.uuid4,
+    )
+
+    store_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("stores.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+
+    day_of_week = Column(
+        Enum(DayOfWeek),
+        nullable=False,
+    )
+
+    day_number = Column(
+        Integer,
+        nullable=False,
+    )
+
+    open_time = Column(Time, nullable=True)
+    close_time = Column(Time, nullable=True)
+    is_closed = Column(Boolean, default=False, nullable=False)
+
+    created_at = Column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+    )
+
+    updated_at = Column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+    store = relationship(
+        "Store",
+        back_populates="opening_hours",
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "store_id",
+            "day_of_week",
+            name="uq_store_opening_hours_store_day",
+        ),
+    )
+
+# =========================================================
+# SELLER WALLETS AND PAYOUTS
+# =========================================================
+
+class SellerWallet(Base):
+    __tablename__ = "seller_wallets"
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    seller_id = Column(UUID(as_uuid=True), ForeignKey("sellers.id", ondelete="CASCADE"), nullable=False, unique=True, index=True)
+    currency = Column(String(10), nullable=False, default="TZS", server_default="TZS")
+    pending_balance = Column(Numeric(18,2), nullable=False, default=0, server_default="0")
+    available_balance = Column(Numeric(18,2), nullable=False, default=0, server_default="0")
+    reserved_balance = Column(Numeric(18,2), nullable=False, default=0, server_default="0")
+    paid_out_balance = Column(Numeric(18,2), nullable=False, default=0, server_default="0")
+    refunded_balance = Column(Numeric(18,2), nullable=False, default=0, server_default="0")
+    debt_balance = Column(Numeric(18,2), nullable=False, default=0, server_default="0")
+    is_frozen = Column(Boolean, nullable=False, default=False, server_default="false", index=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+    seller = relationship("Seller", back_populates="wallet")
+    transactions = relationship("WalletTransaction", back_populates="wallet", cascade="all, delete-orphan")
+    payouts = relationship("PayoutRequest", back_populates="wallet")
+    __table_args__ = (CheckConstraint("pending_balance >= 0 AND available_balance >= 0 AND reserved_balance >= 0 AND paid_out_balance >= 0 AND refunded_balance >= 0 AND debt_balance >= 0", name="ck_wallet_balances_nonnegative"),)
+
+class WalletTransaction(Base):
+    __tablename__ = "wallet_transactions"
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    wallet_id = Column(UUID(as_uuid=True), ForeignKey("seller_wallets.id", ondelete="CASCADE"), nullable=False, index=True)
+    transaction_type = Column(Enum(WalletTransactionType), nullable=False, index=True)
+    amount = Column(Numeric(18,2), nullable=False)
+    currency = Column(String(10), nullable=False)
+    reference = Column(String(180), nullable=False, unique=True, index=True)
+    order_id = Column(UUID(as_uuid=True), ForeignKey("orders.id", ondelete="SET NULL"), nullable=True, index=True)
+    order_item_id = Column(UUID(as_uuid=True), ForeignKey("order_items.id", ondelete="SET NULL"), nullable=True)
+    payout_request_id = Column(UUID(as_uuid=True), nullable=True, index=True)
+    eligible_at = Column(DateTime(timezone=True), nullable=True, index=True)
+    released_at = Column(DateTime(timezone=True), nullable=True)
+    description = Column(Text, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    wallet = relationship("SellerWallet", back_populates="transactions")
+    __table_args__ = (CheckConstraint("amount >= 0", name="ck_wallet_transaction_amount_nonnegative"),)
+
+class PayoutRequest(Base):
+    __tablename__ = "payout_requests"
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    wallet_id = Column(UUID(as_uuid=True), ForeignKey("seller_wallets.id", ondelete="RESTRICT"), nullable=False, index=True)
+    seller_id = Column(UUID(as_uuid=True), ForeignKey("sellers.id", ondelete="RESTRICT"), nullable=False, index=True)
+    payout_account_id = Column(UUID(as_uuid=True), ForeignKey("seller_payout_accounts.id", ondelete="RESTRICT"), nullable=False)
+    amount = Column(Numeric(18,2), nullable=False)
+    currency = Column(String(10), nullable=False)
+    status = Column(Enum(PayoutStatus), nullable=False, default=PayoutStatus.pending, server_default="pending", index=True)
+    provider_reference = Column(String(180), nullable=True, unique=True)
+    seller_note = Column(Text, nullable=True)
+    admin_note = Column(Text, nullable=True)
+    requested_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    processed_at = Column(DateTime(timezone=True), nullable=True)
+    completed_at = Column(DateTime(timezone=True), nullable=True)
+    wallet = relationship("SellerWallet", back_populates="payouts")
+    seller = relationship("Seller")
+    payout_account = relationship("SellerPayoutAccount")
+    events = relationship("PayoutEvent", back_populates="payout", cascade="all, delete-orphan")
+    __table_args__ = (CheckConstraint("amount > 0", name="ck_payout_amount_positive"),)
+
+class PayoutEvent(Base):
+    __tablename__ = "payout_events"
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    payout_request_id = Column(UUID(as_uuid=True), ForeignKey("payout_requests.id", ondelete="CASCADE"), nullable=False, index=True)
+    status = Column(Enum(PayoutStatus), nullable=False)
+    note = Column(Text, nullable=True)
+    created_by_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    payout = relationship("PayoutRequest", back_populates="events")
+    created_by = relationship("User")
+
+
+# =========================================================
+# REFUNDS AND REVERSALS
+# =========================================================
+
+class Refund(Base):
+    __tablename__ = "refunds"
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    order_id = Column(UUID(as_uuid=True), ForeignKey("orders.id", ondelete="RESTRICT"), nullable=False, index=True)
+    requested_by_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="RESTRICT"), nullable=False, index=True)
+    status = Column(Enum(RefundStatus), nullable=False, default=RefundStatus.requested, server_default="requested", index=True)
+    reason = Column(Enum(RefundReason), nullable=False)
+    reason_details = Column(Text, nullable=True)
+    currency = Column(String(10), nullable=False)
+    items_amount = Column(Numeric(18,2), nullable=False, default=0, server_default="0")
+    shipping_amount = Column(Numeric(18,2), nullable=False, default=0, server_default="0")
+    tax_amount = Column(Numeric(18,2), nullable=False, default=0, server_default="0")
+    total_amount = Column(Numeric(18,2), nullable=False)
+    provider_reference = Column(String(180), nullable=True, unique=True, index=True)
+    idempotency_key = Column(String(180), nullable=False, unique=True, index=True)
+    admin_note = Column(Text, nullable=True)
+    requested_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    reviewed_at = Column(DateTime(timezone=True), nullable=True)
+    processed_at = Column(DateTime(timezone=True), nullable=True)
+    completed_at = Column(DateTime(timezone=True), nullable=True)
+    order = relationship("Order", back_populates="refunds")
+    requested_by = relationship("User")
+    items = relationship("RefundItem", back_populates="refund", cascade="all, delete-orphan")
+    events = relationship("RefundEvent", back_populates="refund", cascade="all, delete-orphan", order_by="RefundEvent.created_at")
+    __table_args__ = (CheckConstraint("items_amount >= 0 AND shipping_amount >= 0 AND tax_amount >= 0 AND total_amount > 0", name="ck_refund_amounts_valid"),)
+
+class RefundItem(Base):
+    __tablename__ = "refund_items"
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    refund_id = Column(UUID(as_uuid=True), ForeignKey("refunds.id", ondelete="CASCADE"), nullable=False, index=True)
+    order_item_id = Column(UUID(as_uuid=True), ForeignKey("order_items.id", ondelete="RESTRICT"), nullable=False, index=True)
+    seller_id = Column(UUID(as_uuid=True), ForeignKey("sellers.id", ondelete="RESTRICT"), nullable=False, index=True)
+    quantity = Column(Integer, nullable=False)
+    unit_amount = Column(Numeric(18,2), nullable=False)
+    refund_amount = Column(Numeric(18,2), nullable=False)
+    commission_reversal = Column(Numeric(18,2), nullable=False, default=0, server_default="0")
+    seller_reversal = Column(Numeric(18,2), nullable=False, default=0, server_default="0")
+    seller_debt_amount = Column(Numeric(18,2), nullable=False, default=0, server_default="0")
+    restock = Column(Boolean, nullable=False, default=True, server_default="true")
+    processed_at = Column(DateTime(timezone=True), nullable=True)
+    refund = relationship("Refund", back_populates="items")
+    order_item = relationship("OrderItem", back_populates="refund_items")
+    seller = relationship("Seller")
+    __table_args__ = (CheckConstraint("quantity > 0 AND unit_amount >= 0 AND refund_amount > 0 AND commission_reversal >= 0 AND seller_reversal >= 0 AND seller_debt_amount >= 0", name="ck_refund_item_values_valid"), UniqueConstraint("refund_id","order_item_id",name="uq_refund_item_per_refund"))
+
+class RefundEvent(Base):
+    __tablename__ = "refund_events"
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    refund_id = Column(UUID(as_uuid=True), ForeignKey("refunds.id", ondelete="CASCADE"), nullable=False, index=True)
+    status = Column(Enum(RefundStatus), nullable=False)
+    note = Column(Text, nullable=True)
+    created_by_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    refund = relationship("Refund", back_populates="events")
+    created_by = relationship("User")
+
+class InventoryMovement(Base):
+    __tablename__ = "inventory_movements"
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    inventory_id = Column(UUID(as_uuid=True), ForeignKey("inventory.id", ondelete="RESTRICT"), nullable=False, index=True)
+    order_item_id = Column(UUID(as_uuid=True), ForeignKey("order_items.id", ondelete="SET NULL"), nullable=True)
+    refund_item_id = Column(UUID(as_uuid=True), ForeignKey("refund_items.id", ondelete="SET NULL"), nullable=True, unique=True)
+    movement_type = Column(Enum(InventoryMovementType), nullable=False, index=True)
+    quantity = Column(Integer, nullable=False)
+    before_quantity = Column(Integer, nullable=False)
+    after_quantity = Column(Integer, nullable=False)
+    note = Column(Text, nullable=True)
+    reference = Column(String(255), nullable=True, index=True)
+    created_by_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    inventory = relationship("Inventory")
+    refund_item = relationship("RefundItem")
+    created_by = relationship("User")
+    __table_args__ = (CheckConstraint("quantity > 0 AND before_quantity >= 0 AND after_quantity >= 0", name="ck_inventory_movement_values_valid"),)
+
+
+# =========================================================
+# PHASE 4 TASK 1: AUDIT LOGS AND SECURITY EVENTS
+# =========================================================
+
+class AuditLog(Base):
+    __tablename__ = "audit_logs"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    actor_user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
+    action = Column(String(120), nullable=False, index=True)
+    resource_type = Column(String(120), nullable=True, index=True)
+    resource_id = Column(String(180), nullable=True, index=True)
+    http_method = Column(String(10), nullable=True)
+    request_path = Column(String(500), nullable=True, index=True)
+    response_status = Column(Integer, nullable=True, index=True)
+    old_values = Column(JSONB, nullable=True)
+    new_values = Column(JSONB, nullable=True)
+    event_metadata = Column(JSONB, nullable=True)
+    ip_address = Column(String(64), nullable=True, index=True)
+    user_agent = Column(Text, nullable=True)
+    request_id = Column(String(100), nullable=False, unique=True, index=True)
+    severity = Column(Enum(AuditSeverity), nullable=False, default=AuditSeverity.info, server_default="info", index=True)
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now(), index=True)
+
+    actor = relationship("User")
+
+
+class SecurityEvent(Base):
+    __tablename__ = "security_events"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    actor_user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
+    event_type = Column(Enum(SecurityEventType), nullable=False, index=True)
+    severity = Column(Enum(AuditSeverity), nullable=False, default=AuditSeverity.warning, server_default="warning", index=True)
+    description = Column(Text, nullable=False)
+    request_path = Column(String(500), nullable=True, index=True)
+    http_method = Column(String(10), nullable=True)
+    response_status = Column(Integer, nullable=True, index=True)
+    ip_address = Column(String(64), nullable=True, index=True)
+    user_agent = Column(Text, nullable=True)
+    request_id = Column(String(100), nullable=False, unique=True, index=True)
+    event_metadata = Column(JSONB, nullable=True)
+    resolved = Column(Boolean, nullable=False, default=False, server_default="false", index=True)
+    resolved_by_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    resolved_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now(), index=True)
+
+    actor = relationship("User", foreign_keys=[actor_user_id])
+    resolved_by = relationship("User", foreign_keys=[resolved_by_id])
+
+
+# Phase 3 Task 12: customer reviews and seller ratings
+class ProductReview(Base):
+    __tablename__ = "product_reviews"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    product_id = Column(UUID(as_uuid=True), ForeignKey("products.id", ondelete="CASCADE"), nullable=False, index=True)
+    order_item_id = Column(UUID(as_uuid=True), ForeignKey("order_items.id", ondelete="RESTRICT"), nullable=False, unique=True, index=True)
+    customer_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    seller_id = Column(UUID(as_uuid=True), ForeignKey("sellers.id", ondelete="CASCADE"), nullable=False, index=True)
+    rating = Column(Integer, nullable=False)
+    title = Column(String(150), nullable=True)
+    comment = Column(Text, nullable=True)
+    verified_purchase = Column(Boolean, nullable=False, default=True, server_default="true")
+    status = Column(Enum(ReviewStatus), nullable=False, default=ReviewStatus.pending, server_default="pending", index=True)
+    seller_reply = Column(Text, nullable=True)
+    seller_replied_at = Column(DateTime(timezone=True), nullable=True)
+    helpful_count = Column(Integer, nullable=False, default=0, server_default="0")
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), nullable=True, onupdate=func.now())
+
+    product = relationship("Product")
+    order_item = relationship("OrderItem")
+    customer = relationship("User")
+    seller = relationship("Seller")
+    images = relationship("ReviewImage", back_populates="product_review", cascade="all, delete-orphan")
+    votes = relationship("ReviewVote", back_populates="product_review", cascade="all, delete-orphan")
+    reports = relationship("ReviewReport", back_populates="product_review", cascade="all, delete-orphan")
+
+    __table_args__ = (
+        CheckConstraint("rating >= 1 AND rating <= 5", name="ck_product_review_rating"),
+        CheckConstraint("helpful_count >= 0", name="ck_product_review_helpful_count"),
+        UniqueConstraint("customer_id", "order_item_id", name="uq_product_review_customer_order_item"),
+    )
+
+
+class StoreReview(Base):
+    __tablename__ = "store_reviews"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    store_id = Column(UUID(as_uuid=True), ForeignKey("stores.id", ondelete="CASCADE"), nullable=False, index=True)
+    seller_order_id = Column(UUID(as_uuid=True), ForeignKey("seller_orders.id", ondelete="RESTRICT"), nullable=False, unique=True, index=True)
+    customer_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    rating = Column(Integer, nullable=False)
+    title = Column(String(150), nullable=True)
+    comment = Column(Text, nullable=True)
+    verified_purchase = Column(Boolean, nullable=False, default=True, server_default="true")
+    status = Column(Enum(ReviewStatus), nullable=False, default=ReviewStatus.pending, server_default="pending", index=True)
+    seller_reply = Column(Text, nullable=True)
+    seller_replied_at = Column(DateTime(timezone=True), nullable=True)
+    helpful_count = Column(Integer, nullable=False, default=0, server_default="0")
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), nullable=True, onupdate=func.now())
+
+    store = relationship("Store")
+    seller_order = relationship("SellerOrder")
+    customer = relationship("User")
+    reports = relationship("ReviewReport", back_populates="store_review", cascade="all, delete-orphan")
+
+    __table_args__ = (
+        CheckConstraint("rating >= 1 AND rating <= 5", name="ck_store_review_rating"),
+        CheckConstraint("helpful_count >= 0", name="ck_store_review_helpful_count"),
+        UniqueConstraint("customer_id", "seller_order_id", name="uq_store_review_customer_seller_order"),
+    )
+
+
+class ReviewImage(Base):
+    __tablename__ = "review_images"
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    product_review_id = Column(UUID(as_uuid=True), ForeignKey("product_reviews.id", ondelete="CASCADE"), nullable=False, index=True)
+    image_url = Column(Text, nullable=False)
+    display_order = Column(Integer, nullable=False, default=0, server_default="0")
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    product_review = relationship("ProductReview", back_populates="images")
+
+
+class ReviewVote(Base):
+    __tablename__ = "review_votes"
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    product_review_id = Column(UUID(as_uuid=True), ForeignKey("product_reviews.id", ondelete="CASCADE"), nullable=False, index=True)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    is_helpful = Column(Boolean, nullable=False, default=True, server_default="true")
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    product_review = relationship("ProductReview", back_populates="votes")
+    __table_args__ = (UniqueConstraint("product_review_id", "user_id", name="uq_review_vote_review_user"),)
+
+
+class ReviewReport(Base):
+    __tablename__ = "review_reports"
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    product_review_id = Column(UUID(as_uuid=True), ForeignKey("product_reviews.id", ondelete="CASCADE"), nullable=True, index=True)
+    store_review_id = Column(UUID(as_uuid=True), ForeignKey("store_reviews.id", ondelete="CASCADE"), nullable=True, index=True)
+    reported_by_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    reason = Column(Enum(ReviewReportReason), nullable=False)
+    details = Column(Text, nullable=True)
+    resolved = Column(Boolean, nullable=False, default=False, server_default="false")
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    product_review = relationship("ProductReview", back_populates="reports")
+    store_review = relationship("StoreReview", back_populates="reports")
+    __table_args__ = (CheckConstraint("(product_review_id IS NOT NULL) <> (store_review_id IS NOT NULL)", name="ck_review_report_single_target"),)
+
+
+# Phase 3 Task 13: customer wishlist and favorite stores
+class WishlistProduct(Base):
+    __tablename__ = "wishlist_products"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    product_id = Column(UUID(as_uuid=True), ForeignKey("products.id", ondelete="CASCADE"), nullable=False, index=True)
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now(), index=True)
+
+    user = relationship("User", back_populates="wishlist_products")
+    product = relationship("Product", back_populates="wishlist_entries")
+
+    __table_args__ = (
+        UniqueConstraint("user_id", "product_id", name="uq_wishlist_product_user_product"),
+        Index("ix_wishlist_products_user_created", "user_id", "created_at"),
+    )
+
+
+class FavoriteStore(Base):
+    __tablename__ = "favorite_stores"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    store_id = Column(UUID(as_uuid=True), ForeignKey("stores.id", ondelete="CASCADE"), nullable=False, index=True)
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now(), index=True)
+
+    user = relationship("User", back_populates="favorite_stores")
+    store = relationship("Store", back_populates="favorite_entries")
+
+    __table_args__ = (
+        UniqueConstraint("user_id", "store_id", name="uq_favorite_store_user_store"),
+        Index("ix_favorite_stores_user_created", "user_id", "created_at"),
+    )
+
+
+# =========================================================
+# PHASE 3 TASK 14: PROMOTIONS AND CAMPAIGNS
+# =========================================================
+
+class Promotion(Base):
+    __tablename__ = "promotions"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    seller_id = Column(UUID(as_uuid=True), ForeignKey("sellers.id", ondelete="CASCADE"), nullable=True, index=True)
+    name = Column(String(180), nullable=False)
+    code = Column(String(50), unique=True, nullable=True, index=True)
+    description = Column(Text, nullable=True)
+    promotion_type = Column(String(40), nullable=False)
+    discount_value = Column(Numeric(18, 2), nullable=False, default=0)
+    minimum_order_amount = Column(Numeric(18, 2), nullable=True)
+    maximum_discount_amount = Column(Numeric(18, 2), nullable=True)
+    usage_limit = Column(Integer, nullable=True)
+    usage_per_customer = Column(Integer, nullable=True)
+    usage_count = Column(Integer, nullable=False, default=0, server_default="0")
+    stackable = Column(Boolean, nullable=False, default=False, server_default="false")
+    automatic = Column(Boolean, nullable=False, default=False, server_default="false")
+    is_active = Column(Boolean, nullable=False, default=True, server_default="true")
+    starts_at = Column(DateTime(timezone=True), nullable=True)
+    ends_at = Column(DateTime(timezone=True), nullable=True)
+    created_by_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+    rules = relationship("PromotionRule", back_populates="promotion", cascade="all, delete-orphan")
+    usages = relationship("PromotionUsage", back_populates="promotion", cascade="all, delete-orphan")
+
+    __table_args__ = (
+        CheckConstraint("discount_value >= 0", name="ck_promotion_discount_nonnegative"),
+        CheckConstraint("usage_limit IS NULL OR usage_limit >= 0", name="ck_promotion_usage_limit_nonnegative"),
+        CheckConstraint("usage_per_customer IS NULL OR usage_per_customer > 0", name="ck_promotion_customer_limit_positive"),
+        CheckConstraint("ends_at IS NULL OR starts_at IS NULL OR ends_at > starts_at", name="ck_promotion_valid_range"),
+    )
+
+
+class PromotionRule(Base):
+    __tablename__ = "promotion_rules"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    promotion_id = Column(UUID(as_uuid=True), ForeignKey("promotions.id", ondelete="CASCADE"), nullable=False, index=True)
+    rule_type = Column(String(40), nullable=False)
+    product_id = Column(UUID(as_uuid=True), ForeignKey("products.id", ondelete="CASCADE"), nullable=True, index=True)
+    category_id = Column(UUID(as_uuid=True), ForeignKey("categories.id", ondelete="CASCADE"), nullable=True, index=True)
+    store_id = Column(UUID(as_uuid=True), ForeignKey("stores.id", ondelete="CASCADE"), nullable=True, index=True)
+    value = Column(JSONB, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    promotion = relationship("Promotion", back_populates="rules")
+
+
+class PromotionUsage(Base):
+    __tablename__ = "promotion_usages"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    promotion_id = Column(UUID(as_uuid=True), ForeignKey("promotions.id", ondelete="CASCADE"), nullable=False, index=True)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    order_id = Column(UUID(as_uuid=True), ForeignKey("orders.id", ondelete="SET NULL"), nullable=True, index=True)
+    discount_amount = Column(Numeric(18, 2), nullable=False)
+    used_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    promotion = relationship("Promotion", back_populates="usages")
+
+    __table_args__ = (CheckConstraint("discount_amount >= 0", name="ck_promotion_usage_discount_nonnegative"),)
+
+
+class Campaign(Base):
+    __tablename__ = "campaigns"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    name = Column(String(180), nullable=False)
+    slug = Column(String(180), unique=True, nullable=False, index=True)
+    description = Column(Text, nullable=True)
+    banner_url = Column(Text, nullable=True)
+    starts_at = Column(DateTime(timezone=True), nullable=True)
+    ends_at = Column(DateTime(timezone=True), nullable=True)
+    is_active = Column(Boolean, nullable=False, default=True, server_default="true")
+    created_by_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+    __table_args__ = (CheckConstraint("ends_at IS NULL OR starts_at IS NULL OR ends_at > starts_at", name="ck_campaign_valid_range"),)
+
+
+class CampaignPromotion(Base):
+    __tablename__ = "campaign_promotions"
+
+    campaign_id = Column(UUID(as_uuid=True), ForeignKey("campaigns.id", ondelete="CASCADE"), primary_key=True)
+    promotion_id = Column(UUID(as_uuid=True), ForeignKey("promotions.id", ondelete="CASCADE"), primary_key=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
+class Notification(Base):
+    __tablename__ = "notifications"
+    __table_args__ = (
+        Index("ix_notifications_user_read_created", "user_id", "is_read", "created_at"),
+    )
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    event = Column(Enum(NotificationEvent, name="notificationevent"), nullable=False, default=NotificationEvent.system_alert)
+    title = Column(String(180), nullable=False)
+    message = Column(Text, nullable=False)
+    data = Column(JSONB, nullable=False, default=dict)
+    action_url = Column(Text, nullable=True)
+    is_read = Column(Boolean, nullable=False, default=False)
+    read_at = Column(DateTime(timezone=True), nullable=True)
+    expires_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+    user = relationship("User", back_populates="notifications")
+    deliveries = relationship("NotificationDelivery", back_populates="notification", cascade="all, delete-orphan")
+
+
+class NotificationPreference(Base):
+    __tablename__ = "notification_preferences"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, unique=True, index=True)
+    in_app_enabled = Column(Boolean, nullable=False, default=True)
+    email_enabled = Column(Boolean, nullable=False, default=True)
+    sms_enabled = Column(Boolean, nullable=False, default=False)
+    push_enabled = Column(Boolean, nullable=False, default=False)
+    event_preferences = Column(JSONB, nullable=False, default=dict)
+    quiet_hours_start = Column(Time, nullable=True)
+    quiet_hours_end = Column(Time, nullable=True)
+    timezone = Column(String(64), nullable=False, default="UTC")
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), nullable=True, onupdate=func.now())
+
+    user = relationship("User", back_populates="notification_preference")
+
+
+class NotificationTemplate(Base):
+    __tablename__ = "notification_templates"
+    __table_args__ = (UniqueConstraint("event", "channel", name="uq_notification_template_event_channel"),)
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    event = Column(Enum(NotificationEvent, name="notificationevent", create_type=False), nullable=False)
+    channel = Column(Enum(NotificationChannel, name="notificationchannel"), nullable=False)
+    subject_template = Column(String(255), nullable=True)
+    body_template = Column(Text, nullable=False)
+    is_active = Column(Boolean, nullable=False, default=True)
+    created_by_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), nullable=True, onupdate=func.now())
+
+
+class NotificationDelivery(Base):
+    __tablename__ = "notification_deliveries"
+    __table_args__ = (UniqueConstraint("notification_id", "channel", name="uq_notification_delivery_channel"),)
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    notification_id = Column(UUID(as_uuid=True), ForeignKey("notifications.id", ondelete="CASCADE"), nullable=False, index=True)
+    channel = Column(Enum(NotificationChannel, name="notificationchannel", create_type=False), nullable=False)
+    status = Column(Enum(NotificationDeliveryStatus, name="notificationdeliverystatus"), nullable=False, default=NotificationDeliveryStatus.pending)
+    provider = Column(String(100), nullable=True)
+    provider_reference = Column(String(255), nullable=True)
+    attempts = Column(Integer, nullable=False, default=0)
+    sent_at = Column(DateTime(timezone=True), nullable=True)
+    delivered_at = Column(DateTime(timezone=True), nullable=True)
+    failed_at = Column(DateTime(timezone=True), nullable=True)
+    failure_reason = Column(Text, nullable=True)
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), nullable=True, onupdate=func.now())
+
+    notification = relationship("Notification", back_populates="deliveries")
+
+
+class DeviceToken(Base):
+    __tablename__ = "device_tokens"
+    __table_args__ = (UniqueConstraint("token", name="uq_device_tokens_token"),)
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    token = Column(Text, nullable=False)
+    platform = Column(String(30), nullable=False)
+    device_name = Column(String(120), nullable=True)
+    is_active = Column(Boolean, nullable=False, default=True)
+    last_used_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+    user = relationship("User", back_populates="device_tokens")
+
+
+# Phase 3 Task 16: Product Questions and Answers
+class ProductQuestion(Base):
+    __tablename__ = "product_questions"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    product_id = Column(UUID(as_uuid=True), ForeignKey("products.id", ondelete="CASCADE"), nullable=False, index=True)
+    customer_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    question = Column(Text, nullable=False)
+    status = Column(Enum(QuestionStatus), nullable=False, default=QuestionStatus.published, server_default="published", index=True)
+    helpful_count = Column(Integer, nullable=False, default=0, server_default="0")
+    answer_count = Column(Integer, nullable=False, default=0, server_default="0")
+    moderated_by_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    moderated_at = Column(DateTime(timezone=True), nullable=True)
+    moderation_note = Column(Text, nullable=True)
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), nullable=True, onupdate=func.now())
+
+    product = relationship("Product")
+    customer = relationship("User", foreign_keys=[customer_id])
+    moderated_by = relationship("User", foreign_keys=[moderated_by_id])
+    answers = relationship("ProductAnswer", back_populates="question", cascade="all, delete-orphan")
+    votes = relationship("QuestionVote", back_populates="question", cascade="all, delete-orphan")
+    reports = relationship("QuestionReport", back_populates="question", cascade="all, delete-orphan")
+
+    __table_args__ = (
+        CheckConstraint("char_length(question) >= 5", name="ck_product_question_min_length"),
+        CheckConstraint("helpful_count >= 0", name="ck_product_question_helpful_count"),
+        CheckConstraint("answer_count >= 0", name="ck_product_question_answer_count"),
+    )
+
+
+class ProductAnswer(Base):
+    __tablename__ = "product_answers"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    question_id = Column(UUID(as_uuid=True), ForeignKey("product_questions.id", ondelete="CASCADE"), nullable=False, index=True)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    answer = Column(Text, nullable=False)
+    is_seller_answer = Column(Boolean, nullable=False, default=False, server_default="false")
+    is_official = Column(Boolean, nullable=False, default=False, server_default="false")
+    status = Column(Enum(QuestionStatus), nullable=False, default=QuestionStatus.published, server_default="published", index=True)
+    helpful_count = Column(Integer, nullable=False, default=0, server_default="0")
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), nullable=True, onupdate=func.now())
+
+    question = relationship("ProductQuestion", back_populates="answers")
+    user = relationship("User")
+    votes = relationship("AnswerVote", back_populates="answer", cascade="all, delete-orphan")
+    __table_args__ = (
+        CheckConstraint("char_length(answer) >= 2", name="ck_product_answer_min_length"),
+        CheckConstraint("helpful_count >= 0", name="ck_product_answer_helpful_count"),
+    )
+
+
+class QuestionVote(Base):
+    __tablename__ = "question_votes"
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    question_id = Column(UUID(as_uuid=True), ForeignKey("product_questions.id", ondelete="CASCADE"), nullable=False, index=True)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    question = relationship("ProductQuestion", back_populates="votes")
+    __table_args__ = (UniqueConstraint("question_id", "user_id", name="uq_question_vote_question_user"),)
+
+
+class AnswerVote(Base):
+    __tablename__ = "answer_votes"
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    answer_id = Column(UUID(as_uuid=True), ForeignKey("product_answers.id", ondelete="CASCADE"), nullable=False, index=True)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    answer = relationship("ProductAnswer", back_populates="votes")
+    __table_args__ = (UniqueConstraint("answer_id", "user_id", name="uq_answer_vote_answer_user"),)
+
+
+class QuestionReport(Base):
+    __tablename__ = "question_reports"
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    question_id = Column(UUID(as_uuid=True), ForeignKey("product_questions.id", ondelete="CASCADE"), nullable=False, index=True)
+    reported_by_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    reason = Column(Enum(QuestionReportReason), nullable=False)
+    details = Column(Text, nullable=True)
+    resolved = Column(Boolean, nullable=False, default=False, server_default="false")
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    question = relationship("ProductQuestion", back_populates="reports")
+    __table_args__ = (UniqueConstraint("question_id", "reported_by_id", name="uq_question_report_question_user"),)
+
+
+class SearchHistory(Base):
+    __tablename__ = "search_history"
+    __table_args__ = (
+        Index("ix_search_history_user_created", "user_id", "created_at"),
+        Index("ix_search_history_query_created", "normalized_query", "created_at"),
+    )
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=True, index=True)
+    query = Column(String(255), nullable=False)
+    normalized_query = Column(String(255), nullable=False, index=True)
+    filters = Column(JSONB, nullable=False, default=dict)
+    result_count = Column(Integer, nullable=False, default=0)
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+    __table_args__ = (
+        Index("ix_search_history_user_created", "user_id", "created_at"),
+        Index("ix_search_history_query_created", "normalized_query", "created_at"),
+        CheckConstraint("result_count >= 0", name="ck_search_history_result_count"),
+    )
+
+
+class SearchTerm(Base):
+    __tablename__ = "search_terms"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    term = Column(String(255), nullable=False, unique=True, index=True)
+    search_count = Column(Integer, nullable=False, default=0)
+    result_click_count = Column(Integer, nullable=False, default=0)
+    last_searched_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), nullable=True, onupdate=func.now())
+
+    __table_args__ = (
+        CheckConstraint("search_count >= 0", name="ck_search_term_search_count"),
+        CheckConstraint("result_click_count >= 0", name="ck_search_term_click_count"),
+    )
+
+
+class ProductView(Base):
+    __tablename__ = "product_views"
+    __table_args__ = (Index("ix_product_views_product_created", "product_id", "created_at"),)
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    product_id = Column(UUID(as_uuid=True), ForeignKey("products.id", ondelete="CASCADE"), nullable=False, index=True)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
+    session_id = Column(String(128), nullable=True, index=True)
+    source = Column(String(64), nullable=True)
+    search_query = Column(String(255), nullable=True)
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+    product = relationship("Product")
+
+
+class ProductRecommendation(Base):
+    __tablename__ = "product_recommendations"
+    __table_args__ = (
+        UniqueConstraint("user_id", "product_id", "recommendation_type", name="uq_product_recommendation_user_product_type"),
+        CheckConstraint("score >= 0", name="ck_product_recommendation_score"),
+    )
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    product_id = Column(UUID(as_uuid=True), ForeignKey("products.id", ondelete="CASCADE"), nullable=False, index=True)
+    recommendation_type = Column(String(64), nullable=False, default="personalized")
+    score = Column(Float, nullable=False, default=0.0)
+    reason = Column(String(255), nullable=True)
+    generated_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    expires_at = Column(DateTime(timezone=True), nullable=True)
+
+    product = relationship("Product")
+
+
+class RecommendationEvent(Base):
+    __tablename__ = "recommendation_events"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
+    product_id = Column(UUID(as_uuid=True), ForeignKey("products.id", ondelete="CASCADE"), nullable=False, index=True)
+    event_type = Column(String(64), nullable=False, index=True)
+    metadata_json = Column(JSONB, nullable=False, default=dict)
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+    __table_args__ = (CheckConstraint("char_length(event_type) >= 2", name="ck_recommendation_event_type"),)
+
+
+# Phase 3 Task 18: Marketplace Administration Dashboard
+class AdminDashboardSnapshot(Base):
+    __tablename__ = "admin_dashboard_snapshots"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    period_start = Column(DateTime(timezone=True), nullable=False, index=True)
+    period_end = Column(DateTime(timezone=True), nullable=False, index=True)
+    metrics = Column(JSONB, nullable=False, default=dict)
+    generated_by_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    generated_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    __table_args__ = (CheckConstraint("period_end >= period_start", name="ck_admin_dashboard_snapshot_period"),)
+
+
+class SystemAlert(Base):
+    __tablename__ = "system_alerts"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    alert_type = Column(String(80), nullable=False, index=True)
+    severity = Column(String(20), nullable=False, default="warning", server_default="warning", index=True)
+    title = Column(String(255), nullable=False)
+    message = Column(Text, nullable=False)
+    source = Column(String(100), nullable=True, index=True)
+    entity_type = Column(String(80), nullable=True)
+    entity_id = Column(String(100), nullable=True)
+    metadata_json = Column(JSONB, nullable=False, default=dict)
+    is_resolved = Column(Boolean, nullable=False, default=False, server_default="false", index=True)
+    resolved_by_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    resolved_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now(), index=True)
+    __table_args__ = (CheckConstraint("severity IN ('info','warning','error','critical')", name="ck_system_alert_severity"),)
+
+
+class AdminActivityLog(Base):
+    __tablename__ = "admin_activity_logs"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    admin_user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
+    action = Column(String(120), nullable=False, index=True)
+    resource_type = Column(String(100), nullable=True, index=True)
+    resource_id = Column(String(100), nullable=True)
+    details = Column(JSONB, nullable=False, default=dict)
+    ip_address = Column(String(64), nullable=True)
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now(), index=True)
+
+
+# =========================================================
+# FULFILMENT & MULTI-WAREHOUSE
+# =========================================================
+
+class Warehouse(Base):
+    __tablename__ = "warehouses"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    name = Column(String(200), nullable=False)
+    code = Column(String(20), unique=True, nullable=False, index=True)
+    country = Column(String(100), nullable=False)
+    region = Column(String(100), nullable=False)
+    district = Column(String(100), nullable=True)
+    ward = Column(String(100), nullable=True)
+    street = Column(String(255), nullable=True)
+    latitude = Column(Float, nullable=True)
+    longitude = Column(Float, nullable=True)
+    total_capacity = Column(Integer, nullable=False, default=0, server_default="0")
+    used_capacity = Column(Integer, nullable=False, default=0, server_default="0")
+    status = Column(Enum(WarehouseStatus), nullable=False, default=WarehouseStatus.active, server_default="active", index=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+    bins = relationship("WarehouseBin", back_populates="warehouse", cascade="all, delete-orphan")
+    inbound_shipments = relationship("InboundShipment", back_populates="warehouse")
+    warehouse_inventory = relationship("WarehouseInventory", back_populates="warehouse")
+    putaway_tasks = relationship("PutawayTask", back_populates="warehouse")
+    pick_lists = relationship("PickList", back_populates="warehouse")
+
+    __table_args__ = (
+        CheckConstraint("total_capacity >= 0", name="ck_warehouse_total_capacity_nonnegative"),
+        CheckConstraint("used_capacity >= 0", name="ck_warehouse_used_capacity_nonnegative"),
+        CheckConstraint("used_capacity <= total_capacity", name="ck_warehouse_used_lte_total"),
+        Index("ix_warehouse_status", "status"),
+        Index("ix_warehouse_country", "country"),
+    )
+
+
+class WarehouseBin(Base):
+    __tablename__ = "warehouse_bins"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    warehouse_id = Column(UUID(as_uuid=True), ForeignKey("warehouses.id", ondelete="CASCADE"), nullable=False, index=True)
+    aisle = Column(String(20), nullable=False)
+    shelf = Column(String(20), nullable=False)
+    bin = Column(String(20), nullable=False)
+    zone = Column(String(50), nullable=True)
+    capacity = Column(Integer, nullable=False, default=0, server_default="0")
+    used_capacity = Column(Integer, nullable=False, default=0, server_default="0")
+    is_active = Column(Boolean, nullable=False, default=True, server_default="true")
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    warehouse = relationship("Warehouse", back_populates="bins")
+    inventory_items = relationship("WarehouseInventory", back_populates="bin")
+    putaway_tasks = relationship("PutawayTask", back_populates="bin")
+    pick_list_items = relationship("PickListItem", back_populates="bin")
+
+    __table_args__ = (
+        UniqueConstraint("warehouse_id", "aisle", "shelf", "bin", name="uq_warehouse_bin_location"),
+        CheckConstraint("capacity >= 0", name="ck_warehouse_bin_capacity_nonnegative"),
+        CheckConstraint("used_capacity >= 0", name="ck_warehouse_bin_used_nonnegative"),
+        CheckConstraint("used_capacity <= capacity", name="ck_warehouse_bin_used_lte_capacity"),
+    )
+
+
+class InboundShipment(Base):
+    __tablename__ = "inbound_shipments"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    reference = Column(String(30), unique=True, nullable=False, index=True)
+    seller_id = Column(UUID(as_uuid=True), ForeignKey("sellers.id", ondelete="RESTRICT"), nullable=False, index=True)
+    warehouse_id = Column(UUID(as_uuid=True), ForeignKey("warehouses.id", ondelete="RESTRICT"), nullable=False, index=True)
+    status = Column(Enum(InboundShipmentStatus), nullable=False, default=InboundShipmentStatus.draft, server_default="draft", index=True)
+    expected_arrival_at = Column(DateTime(timezone=True), nullable=True)
+    received_at = Column(DateTime(timezone=True), nullable=True)
+    completed_at = Column(DateTime(timezone=True), nullable=True)
+    notes = Column(Text, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+    seller = relationship("Seller")
+    warehouse = relationship("Warehouse", back_populates="inbound_shipments")
+    items = relationship("InboundShipmentItem", back_populates="inbound_shipment", cascade="all, delete-orphan")
+    putaway_tasks = relationship("PutawayTask", back_populates="inbound_shipment", cascade="all, delete-orphan")
+
+
+class InboundShipmentItem(Base):
+    __tablename__ = "inbound_shipment_items"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    inbound_shipment_id = Column(UUID(as_uuid=True), ForeignKey("inbound_shipments.id", ondelete="CASCADE"), nullable=False, index=True)
+    product_id = Column(UUID(as_uuid=True), ForeignKey("products.id", ondelete="RESTRICT"), nullable=False, index=True)
+    variant_id = Column(UUID(as_uuid=True), ForeignKey("product_variants.id", ondelete="SET NULL"), nullable=True)
+    expected_quantity = Column(Integer, nullable=False, default=0, server_default="0")
+    received_quantity = Column(Integer, nullable=False, default=0, server_default="0")
+    putaway_quantity = Column(Integer, nullable=False, default=0, server_default="0")
+    condition = Column(String(20), nullable=True)
+    notes = Column(Text, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    inbound_shipment = relationship("InboundShipment", back_populates="items")
+    product = relationship("Product")
+    variant = relationship("ProductVariant")
+    putaway_tasks = relationship("PutawayTask", back_populates="inbound_item")
+
+    __table_args__ = (
+        CheckConstraint("expected_quantity >= 0", name="ck_inbound_item_expected_nonnegative"),
+        CheckConstraint("received_quantity >= 0", name="ck_inbound_item_received_nonnegative"),
+        CheckConstraint("putaway_quantity >= 0", name="ck_inbound_item_putaway_nonnegative"),
+        CheckConstraint("received_quantity <= expected_quantity", name="ck_inbound_item_received_lte_expected"),
+        CheckConstraint("putaway_quantity <= received_quantity", name="ck_inbound_item_putaway_lte_received"),
+    )
+
+
+class PutawayTask(Base):
+    __tablename__ = "putaway_tasks"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    inbound_shipment_id = Column(UUID(as_uuid=True), ForeignKey("inbound_shipments.id", ondelete="CASCADE"), nullable=False, index=True)
+    inbound_item_id = Column(UUID(as_uuid=True), ForeignKey("inbound_shipment_items.id", ondelete="CASCADE"), nullable=False, index=True)
+    warehouse_id = Column(UUID(as_uuid=True), ForeignKey("warehouses.id", ondelete="RESTRICT"), nullable=False, index=True)
+    warehouse_bin_id = Column(UUID(as_uuid=True), ForeignKey("warehouse_bins.id", ondelete="SET NULL"), nullable=True)
+    product_id = Column(UUID(as_uuid=True), ForeignKey("products.id", ondelete="RESTRICT"), nullable=False)
+    variant_id = Column(UUID(as_uuid=True), ForeignKey("product_variants.id", ondelete="SET NULL"), nullable=True)
+    quantity = Column(Integer, nullable=False, default=0, server_default="0")
+    putaway_quantity = Column(Integer, nullable=False, default=0, server_default="0")
+    assigned_to = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
+    status = Column(Enum(PutawayTaskStatus), nullable=False, default=PutawayTaskStatus.pending, server_default="pending", index=True)
+    notes = Column(Text, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    completed_at = Column(DateTime(timezone=True), nullable=True)
+
+    inbound_shipment = relationship("InboundShipment", back_populates="putaway_tasks")
+    inbound_item = relationship("InboundShipmentItem", back_populates="putaway_tasks")
+    warehouse = relationship("Warehouse", back_populates="putaway_tasks")
+    bin = relationship("WarehouseBin", back_populates="putaway_tasks")
+    product = relationship("Product")
+    variant = relationship("ProductVariant")
+    assigned_user = relationship("User", foreign_keys=[assigned_to])
+
+
+class WarehouseInventory(Base):
+    __tablename__ = "warehouse_inventory"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    warehouse_id = Column(UUID(as_uuid=True), ForeignKey("warehouses.id", ondelete="RESTRICT"), nullable=False, index=True)
+    product_id = Column(UUID(as_uuid=True), ForeignKey("products.id", ondelete="RESTRICT"), nullable=False, index=True)
+    variant_id = Column(UUID(as_uuid=True), ForeignKey("product_variants.id", ondelete="SET NULL"), nullable=True)
+    seller_id = Column(UUID(as_uuid=True), ForeignKey("sellers.id", ondelete="RESTRICT"), nullable=False, index=True)
+    quantity = Column(Integer, nullable=False, default=0, server_default="0")
+    reserved_quantity = Column(Integer, nullable=False, default=0, server_default="0")
+    available_quantity = Column(Integer, nullable=False, default=0, server_default="0")
+    low_stock_threshold = Column(Integer, nullable=False, default=10, server_default="10")
+    warehouse_bin_id = Column(UUID(as_uuid=True), ForeignKey("warehouse_bins.id", ondelete="SET NULL"), nullable=True)
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+    warehouse = relationship("Warehouse", back_populates="warehouse_inventory")
+    product = relationship("Product")
+    variant = relationship("ProductVariant")
+    seller = relationship("Seller")
+    bin = relationship("WarehouseBin", back_populates="inventory_items")
+    movements = relationship("WarehouseInventoryMovement", back_populates="inventory")
+
+    __table_args__ = (
+        CheckConstraint("quantity >= 0", name="ck_wh_inv_quantity_nonnegative"),
+        CheckConstraint("reserved_quantity >= 0", name="ck_wh_inv_reserved_nonnegative"),
+        CheckConstraint("reserved_quantity <= quantity", name="ck_wh_inv_reserved_lte_quantity"),
+        CheckConstraint("available_quantity = quantity - reserved_quantity", name="ck_wh_inv_available_consistent"),
+        Index("uq_wh_inv_warehouse_product_variant", "warehouse_id", "product_id", "variant_id", unique=True),
+        Index(
+            "uq_wh_inv_without_variant",
+            "warehouse_id", "product_id",
+            unique=True,
+            postgresql_where=variant_id.is_(None),
+        ),
+    )
+
+
+class WarehouseInventoryMovement(Base):
+    __tablename__ = "warehouse_inventory_movements"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    warehouse_inventory_id = Column(UUID(as_uuid=True), ForeignKey("warehouse_inventory.id", ondelete="CASCADE"), nullable=False, index=True)
+    movement_type = Column(Enum(WarehouseInventoryMovementType), nullable=False, index=True)
+    quantity = Column(Integer, nullable=False, default=0)
+    reference_type = Column(String(50), nullable=True)
+    reference_id = Column(UUID(as_uuid=True), nullable=True)
+    reason = Column(String(255), nullable=True)
+    notes = Column(Text, nullable=True)
+    created_by_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    inventory = relationship("WarehouseInventory", back_populates="movements")
+    created_by = relationship("User")
+
+
+class PickList(Base):
+    __tablename__ = "pick_lists"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    reference = Column(String(30), unique=True, nullable=False, index=True)
+    warehouse_id = Column(UUID(as_uuid=True), ForeignKey("warehouses.id", ondelete="RESTRICT"), nullable=False, index=True)
+    seller_order_id = Column(UUID(as_uuid=True), ForeignKey("seller_orders.id", ondelete="CASCADE"), nullable=False, index=True)
+    status = Column(Enum(PickListStatus), nullable=False, default=PickListStatus.pending, server_default="pending", index=True)
+    assigned_to = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
+    notes = Column(Text, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    completed_at = Column(DateTime(timezone=True), nullable=True)
+
+    warehouse = relationship("Warehouse", back_populates="pick_lists")
+    seller_order = relationship("SellerOrder")
+    items = relationship("PickListItem", back_populates="pick_list", cascade="all, delete-orphan")
+    assigned_user = relationship("User", foreign_keys=[assigned_to])
+
+
+class PickListItem(Base):
+    __tablename__ = "pick_list_items"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    pick_list_id = Column(UUID(as_uuid=True), ForeignKey("pick_lists.id", ondelete="CASCADE"), nullable=False, index=True)
+    product_id = Column(UUID(as_uuid=True), ForeignKey("products.id", ondelete="RESTRICT"), nullable=False, index=True)
+    variant_id = Column(UUID(as_uuid=True), ForeignKey("product_variants.id", ondelete="SET NULL"), nullable=True)
+    warehouse_bin_id = Column(UUID(as_uuid=True), ForeignKey("warehouse_bins.id", ondelete="SET NULL"), nullable=True)
+    quantity = Column(Integer, nullable=False, default=0, server_default="0")
+    picked_quantity = Column(Integer, nullable=False, default=0, server_default="0")
+    status = Column(String(20), nullable=False, default="pending", server_default="pending")
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    pick_list = relationship("PickList", back_populates="items")
+    product = relationship("Product")
+    variant = relationship("ProductVariant")
+    bin = relationship("WarehouseBin", back_populates="pick_list_items")
+
+    __table_args__ = (
+        CheckConstraint("quantity >= 0", name="ck_pick_item_quantity_nonnegative"),
+        CheckConstraint("picked_quantity >= 0", name="ck_pick_item_picked_nonnegative"),
+        CheckConstraint("picked_quantity <= quantity", name="ck_pick_item_picked_lte_quantity"),
+    )
+
+
+class Packaging(Base):
+    __tablename__ = "packaging"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    name = Column(String(100), nullable=False)
+    packaging_type = Column(Enum(PackagingType), nullable=False, default=PackagingType.box, server_default="box", index=True)
+    length_cm = Column(Numeric(10, 2), nullable=True)
+    width_cm = Column(Numeric(10, 2), nullable=True)
+    height_cm = Column(Numeric(10, 2), nullable=True)
+    empty_weight_kg = Column(Numeric(10, 2), nullable=True)
+    max_weight_kg = Column(Numeric(10, 2), nullable=True)
+    is_active = Column(Boolean, nullable=False, default=True, server_default="true")
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+
+# =========================================================
+# XERIN LOGISTICS – DRIVERS, VEHICLES, DELIVERY TRIPS
+# =========================================================
+
+class Driver(Base):
+    __tablename__ = "drivers"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, unique=True, index=True)
+    license_number = Column(String(50), nullable=True)
+    license_expiry = Column(DateTime(timezone=True), nullable=True)
+    license_image_url = Column(Text, nullable=True)
+    national_id = Column(String(50), nullable=True)
+    profile_image_url = Column(Text, nullable=True)
+    phone = Column(String(30), nullable=True)
+    emergency_contact = Column(String(30), nullable=True)
+    status = Column(Enum(DriverStatus), nullable=False, default=DriverStatus.offline, server_default="offline", index=True)
+    verification_status = Column(Enum(DriverVerificationStatus), nullable=False, default=DriverVerificationStatus.pending, server_default="pending", index=True)
+    is_online = Column(Boolean, nullable=False, default=False, server_default="false")
+    rating = Column(Numeric(3, 2), nullable=False, default=Decimal("0.00"), server_default="0.00")
+    total_deliveries = Column(Integer, nullable=False, default=0, server_default="0")
+    total_ratings = Column(Integer, nullable=False, default=0, server_default="0")
+    current_latitude = Column(Float, nullable=True)
+    current_longitude = Column(Float, nullable=True)
+    last_location_at = Column(DateTime(timezone=True), nullable=True)
+    service_zones = Column(JSONB, nullable=False, default=list, server_default="[]")
+    vehicle_id = Column(UUID(as_uuid=True), ForeignKey("vehicles.id", ondelete="SET NULL"), nullable=True)
+    approved_at = Column(DateTime(timezone=True), nullable=True)
+    suspended_at = Column(DateTime(timezone=True), nullable=True)
+    suspend_reason = Column(Text, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+    user = relationship("User", foreign_keys=[user_id])
+    vehicle = relationship("Vehicle", foreign_keys=[vehicle_id], back_populates="driver")
+    delivery_trips = relationship("DeliveryTrip", back_populates="driver")
+    documents = relationship("DriverDocument", back_populates="driver", cascade="all, delete-orphan")
+    kyc = relationship("DriverKYC", back_populates="driver", uselist=False, cascade="all, delete-orphan")
+
+    __table_args__ = (
+        Index("ix_driver_status_verification", "status", "verification_status"),
+    )
+
+
+class Vehicle(Base):
+    __tablename__ = "vehicles"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    plate_number = Column(String(20), nullable=False, unique=True, index=True)
+    vehicle_type = Column(Enum(VehicleType), nullable=False, default=VehicleType.motorcycle, server_default="motorcycle", index=True)
+    brand = Column(String(100), nullable=True)
+    model = Column(String(100), nullable=True)
+    year = Column(Integer, nullable=True)
+    color = Column(String(50), nullable=True)
+    capacity_kg = Column(Numeric(10, 2), nullable=True)
+    volume_m3 = Column(Numeric(10, 2), nullable=True)
+    license_expiry = Column(DateTime(timezone=True), nullable=True)
+    insurance_expiry = Column(DateTime(timezone=True), nullable=True)
+    registration_image_url = Column(Text, nullable=True)
+    insurance_image_url = Column(Text, nullable=True)
+    is_active = Column(Boolean, nullable=False, default=True, server_default="true")
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+    driver = relationship("Driver", foreign_keys=[Driver.vehicle_id], back_populates="vehicle")
+    delivery_trips = relationship("DeliveryTrip", back_populates="vehicle")
+
+
+class DeliveryTrip(Base):
+    __tablename__ = "delivery_trips"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    ref_code = Column(String(20), unique=True, nullable=False, index=True)
+    shipment_id = Column(UUID(as_uuid=True), ForeignKey("shipments.id", ondelete="CASCADE"), nullable=False, unique=True, index=True)
+    seller_order_id = Column(UUID(as_uuid=True), ForeignKey("seller_orders.id", ondelete="CASCADE"), nullable=False, index=True)
+    driver_id = Column(UUID(as_uuid=True), ForeignKey("drivers.id", ondelete="SET NULL"), nullable=True, index=True)
+    vehicle_id = Column(UUID(as_uuid=True), ForeignKey("vehicles.id", ondelete="SET NULL"), nullable=True, index=True)
+    status = Column(Enum(DeliveryTripStatus), nullable=False, default=DeliveryTripStatus.assigned, server_default="assigned", index=True)
+    pickup_address = Column(Text, nullable=True)
+    pickup_latitude = Column(Float, nullable=True)
+    pickup_longitude = Column(Float, nullable=True)
+    delivery_address = Column(Text, nullable=True)
+    delivery_latitude = Column(Float, nullable=True)
+    delivery_longitude = Column(Float, nullable=True)
+    estimated_distance_km = Column(Numeric(10, 2), nullable=True)
+    estimated_duration_min = Column(Integer, nullable=True)
+    delivery_fee = Column(Numeric(18, 2), nullable=True)
+    currency = Column(String(10), nullable=False, default="TZS", server_default="TZS")
+    otp = Column(String(6), nullable=True)
+    pickup_at = Column(DateTime(timezone=True), nullable=True)
+    delivered_at = Column(DateTime(timezone=True), nullable=True)
+    failed_at = Column(DateTime(timezone=True), nullable=True)
+    failure_reason = Column(Text, nullable=True)
+    notes = Column(Text, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+    shipment = relationship("Shipment")
+    seller_order = relationship("SellerOrder")
+    driver = relationship("Driver", back_populates="delivery_trips")
+    vehicle = relationship("Vehicle", back_populates="delivery_trips")
+    events = relationship("DeliveryTripEvent", back_populates="trip", cascade="all, delete-orphan")
+    coordinate = relationship("DeliveryTripCoordinate", back_populates="trip", uselist=False, cascade="all, delete-orphan")
+    fee = relationship("DeliveryTripFee", back_populates="trip", uselist=False, cascade="all, delete-orphan")
+
+    __table_args__ = (
+        Index("ix_delivery_trip_status", "status"),
+    )
+
+
+class DeliveryTripEvent(Base):
+    __tablename__ = "delivery_trip_events"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    trip_id = Column(UUID(as_uuid=True), ForeignKey("delivery_trips.id", ondelete="CASCADE"), nullable=False, index=True)
+    status = Column(Enum(DeliveryTripStatus), nullable=False)
+    latitude = Column(Float, nullable=True)
+    longitude = Column(Float, nullable=True)
+    notes = Column(Text, nullable=True)
+    created_by_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    trip = relationship("DeliveryTrip", back_populates="events")
+    created_by = relationship("User", foreign_keys=[created_by_id])
+
+
+# =========================================================
+# DRIVER KYC & DOCUMENTS
+# =========================================================
+
+class DriverDocument(Base):
+    __tablename__ = "driver_documents"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    driver_id = Column(UUID(as_uuid=True), ForeignKey("drivers.id", ondelete="CASCADE"), nullable=False, index=True)
+    document_type = Column(Enum(DriverDocumentType), nullable=False, index=True)
+    document_number = Column(String(100), nullable=True)
+    document_image_url = Column(Text, nullable=True)
+    document_image_back_url = Column(Text, nullable=True)
+    status = Column(Enum(DriverDocumentStatus), nullable=False, default=DriverDocumentStatus.pending, server_default="pending", index=True)
+    expiry_date = Column(DateTime(timezone=True), nullable=True)
+    rejection_reason = Column(Text, nullable=True)
+    verified_at = Column(DateTime(timezone=True), nullable=True)
+    verified_by_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+    driver = relationship("Driver", back_populates="documents")
+    verified_by = relationship("User", foreign_keys=[verified_by_id])
+
+
+class DriverKYC(Base):
+    __tablename__ = "driver_kyc"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    driver_id = Column(UUID(as_uuid=True), ForeignKey("drivers.id", ondelete="CASCADE"), nullable=False, unique=True, index=True)
+    full_name = Column(String(200), nullable=False)
+    date_of_birth = Column(Date, nullable=True)
+    gender = Column(String(20), nullable=True)
+    national_id_number = Column(String(50), nullable=True)
+    license_number = Column(String(50), nullable=True)
+    license_class = Column(String(20), nullable=True)
+    license_expiry = Column(DateTime(timezone=True), nullable=True)
+    address = Column(Text, nullable=True)
+    city = Column(String(100), nullable=True)
+    region = Column(String(100), nullable=True)
+    country = Column(String(100), nullable=False, default="Tanzania")
+    emergency_contact_name = Column(String(200), nullable=True)
+    emergency_contact_phone = Column(String(30), nullable=True)
+    next_of_kin = Column(String(200), nullable=True)
+    next_of_kin_phone = Column(String(30), nullable=True)
+    bank_account_name = Column(String(200), nullable=True)
+    bank_account_number = Column(String(50), nullable=True)
+    bank_name = Column(String(100), nullable=True)
+    profile_image_url = Column(Text, nullable=True)
+    is_verified = Column(Boolean, nullable=False, default=False, server_default="false")
+    submitted_at = Column(DateTime(timezone=True), nullable=True)
+    verified_at = Column(DateTime(timezone=True), nullable=True)
+    verified_by_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    rejection_reason = Column(Text, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+    driver = relationship("Driver", back_populates="kyc")
+    verified_by = relationship("User", foreign_keys=[verified_by_id])
+
+
+# =========================================================
+# DELIVERY ZONE & FARE MANAGEMENT
+# =========================================================
+
+class DeliveryZone(Base):
+    __tablename__ = "delivery_zones"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    name = Column(String(100), nullable=False, unique=True, index=True)
+    description = Column(Text, nullable=True)
+    city = Column(String(100), nullable=True)
+    region = Column(String(100), nullable=True)
+    country = Column(String(100), nullable=False, default="Tanzania")
+    # Bounding box or polygon coordinates stored as JSON
+    boundaries = Column(JSONB, nullable=True)
+    center_latitude = Column(Float, nullable=True)
+    center_longitude = Column(Float, nullable=True)
+    radius_km = Column(Numeric(10, 2), nullable=True)
+    is_active = Column(Boolean, nullable=False, default=True, server_default="true", index=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+    fares = relationship("DeliveryFare", back_populates="zone", cascade="all, delete-orphan")
+    surge_pricings = relationship("SurgePricing", back_populates="zone", cascade="all, delete-orphan")
+
+
+class DeliveryFare(Base):
+    __tablename__ = "delivery_fares"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    zone_id = Column(UUID(as_uuid=True), ForeignKey("delivery_zones.id", ondelete="CASCADE"), nullable=False, index=True)
+    fare_type = Column(Enum(FareType), nullable=False, default=FareType.delivery, server_default="delivery", index=True)
+    vehicle_type = Column(Enum(VehicleType), nullable=True, index=True)
+    base_fare = Column(Numeric(18, 2), nullable=False, default=Decimal("0"))
+    per_km_fare = Column(Numeric(18, 2), nullable=False, default=Decimal("0"))
+    waiting_fee_per_min = Column(Numeric(18, 2), nullable=False, default=Decimal("0"))
+    idle_fee_per_min = Column(Numeric(18, 2), nullable=False, default=Decimal("0"))
+    cancellation_fee_percent = Column(Numeric(5, 2), nullable=False, default=Decimal("0"))
+    min_cancellation_fee = Column(Numeric(18, 2), nullable=False, default=Decimal("0"))
+    trip_delay_fee_per_min = Column(Numeric(18, 2), nullable=False, default=Decimal("0"))
+    penalty_fee_for_cancel = Column(Numeric(18, 2), nullable=False, default=Decimal("0"))
+    fee_add_to_next = Column(Numeric(18, 2), nullable=False, default=Decimal("0"))
+    min_fare = Column(Numeric(18, 2), nullable=False, default=Decimal("0"))
+    max_fare = Column(Numeric(18, 2), nullable=True)
+    is_active = Column(Boolean, nullable=False, default=True, server_default="true")
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+    zone = relationship("DeliveryZone", back_populates="fares")
+
+
+class SurgePricing(Base):
+    __tablename__ = "surge_pricings"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    name = Column(String(150), nullable=False)
+    zone_id = Column(UUID(as_uuid=True), ForeignKey("delivery_zones.id", ondelete="CASCADE"), nullable=True, index=True)
+    surge_type = Column(Enum(SurgePricingType), nullable=False, default=SurgePricingType.all_vehicles, server_default="all_vehicles")
+    surge_percentage = Column(Numeric(5, 2), nullable=False, default=Decimal("0"))
+    vehicle_type = Column(Enum(VehicleType), nullable=True)
+    schedule_type = Column(Enum(SurgeScheduleType), nullable=False, default=SurgeScheduleType.always, server_default="always")
+    start_time = Column(Time, nullable=True)
+    end_time = Column(Time, nullable=True)
+    days_of_week = Column(JSONB, nullable=True, default=list)
+    customer_note = Column(Text, nullable=True)
+    is_active = Column(Boolean, nullable=False, default=True, server_default="true", index=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+    zone = relationship("DeliveryZone", back_populates="surge_pricings")
+
+
+# =========================================================
+# DELIVERY TRIP COORDINATES & FEES
+# =========================================================
+
+class DeliveryTripCoordinate(Base):
+    __tablename__ = "delivery_trip_coordinates"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    trip_id = Column(UUID(as_uuid=True), ForeignKey("delivery_trips.id", ondelete="CASCADE"), nullable=False, unique=True, index=True)
+    pickup_latitude = Column(Float, nullable=True)
+    pickup_longitude = Column(Float, nullable=True)
+    pickup_address = Column(Text, nullable=True)
+    destination_latitude = Column(Float, nullable=True)
+    destination_longitude = Column(Float, nullable=True)
+    destination_address = Column(Text, nullable=True)
+    intermediate_coordinates = Column(JSONB, nullable=True, default=list)
+    intermediate_addresses = Column(JSONB, nullable=True, default=list)
+    driver_accept_latitude = Column(Float, nullable=True)
+    driver_accept_longitude = Column(Float, nullable=True)
+    start_latitude = Column(Float, nullable=True)
+    start_longitude = Column(Float, nullable=True)
+    drop_latitude = Column(Float, nullable=True)
+    drop_longitude = Column(Float, nullable=True)
+    is_reached_destination = Column(Boolean, nullable=False, default=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+    trip = relationship("DeliveryTrip", back_populates="coordinate")
+
+
+class DeliveryTripFee(Base):
+    __tablename__ = "delivery_trip_fees"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    trip_id = Column(UUID(as_uuid=True), ForeignKey("delivery_trips.id", ondelete="CASCADE"), nullable=False, unique=True, index=True)
+    base_fare = Column(Numeric(18, 2), nullable=False, default=Decimal("0"))
+    distance_fare = Column(Numeric(18, 2), nullable=False, default=Decimal("0"))
+    waiting_fee = Column(Numeric(18, 2), nullable=False, default=Decimal("0"))
+    idle_fee = Column(Numeric(18, 2), nullable=False, default=Decimal("0"))
+    delay_fee = Column(Numeric(18, 2), nullable=False, default=Decimal("0"))
+    cancellation_fee = Column(Numeric(18, 2), nullable=False, default=Decimal("0"))
+    return_fee = Column(Numeric(18, 2), nullable=False, default=Decimal("0"))
+    surge_fee = Column(Numeric(18, 2), nullable=False, default=Decimal("0"))
+    vat_tax = Column(Numeric(18, 2), nullable=False, default=Decimal("0"))
+    admin_commission = Column(Numeric(18, 2), nullable=False, default=Decimal("0"))
+    tips = Column(Numeric(18, 2), nullable=False, default=Decimal("0"))
+    total_fare = Column(Numeric(18, 2), nullable=False, default=Decimal("0"))
+    currency = Column(String(10), nullable=False, default="TZS", server_default="TZS")
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+    trip = relationship("DeliveryTrip", back_populates="fee")
+
+
+class SellerStockTransfer(Base):
+    __tablename__ = "seller_stock_transfers"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    reference = Column(String(30), unique=True, nullable=False, index=True)
+    seller_id = Column(UUID(as_uuid=True), ForeignKey("sellers.id", ondelete="RESTRICT"), nullable=False, index=True)
+    warehouse_id = Column(UUID(as_uuid=True), ForeignKey("warehouses.id", ondelete="RESTRICT"), nullable=False, index=True)
+    status = Column(Enum(StockTransferStatus), nullable=False, default=StockTransferStatus.draft, server_default="draft", index=True)
+    origin_type = Column(String(20), nullable=False, default="seller_store", server_default="seller_store")
+    origin_address = Column(Text, nullable=True)
+    expected_arrival_at = Column(DateTime(timezone=True), nullable=True)
+    dispatched_at = Column(DateTime(timezone=True), nullable=True)
+    received_at = Column(DateTime(timezone=True), nullable=True)
+    transport_cost = Column(Numeric(18, 2), nullable=True)
+    currency = Column(String(10), nullable=False, default="TZS", server_default="TZS")
+    notes = Column(Text, nullable=True)
+    rejection_reason = Column(Text, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+    seller = relationship("Seller")
+    warehouse = relationship("Warehouse")
+    items = relationship("SellerStockTransferItem", back_populates="transfer", cascade="all, delete-orphan")
+
+
+class SellerStockTransferItem(Base):
+    __tablename__ = "seller_stock_transfer_items"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    transfer_id = Column(UUID(as_uuid=True), ForeignKey("seller_stock_transfers.id", ondelete="CASCADE"), nullable=False, index=True)
+    product_id = Column(UUID(as_uuid=True), ForeignKey("products.id", ondelete="RESTRICT"), nullable=False, index=True)
+    variant_id = Column(UUID(as_uuid=True), ForeignKey("product_variants.id", ondelete="SET NULL"), nullable=True)
+    expected_quantity = Column(Integer, nullable=False, default=0, server_default="0")
+    received_quantity = Column(Integer, nullable=False, default=0, server_default="0")
+    condition = Column(String(20), nullable=True)
+    notes = Column(Text, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    transfer = relationship("SellerStockTransfer", back_populates="items")
+    product = relationship("Product")
+    variant = relationship("ProductVariant")
+
+    __table_args__ = (
+        CheckConstraint("expected_quantity >= 0", name="ck_sst_item_expected_nonnegative"),
+        CheckConstraint("received_quantity >= 0", name="ck_sst_item_received_nonnegative"),
+        CheckConstraint("received_quantity <= expected_quantity", name="ck_sst_item_received_lte_expected"),
+    )
+
+
+# =========================================================
+# SYSTEM SETTINGS
+# =========================================================
+
+class SystemSetting(Base):
+    __tablename__ = "system_settings"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    key = Column(String(100), nullable=False, unique=True, index=True)
+    value = Column(Text, nullable=True)
+    data_type = Column(String(20), nullable=False, default="string", server_default="string")
+    category = Column(String(50), nullable=False, default="general", server_default="general", index=True)
+    description = Column(Text, nullable=True)
+    is_public = Column(Boolean, nullable=False, default=False, server_default="false")
+    is_encrypted = Column(Boolean, nullable=False, default=False, server_default="false")
+    updated_by_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+
+# =========================================================
+# CURRENCIES & FX RATES
+# =========================================================
+
+class Currency(Base):
+    __tablename__ = "currencies"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    code = Column(String(10), unique=True, index=True, nullable=False)
+    name = Column(String(100), nullable=False)
+    symbol = Column(String(20), nullable=False)
+    is_base = Column(Boolean, nullable=False, default=False, server_default="false")
+    is_active = Column(Boolean, nullable=False, default=True, server_default="true")
+    decimal_places = Column(Integer, nullable=False, default=2, server_default="2")
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class FxRate(Base):
+    __tablename__ = "fx_rates"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    base_currency = Column(String(10), nullable=False, index=True)
+    quote_currency = Column(String(10), nullable=False, default="TZS")
+    rate = Column(Numeric(18, 6), nullable=False)
+    source = Column(String(100), nullable=True)
+    effective_at = Column(DateTime(timezone=True), server_default=func.now())
+    is_active = Column(Boolean, nullable=False, default=True, server_default="true")
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class Advertisement(Base):
+    """Sponsored placement shown on the storefront (hero rail, homepage
+    banner, category/search banners). Tracked via AdvertisementEvent."""
+    __tablename__ = "advertisements"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    advertiser_name = Column(String(150), nullable=False)
+    title = Column(String(200), nullable=False)
+    description = Column(Text, nullable=True)
+    image_url = Column(String(500), nullable=False)
+    mobile_image_url = Column(String(500), nullable=True)
+    alt_text = Column(String(255), nullable=True)
+    target_url = Column(String(500), nullable=True)
+    cta_label = Column(String(60), nullable=True)
+    placement = Column(String(40), nullable=False, index=True)
+    status = Column(String(20), nullable=False, default="draft", server_default="draft")
+    starts_at = Column(DateTime(timezone=True), nullable=False)
+    ends_at = Column(DateTime(timezone=True), nullable=False)
+    priority = Column(Integer, nullable=False, default=0, server_default="0")
+    billing_type = Column(String(10), nullable=False, default="fixed", server_default="fixed")
+    price = Column(Numeric(14, 2), nullable=True)
+    currency = Column(String(10), nullable=False, default="TZS", server_default="TZS")
+    impression_count = Column(Integer, nullable=False, default=0, server_default="0")
+    click_count = Column(Integer, nullable=False, default=0, server_default="0")
+    metadata_json = Column(JSONB, nullable=False, default=dict, server_default="{}")
+    created_by_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    updated_by_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+
+class AdvertisementEvent(Base):
+    """Deduplicated impression/click events per (ad, session, type)."""
+    __tablename__ = "advertisement_events"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    advertisement_id = Column(UUID(as_uuid=True), ForeignKey("advertisements.id", ondelete="CASCADE"), nullable=False, index=True)
+    event_type = Column(String(15), nullable=False)  # impression | click
+    session_id = Column(String(80), nullable=False)
+    client_event_id = Column(String(80), nullable=True)
+    page_path = Column(String(255), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), index=True)
+
+    __table_args__ = (
+        UniqueConstraint(
+            "advertisement_id", "session_id", "event_type",
+            name="uq_ad_event_dedupe",
+        ),
+    )
+
+
+class BrokerWallet(Base):
+    __tablename__ = "broker_wallets"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    broker_id = Column(UUID(as_uuid=True), ForeignKey("brokers.id", ondelete="CASCADE"), unique=True, nullable=False, index=True)
+    currency = Column(String(10), nullable=False, default="TZS")
+
+    pending_balance = Column(Numeric(14, 2), nullable=False, default=0)
+    available_balance = Column(Numeric(14, 2), nullable=False, default=0)
+    reserved_balance = Column(Numeric(14, 2), nullable=False, default=0)
+    paid_out_balance = Column(Numeric(14, 2), nullable=False, default=0)
+    reversed_balance = Column(Numeric(14, 2), nullable=False, default=0)
+    debt_balance = Column(Numeric(14, 2), nullable=False, default=0)
+
+    is_frozen = Column(Boolean, default=False, nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+    broker = relationship("Broker")
+
+
+class BrokerWalletTransaction(Base):
+    __tablename__ = "broker_wallet_transactions"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    wallet_id = Column(UUID(as_uuid=True), ForeignKey("broker_wallets.id", ondelete="CASCADE"), nullable=False, index=True)
+    broker_id = Column(UUID(as_uuid=True), ForeignKey("brokers.id", ondelete="CASCADE"), nullable=False, index=True)
+
+    transaction_type = Column(String(50), nullable=False)
+    amount = Column(Numeric(14, 2), nullable=False)
+    currency = Column(String(10), nullable=False, default="TZS")
+    reference = Column(String(100), nullable=True)
+    description = Column(Text, nullable=True)
+
+    payout_request_id = Column(UUID(as_uuid=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class BrokerPayoutAccount(Base):
+    __tablename__ = "broker_payout_accounts"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    broker_id = Column(UUID(as_uuid=True), ForeignKey("brokers.id", ondelete="CASCADE"), nullable=False, index=True)
+
+    account_type = Column(String(30), nullable=False)  # mobile_money | bank
+    provider = Column(String(100), nullable=False)
+    account_name = Column(String(255), nullable=False)
+    account_number = Column(String(100), nullable=False)
+    currency = Column(String(10), nullable=False, default="TZS")
+
+    is_default = Column(Boolean, default=False, nullable=False)
+    is_active = Column(Boolean, default=True, nullable=False)
+    verification_status = Column(String(30), nullable=False, default="pending")  # pending | verified | rejected
+    verification_note = Column(Text, nullable=True)
+    verified_at = Column(DateTime(timezone=True), nullable=True)
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+
+class BrokerPayoutRequest(Base):
+    __tablename__ = "broker_payout_requests"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    wallet_id = Column(UUID(as_uuid=True), ForeignKey("broker_wallets.id"), nullable=False, index=True)
+    broker_id = Column(UUID(as_uuid=True), ForeignKey("brokers.id", ondelete="CASCADE"), nullable=False, index=True)
+    payout_account_id = Column(UUID(as_uuid=True), ForeignKey("broker_payout_accounts.id"), nullable=False)
+
+    amount = Column(Numeric(14, 2), nullable=False)
+    currency = Column(String(10), nullable=False, default="TZS")
+    status = Column(Enum(PayoutStatus), nullable=False, default=PayoutStatus.pending, index=True)
+
+    provider_reference = Column(String(150), nullable=True)
+    broker_note = Column(Text, nullable=True)
+    admin_note = Column(Text, nullable=True)
+    idempotency_key = Column(String(120), nullable=True, unique=True, index=True)
+
+    requested_at = Column(DateTime(timezone=True), server_default=func.now())
+    processed_at = Column(DateTime(timezone=True), nullable=True)
+    completed_at = Column(DateTime(timezone=True), nullable=True)
+
+class AlertNotification(Base):
+    """Outbound email alert delivery record — the event lives in
+    audit_logs/security_events; this only tracks notification delivery."""
+    __tablename__ = "alert_notifications"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    dedup_key = Column(String(200), nullable=False, index=True)
+    recipient = Column(String(320), nullable=False)
+    subject = Column(String(255), nullable=False)
+    body_text = Column(Text, nullable=False)
+    severity = Column(String(20), nullable=False, index=True)
+    event_type = Column(String(120), nullable=True, index=True)
+    status = Column(String(20), nullable=False, default="pending", server_default="pending", index=True)
+    attempts = Column(Integer, nullable=False, default=0, server_default="0")
+    aggregate_count = Column(Integer, nullable=False, default=1, server_default="1")
+    last_error = Column(Text, nullable=True)
+    next_retry_at = Column(DateTime(timezone=True), nullable=True, index=True)
+    sent_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now(), index=True)
+
+    __table_args__ = (
+        CheckConstraint("status IN ('pending','sent','failed','cancelled')", name="ck_alert_notification_status"),
+        CheckConstraint("severity IN ('info','notice','warning','critical')", name="ck_alert_notification_severity"),
+    )
+
+
+class MigrationEvent(Base):
+    """Records alembic migration executions from the deployment wrapper."""
+    __tablename__ = "migration_events"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    revision = Column(String(120), nullable=True, index=True)
+    name = Column(String(255), nullable=True)
+    status = Column(String(20), nullable=False, index=True)
+    environment = Column(String(40), nullable=True)
+    app_version = Column(String(120), nullable=True)
+    error_summary = Column(Text, nullable=True)
+    duration_ms = Column(Integer, nullable=True)
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now(), index=True)
+
+    __table_args__ = (
+        CheckConstraint("status IN ('started','succeeded','failed','rolled_back')", name="ck_migration_event_status"),
+    )
+
+
+class WeeklyReport(Base):
+    __tablename__ = "weekly_reports"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    period_start = Column(DateTime(timezone=True), nullable=False)
+    period_end = Column(DateTime(timezone=True), nullable=False)
+    subject = Column(String(255), nullable=False)
+    body_text = Column(Text, nullable=False)
+    stats = Column(JSONB, nullable=False, default=dict)
+    recipient = Column(String(320), nullable=False)
+    status = Column(String(20), nullable=False, default="pending", server_default="pending")
+    sent_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+    __table_args__ = (
+        CheckConstraint("status IN ('pending','sent','failed','skipped')", name="ck_weekly_report_status"),
+        UniqueConstraint("period_start", "period_end", name="uq_weekly_report_period"),
+    )

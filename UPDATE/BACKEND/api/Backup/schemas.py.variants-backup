@@ -1,0 +1,1791 @@
+from api.enums import CommissionScope, CommissionRuleType
+from pydantic import (
+    AliasChoices,
+    BaseModel,
+    ConfigDict,
+    EmailStr,
+    Field,
+    HttpUrl,
+    field_validator,
+    model_validator,
+)
+from uuid import UUID
+from datetime import datetime, time as Time
+from decimal import Decimal
+from typing import Optional, List, Dict, Any, Literal
+import enum
+from api.enums import DayOfWeek, StoreStatus, ShippingRateType
+from api.enums import ShipmentStatus, WalletTransactionType, PayoutStatus, RefundStatus, RefundReason
+
+
+class UserStatus(str, enum.Enum):
+    active = "active"
+    inactive = "inactive"
+    suspended = "suspended"
+    pending_verification = "pending_verification"
+
+
+class SellerStatus(str, enum.Enum):
+    pending = "pending"
+    under_review = "under_review"
+    approved = "approved"
+    rejected = "rejected"
+    suspended = "suspended"
+
+
+class ProductStatus(str, enum.Enum):
+    draft = "draft"
+    pending_review = "pending_review"
+    approved = "approved"
+    rejected = "rejected"
+    suspended = "suspended"
+
+
+class OrderStatus(str, enum.Enum):
+    pending = "pending"
+    confirmed = "confirmed"
+    processing = "processing"
+    shipped = "shipped"
+    delivered = "delivered"
+    cancelled = "cancelled"
+    refunded = "refunded"
+
+
+class PaymentStatus(str, enum.Enum):
+    pending = "pending"
+    processing = "processing"
+    completed = "completed"
+    failed = "failed"
+    refunded = "refunded"
+    cancelled = "cancelled"
+
+
+class PaymentMethod(str, enum.Enum):
+    mobile_money = "mobile_money"
+    bank_transfer = "bank_transfer"
+    card = "card"
+    cash_on_delivery = "cash_on_delivery"
+    xerin_pay = "xerin_pay"
+
+
+# Shared schema configuration and validation helpers.
+ORM_CONFIG = ConfigDict(from_attributes=True, populate_by_name=True, extra="forbid")
+
+
+def _clean_required_text(value: str) -> str:
+    value = value.strip()
+    if not value:
+        raise ValueError("Value must not be blank")
+    return value
+
+
+def _clean_optional_text(value: str | None) -> str | None:
+    if value is None:
+        return None
+    value = value.strip()
+    return value or None
+
+
+def _normalise_phone(value: str | None) -> str | None:
+    if value is None:
+        return None
+    value = value.strip().replace(" ", "").replace("-", "")
+    if not value:
+        return None
+    if value.startswith("+"):
+        digits = value[1:]
+    else:
+        digits = value
+    if not digits.isdigit() or not 7 <= len(digits) <= 15:
+        raise ValueError("Phone number must contain 7 to 15 digits")
+    return value
+
+
+def _validate_password(value: str) -> str:
+    if len(value.encode("utf-8")) > 72:
+        raise ValueError("Password must not exceed 72 bytes")
+    if len(value) < 10:
+        raise ValueError("Password must contain at least 10 characters")
+    if not any(ch.isupper() for ch in value):
+        raise ValueError("Password must contain an uppercase letter")
+    if not any(ch.islower() for ch in value):
+        raise ValueError("Password must contain a lowercase letter")
+    if not any(ch.isdigit() for ch in value):
+        raise ValueError("Password must contain a number")
+    return value
+
+
+def _normalise_currency(value: str) -> str:
+    value = value.strip().upper()
+    if len(value) != 3 or not value.isalpha():
+        raise ValueError("Currency must be a three-letter ISO code")
+    return value
+
+
+def _normalise_code(value: str) -> str:
+    value = value.strip().upper()
+    if not value:
+        raise ValueError("Code must not be blank")
+    return value
+
+
+class RegisterRequest(BaseModel):
+    first_name: str = Field(min_length=1, max_length=100)
+    last_name: str = Field(min_length=1, max_length=100)
+    email: EmailStr
+    phone: Optional[str] = None
+    password: str
+
+    _clean_names = field_validator("first_name", "last_name")(_clean_required_text)
+    _clean_phone = field_validator("phone")(_normalise_phone)
+    _strong_password = field_validator("password")(_validate_password)
+
+
+class LoginRequest(BaseModel):
+    email: EmailStr
+    password: str
+
+
+class TokenResponse(BaseModel):
+    access_token: str
+    refresh_token: str
+    token_type: str = "bearer"
+    user: dict | None = None
+
+
+class RefreshRequest(BaseModel):
+    refresh_token: str
+
+
+class SendOTPRequest(BaseModel):
+    phone: str
+
+
+class VerifyOTPRequest(BaseModel):
+    phone: str
+    otp_code: str
+
+
+class ForgotPasswordRequest(BaseModel):
+    email: EmailStr
+
+
+class ResetPasswordRequest(BaseModel):
+    email: EmailStr
+    otp_code: str = Field(min_length=4, max_length=10)
+    new_password: str
+
+    _strong_password = field_validator("new_password")(_validate_password)
+
+
+class ChangePasswordRequest(BaseModel):
+    current_password: str = Field(min_length=8, max_length=128)
+    new_password: str
+
+    _strong_password = field_validator("new_password")(_validate_password)
+
+    @model_validator(mode="after")
+    def passwords_must_differ(self):
+        if self.current_password == self.new_password:
+            raise ValueError("New password must be different from the current password")
+        return self
+
+
+class UserResponse(BaseModel):
+    id: UUID
+    first_name: str
+    last_name: str
+    email: EmailStr
+    phone: str | None
+    is_verified: bool
+    status: str
+
+    is_seller: bool = False
+    seller_status: str | None = None
+    account_type: str = "customer"
+
+    model_config = ORM_CONFIG
+
+
+class UpdateUserRequest(BaseModel):
+    first_name: Optional[str] = None
+    last_name: Optional[str] = None
+    phone: Optional[str] = None
+
+
+class AddressCreate(BaseModel):
+    label: Optional[str] = Field(default=None, max_length=50)
+    recipient_name: Optional[str] = Field(default=None, max_length=150)
+    recipient_phone: Optional[str] = Field(default=None, max_length=30)
+    country: str = Field(default="Tanzania", min_length=2, max_length=100)
+    region: str = Field(min_length=2, max_length=100)
+    district: Optional[str] = Field(default=None, max_length=100)
+    ward: Optional[str] = Field(default=None, max_length=100)
+    city: str = Field(min_length=2, max_length=100)
+    street: str = Field(min_length=3, max_length=1000)
+    landmark: Optional[str] = Field(default=None, max_length=255)
+    postal_code: Optional[str] = Field(default=None, max_length=50)
+    latitude: Optional[Decimal] = Field(default=None, ge=Decimal("-90"), le=Decimal("90"))
+    longitude: Optional[Decimal] = Field(default=None, ge=Decimal("-180"), le=Decimal("180"))
+    is_default: bool = False
+
+    @field_validator("label", "recipient_name", "recipient_phone", "country", "region", "district", "ward", "city", "street", "landmark", "postal_code", mode="before")
+    @classmethod
+    def clean_address_text(cls, value):
+        if value is None:
+            return None
+        cleaned = str(value).strip()
+        return cleaned or None
+
+
+class AddressUpdate(BaseModel):
+    label: Optional[str] = Field(default=None, max_length=50)
+    recipient_name: Optional[str] = Field(default=None, max_length=150)
+    recipient_phone: Optional[str] = Field(default=None, max_length=30)
+    country: Optional[str] = Field(default=None, min_length=2, max_length=100)
+    region: Optional[str] = Field(default=None, min_length=2, max_length=100)
+    district: Optional[str] = Field(default=None, max_length=100)
+    ward: Optional[str] = Field(default=None, max_length=100)
+    city: Optional[str] = Field(default=None, min_length=2, max_length=100)
+    street: Optional[str] = Field(default=None, min_length=3, max_length=1000)
+    landmark: Optional[str] = Field(default=None, max_length=255)
+    postal_code: Optional[str] = Field(default=None, max_length=50)
+    latitude: Optional[Decimal] = Field(default=None, ge=Decimal("-90"), le=Decimal("90"))
+    longitude: Optional[Decimal] = Field(default=None, ge=Decimal("-180"), le=Decimal("180"))
+    is_default: Optional[bool] = None
+
+
+class AddressResponse(AddressCreate):
+    id: UUID
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+
+    model_config = ORM_CONFIG
+
+
+class SellerCreate(BaseModel):
+    business_name: str
+    business_category: str | None = None
+    contact_email: EmailStr | None = None
+    contact_phone: str | None = None
+    agreement_accepted: Literal[True]
+
+
+class SellerUpdate(BaseModel):
+    business_name: str | None = None
+    business_category_ids: list[UUID] | None = None
+    business_description: str | None = None
+    business_location: str | None = None
+    business_country: str | None = None
+    business_region: str | None = None
+    business_city: str | None = None
+    business_address: str | None = None
+    product_description: str | None = None
+    years_in_business: str | None = None
+    website_url: str | None = None
+    contact_email: EmailStr | None = None
+    contact_phone: str | None = None
+
+
+class SellerResponse(BaseModel):
+    id: UUID
+    user_id: UUID
+    business_name: str
+    business_description: str | None = None
+    business_location: str | None = None
+    business_country: str | None = None
+    business_region: str | None = None
+    business_city: str | None = None
+    business_address: str | None = None
+    product_description: str | None = None
+    years_in_business: str | None = None
+    website_url: str | None = None
+    contact_email: str | None
+    contact_phone: str | None
+    status: str
+    agreement_accepted: bool
+    created_at: datetime
+
+    model_config = ORM_CONFIG
+
+    @model_validator(mode="before")
+    @classmethod
+    def flatten_profile(cls, value):
+        if isinstance(value, dict):
+            return value
+        profile = getattr(value, "profile", None)
+        data = {
+            "id": getattr(value, "id", None),
+            "user_id": getattr(value, "user_id", None),
+            "business_name": getattr(value, "business_name", None),
+            "contact_email": getattr(value, "contact_email", None),
+            "contact_phone": getattr(value, "contact_phone", None),
+            "status": getattr(value, "status", None),
+            "agreement_accepted": getattr(value, "agreement_accepted", False),
+            "created_at": getattr(value, "created_at", None),
+        }
+        for name in (
+            "business_description", "business_country", "business_region",
+            "business_city", "business_address", "product_description",
+            "years_in_business", "website_url"
+        ):
+            data[name] = getattr(profile, name, None) if profile is not None else None
+        data["business_location"] = data.get("business_address")
+        return data
+
+
+class SellerRegisterRequest(BaseModel):
+    first_name: str
+    last_name: str
+    email: EmailStr
+    phone: str
+    password: str
+
+    business_name: str
+    business_category_ids: list[UUID]
+    business_description: str | None = None
+    business_location: str | None = None
+    business_country: str | None = None
+    business_region: str | None = None
+    business_city: str | None = None
+    business_address: str | None = None
+    product_description: str | None = None
+    years_in_business: str | None = None
+    website_url: str | None = None
+    contact_email: EmailStr | None = None
+    contact_phone: str | None = None
+    agreement_accepted: Literal[True]
+
+    _clean_names = field_validator("first_name", "last_name", "business_name")(_clean_required_text)
+    _clean_phones = field_validator("phone", "contact_phone")(_normalise_phone)
+    _strong_password = field_validator("password")(_validate_password)
+
+    @field_validator("business_category_ids")
+    @classmethod
+    def require_categories(cls, value: list[UUID]) -> list[UUID]:
+        if not value:
+            raise ValueError("At least one business category is required")
+        return list(dict.fromkeys(value))
+
+class SellerKYCCreate(BaseModel):
+    document_type: str
+    document_url: str
+
+
+class SellerKYCResponse(BaseModel):
+    id: UUID
+    seller_id: UUID
+    document_type: str
+    document_url: str
+    status: str
+    rejection_reason: str | None
+    uploaded_at: datetime
+    
+    model_config = ORM_CONFIG
+
+class SellerKYCStatusResponse(BaseModel):
+    seller_status: str
+    required_documents: list[str]
+    uploaded_documents: list[str]
+    missing_documents: list[str]
+    can_submit_for_review: bool
+
+    model_config = ORM_CONFIG
+
+
+class SellerPayoutCreate(BaseModel):
+    account_type: str = Field(min_length=1, max_length=50)
+    provider: str = Field(min_length=1, max_length=100)
+    account_name: str = Field(min_length=1, max_length=255)
+    account_number: str = Field(min_length=1, max_length=255)
+    currency: str = "TZS"
+    is_default: bool = False
+
+    _currency = field_validator("currency")(_normalise_currency)
+
+
+class SellerPayoutResponse(BaseModel):
+    id: UUID
+    seller_id: UUID
+    account_type: str
+    provider: str
+    account_name: str
+    account_number: str
+    currency: str
+    is_default: bool
+    created_at: datetime
+
+    model_config = ORM_CONFIG
+        
+class SellerProfileUpdate(BaseModel):
+    business_description: str | None = None
+    business_country: str | None = None
+    business_region: str | None = None
+    business_city: str | None = None
+    business_address: str | None = None
+    product_description: str | None = None
+    years_in_business: str | None = None
+    website_url: str | None = None
+
+
+class SellerProfileResponse(BaseModel):
+    id: UUID
+    seller_id: UUID
+    business_description: str | None
+    business_country: str | None
+    business_region: str | None
+    business_city: str | None
+    business_address: str | None
+    product_description: str | None
+    years_in_business: str | None
+    website_url: str | None
+    created_at: datetime
+
+    model_config = ORM_CONFIG
+        
+        
+        
+class StoreUpdate(BaseModel):
+    store_name: str | None = Field(default=None, min_length=2, max_length=255)
+    description: str | None = Field(default=None, max_length=5000)
+
+    contact_email: EmailStr | None = None
+    contact_phone: str | None = Field(default=None, max_length=30)
+    website_url: str | None = None
+
+    country: str | None = Field(default=None, max_length=100)
+    region: str | None = Field(default=None, max_length=100)
+    district: str | None = Field(default=None, max_length=100)
+    ward: str | None = Field(default=None, max_length=100)
+    street: str | None = None
+
+    latitude: float | None = Field(default=None, ge=-90, le=90)
+    longitude: float | None = Field(default=None, ge=-180, le=180)
+
+    opening_time: Time | None = None
+    closing_time: Time | None = None
+
+    shipping_policy: str | None = None
+    return_policy: str | None = None
+    privacy_policy: str | None = None
+
+    facebook_url: str | None = None
+    instagram_url: str | None = None
+    twitter_url: str | None = None
+    tiktok_url: str | None = None
+    youtube_url: str | None = None
+
+
+class StoreResponse(BaseModel):
+    id: UUID
+    seller_id: UUID
+
+    store_name: str
+    slug: str
+    description: str | None
+
+    logo_url: str | None
+    banner_url: str | None
+
+    contact_email: str | None
+    contact_phone: str | None
+    website_url: str | None
+
+    country: str | None
+    region: str | None
+    district: str | None
+    ward: str | None
+    street: str | None
+
+    latitude: float | None
+    longitude: float | None
+
+    opening_time: Time | None
+    closing_time: Time | None
+
+    shipping_policy: str | None
+    return_policy: str | None
+    privacy_policy: str | None
+
+    facebook_url: str | None
+    instagram_url: str | None
+    twitter_url: str | None
+    tiktok_url: str | None
+    youtube_url: str | None
+
+    status: str
+    is_verified: bool
+    is_featured: bool
+
+    rating: Decimal
+    review_count: int
+    followers_count: int
+    
+    gallery_images: list["StoreGalleryImageResponse"] = Field(default_factory=list)
+    opening_hours: list["StoreOpeningHourResponse"] = Field(default_factory=list)
+
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class StorePublicResponse(BaseModel):
+    id: UUID
+    seller_id: UUID
+
+    store_name: str
+    slug: str
+    description: str | None
+
+    logo_url: str | None
+    banner_url: str | None
+
+    contact_email: str | None
+    contact_phone: str | None
+    website_url: str | None
+
+    country: str | None
+    region: str | None
+    district: str | None
+    ward: str | None
+    street: str | None
+
+    opening_time: Time | None
+    closing_time: Time | None
+
+    shipping_policy: str | None
+    return_policy: str | None
+
+    facebook_url: str | None
+    instagram_url: str | None
+    twitter_url: str | None
+    tiktok_url: str | None
+    youtube_url: str | None
+
+    is_verified: bool
+    is_featured: bool
+
+    rating: Decimal
+    review_count: int
+    followers_count: int
+    
+    gallery_images: list["StoreGalleryImageResponse"] = Field(default_factory=list)
+    opening_hours: list["StoreOpeningHourResponse"] = Field(default_factory=list)
+
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class PaginatedAdminStoreResponse(BaseModel):
+    total: int
+    page: int
+    page_size: int
+    total_pages: int
+    results: list[StoreResponse]
+
+class PaginatedStoreResponse(BaseModel):
+    total: int
+    page: int
+    page_size: int
+    total_pages: int
+    results: list[StorePublicResponse]        
+
+
+class UserMeResponse(BaseModel):
+    id: UUID
+    first_name: str
+    last_name: str
+    email: EmailStr
+    phone: str | None
+    is_verified: bool
+    status: str | None
+    is_seller: bool
+    seller_status: str | None
+    account_type: str
+    roles: list[str] = Field(default_factory=list)
+
+    model_config = ORM_CONFIG
+
+
+class PaginatedAddressResponse(BaseModel):
+    total: int
+    page: int
+    page_size: int
+    results: list[AddressResponse]
+
+
+class PaginatedSellerResponse(BaseModel):
+    total: int
+    page: int
+    page_size: int
+    results: list[SellerResponse]
+
+
+class PaginatedKYCResponse(BaseModel):
+    total: int
+    page: int
+    page_size: int
+    results: list[SellerKYCResponse]
+
+
+class PaginatedPayoutResponse(BaseModel):
+    total: int
+    page: int
+    page_size: int
+    results: list[SellerPayoutResponse]
+
+
+class CategoryCreate(BaseModel):
+    parent_id: Optional[UUID] = None
+    name: str
+    slug: str
+
+
+class CategoryResponse(BaseModel):
+    id: UUID
+    parent_id: Optional[UUID]
+    name: str
+    slug: str
+    created_at: datetime
+
+    model_config = ORM_CONFIG
+
+
+class BrandCreate(BaseModel):
+    name: str
+    slug: str
+
+
+class BrandResponse(BaseModel):
+    id: UUID
+    name: str
+    slug: str
+    created_at: datetime
+
+    model_config = ORM_CONFIG
+
+
+class ProductCreate(BaseModel):
+    category_id: UUID
+    brand_id: Optional[UUID] = None
+    sku: str
+    name: str
+    slug: str
+    description: Optional[str] = None
+    price: Decimal = Field(gt=0, max_digits=18, decimal_places=2)
+    sale_price: Optional[Decimal] = Field(default=None, ge=0, max_digits=18, decimal_places=2)
+    currency: str = "TZS"
+    weight: Optional[Decimal] = Field(default=None, ge=0)
+
+    _currency = field_validator("currency")(_normalise_currency)
+
+    @model_validator(mode="after")
+    def validate_sale_price(self):
+        if self.sale_price is not None and self.sale_price > self.price:
+            raise ValueError("Sale price cannot be greater than price")
+        return self
+
+
+class ProductUpdate(BaseModel):
+    category_id: Optional[UUID] = None
+    brand_id: Optional[UUID] = None
+    sku: Optional[str] = None
+    name: Optional[str] = None
+    slug: Optional[str] = None
+    description: Optional[str] = None
+    price: Optional[Decimal] = None
+    sale_price: Optional[Decimal] = None
+    currency: Optional[str] = None
+    weight: Optional[Decimal] = Field(default=None, ge=0)
+    is_active: Optional[bool] = None
+
+    _currency = field_validator("currency")(_normalise_currency)
+
+    @field_validator("price")
+    @classmethod
+    def positive_price(cls, value):
+        if value is not None and value <= 0:
+            raise ValueError("Price must be greater than zero")
+        return value
+
+    @field_validator("sale_price")
+    @classmethod
+    def nonnegative_sale_price(cls, value):
+        if value is not None and value < 0:
+            raise ValueError("Sale price cannot be negative")
+        return value
+
+    @model_validator(mode="after")
+    def validate_sale_price(self):
+        if self.price is not None and self.sale_price is not None and self.sale_price > self.price:
+            raise ValueError("Sale price cannot be greater than price")
+        return self
+
+
+class ProductResponse(BaseModel):
+    id: UUID
+    seller_id: UUID
+    category_id: UUID
+    brand_id: Optional[UUID]
+    sku: str
+    name: str
+    slug: str
+    description: Optional[str]
+    price: Decimal
+    sale_price: Optional[Decimal]
+    currency: str
+    weight: Optional[Decimal]
+    status: ProductStatus
+    rejection_reason: Optional[str]
+    is_active: bool
+    submitted_at: Optional[datetime] = None
+    approved_at: Optional[datetime] = None
+    approved_by_user_id: Optional[UUID] = None
+    images: list["ProductImageResponse"] = Field(default_factory=list)
+    created_at: datetime
+
+    model_config = ORM_CONFIG
+
+
+class ProductImageCreate(BaseModel):
+    """Legacy URL-based image creation. Prefer multipart upload endpoints."""
+
+    image_url: str
+    is_primary: bool = False
+    alt_text: Optional[str] = Field(default=None, max_length=255)
+    display_order: int = Field(default=0, ge=0)
+
+
+class ProductImageUpdate(BaseModel):
+    alt_text: Optional[str] = Field(default=None, max_length=255)
+    display_order: Optional[int] = Field(default=None, ge=0)
+    is_primary: Optional[bool] = None
+
+
+class ProductImageOrderItem(BaseModel):
+    image_id: UUID
+    display_order: int = Field(ge=0)
+
+
+class ProductImageReorderRequest(BaseModel):
+    images: list[ProductImageOrderItem] = Field(min_length=1, max_length=10)
+
+
+class ProductImageResponse(BaseModel):
+    id: UUID
+    product_id: UUID
+    image_url: str
+    thumbnail_url: Optional[str] = None
+    storage_key: Optional[str] = None
+    original_filename: Optional[str] = None
+    mime_type: Optional[str] = None
+    file_size: Optional[int] = None
+    width: Optional[int] = None
+    height: Optional[int] = None
+    alt_text: Optional[str] = None
+    display_order: int = 0
+    is_primary: bool
+    created_at: datetime
+    updated_at: Optional[datetime] = None
+
+    model_config = ORM_CONFIG
+
+
+class ProductVariantCreate(BaseModel):
+    variant_name: str
+    sku: str
+    price: Optional[Decimal] = None
+    attributes: Optional[Dict[str, Any]] = None
+
+
+class ProductVariantResponse(BaseModel):
+    id: UUID
+    product_id: UUID
+    variant_name: str
+    sku: str
+    price: Optional[Decimal]
+    attributes: Optional[Dict[str, Any]]
+    created_at: datetime
+
+    model_config = ORM_CONFIG
+
+
+class ProductTagCreate(BaseModel):
+    tag: str
+
+
+class ProductTagResponse(BaseModel):
+    id: UUID
+    product_id: UUID
+    tag: str
+
+    model_config = ORM_CONFIG
+    
+class BusinessCategoryCreate(BaseModel):
+    name: str
+    slug: str
+    description: str | None = None
+    active: bool = True
+
+
+class BusinessCategoryUpdate(BaseModel):
+    name: str | None = None
+    slug: str | None = None
+    description: str | None = None
+    active: bool | None = None
+
+
+class BusinessCategoryResponse(BaseModel):
+    id: UUID
+    name: str
+    slug: str
+    description: str | None
+    active: bool
+    created_at: datetime
+
+    model_config = ORM_CONFIG
+        
+class AdminUserCreate(BaseModel):
+    first_name: str
+    last_name: str
+    email: EmailStr
+    phone: str | None = None
+    password: str
+    status: str = "active"
+    is_verified: bool = True
+
+
+class AdminUserUpdate(BaseModel):
+    first_name: str | None = None
+    last_name: str | None = None
+    email: EmailStr | None = None
+    phone: str | None = None
+    status: str | None = None
+    is_verified: bool | None = None
+    password: str | None = None
+
+
+class AdminUserResponse(BaseModel):
+    id: UUID
+    first_name: str | None
+    last_name: str | None
+    email: EmailStr
+    phone: str | None
+    status: str
+    is_verified: bool
+    created_at: datetime
+
+    model_config = ORM_CONFIG
+
+
+class PaginatedAdminUserResponse(BaseModel):
+    total: int
+    page: int
+    page_size: int
+    results: list[AdminUserResponse]   
+    
+class AdminCreateAdminRequest(BaseModel):
+    first_name: str
+    last_name: str
+    email: EmailStr
+    phone: str | None = None
+    password: str
+
+
+class RoleResponse(BaseModel):
+    id: UUID
+    name: str
+    description: str | None
+
+    class Config:
+        from_attributes = True  
+        
+class PermissionResponse(BaseModel):
+    id: UUID
+    code: str
+    name: str
+    description: str | None
+
+    model_config = ORM_CONFIG
+
+
+class AssignUserPermissionsRequest(BaseModel):
+    permission_codes: list[str]
+
+    @field_validator("permission_codes")
+    @classmethod
+    def clean_permissions(cls, value: list[str]) -> list[str]:
+        cleaned = [item.strip() for item in value if item and item.strip()]
+        return list(dict.fromkeys(cleaned))
+
+
+class UserPermissionsResponse(BaseModel):
+    user_id: UUID
+    permissions: list[str]    
+    
+class RoleResponse(BaseModel):
+    id: UUID
+    name: str
+    description: str | None
+
+    model_config = ORM_CONFIG
+
+
+class RolePermissionsUpdateRequest(BaseModel):
+    permission_codes: list[str]
+
+    @field_validator("permission_codes")
+    @classmethod
+    def clean_permissions(cls, value: list[str]) -> list[str]:
+        cleaned = [item.strip() for item in value if item and item.strip()]
+        return list(dict.fromkeys(cleaned))
+
+
+class RolePermissionsResponse(BaseModel):
+    role_id: UUID
+    role_name: str
+    permissions: list[str]
+# =========================================================
+# CART SCHEMAS
+# =========================================================
+
+class CartItemCreate(BaseModel):
+    product_id: UUID
+    variant_id: Optional[UUID] = None
+    quantity: int = Field(ge=1)
+
+
+class CartItemUpdate(BaseModel):
+    quantity: int = Field(ge=1)
+
+
+class CartItemResponse(BaseModel):
+    id: UUID
+    product_id: UUID
+    variant_id: Optional[UUID]
+    quantity: int
+    unit_price: Decimal
+    product: "ProductResponse"
+
+    model_config = ORM_CONFIG
+
+
+class CartResponse(BaseModel):
+    id: UUID
+    user_id: UUID
+    coupon_code: Optional[str]
+    items: list[CartItemResponse]
+    subtotal: Decimal
+    discount_amount: Decimal
+    total: Decimal
+
+    model_config = ORM_CONFIG
+
+
+class ApplyCouponRequest(BaseModel):
+    code: str
+
+
+# =========================================================
+# ORDER SCHEMAS
+# =========================================================
+
+class OrderItemResponse(BaseModel):
+    id: UUID
+    product_id: UUID
+    variant_id: Optional[UUID]
+    seller_id: UUID
+    product_name: str
+    variant_name: Optional[str]
+    quantity: int
+    unit_price: Decimal
+    total_price: Decimal
+
+    model_config = ORM_CONFIG
+
+
+class OrderStatusHistoryResponse(BaseModel):
+    id: UUID
+    status: str
+    notes: Optional[str]
+    created_by_id: Optional[UUID]
+    created_at: datetime
+
+    model_config = ORM_CONFIG
+
+
+class OrderCreateRequest(BaseModel):
+    shipping_address_id: UUID
+    shipping_rate_id: UUID
+    coupon_code: Optional[str] = None
+    notes: Optional[str] = None
+
+
+class OrderStatusUpdateRequest(BaseModel):
+    status: OrderStatus
+    notes: Optional[str] = None
+
+
+class OrderResponse(BaseModel):
+    id: UUID
+    user_id: UUID
+    shipping_address_id: Optional[UUID]
+    shipping_rate_id: Optional[UUID]
+    shipping_method_id: Optional[UUID]
+    shipping_method_name: Optional[str]
+    shipping_carrier: Optional[str]
+    estimated_delivery_from: Optional[datetime]
+    estimated_delivery_to: Optional[datetime]
+    status: OrderStatus
+    currency: str
+    subtotal: Decimal
+    discount_amount: Decimal
+    shipping_amount: Decimal
+    tax_amount: Decimal
+    total: Decimal
+    coupon_code: Optional[str]
+    notes: Optional[str]
+    items: list[OrderItemResponse]
+    status_history: list[OrderStatusHistoryResponse]
+    created_at: datetime
+    updated_at: Optional[datetime]
+
+    model_config = ORM_CONFIG
+
+
+class PaginatedOrderResponse(BaseModel):
+    total: int
+    page: int
+    page_size: int
+    results: list[OrderResponse]
+
+
+# =========================================================
+# INVENTORY SCHEMAS
+# =========================================================
+
+class InventoryCreate(BaseModel):
+    product_id: UUID
+    variant_id: Optional[UUID] = None
+    quantity: int = Field(ge=0)
+    reserved_quantity: int = Field(default=0, ge=0)
+    warehouse_location: Optional[str] = None
+    low_stock_threshold: int = Field(default=10, ge=0)
+
+
+class InventoryUpdate(BaseModel):
+    quantity: Optional[int] = Field(default=None, ge=0)
+    reserved_quantity: Optional[int] = Field(default=None, ge=0)
+    warehouse_location: Optional[str] = None
+    low_stock_threshold: Optional[int] = Field(default=None, ge=0)
+
+
+class InventoryResponse(BaseModel):
+    id: UUID
+    product_id: UUID
+    variant_id: Optional[UUID]
+    quantity: int
+    reserved_quantity: int
+    available_quantity: int
+    warehouse_location: Optional[str]
+    low_stock_threshold: int
+    restock_date: Optional[datetime]
+    updated_at: Optional[datetime]
+
+    model_config = ORM_CONFIG
+
+
+# =========================================================
+# PAYMENT SCHEMAS
+# =========================================================
+
+class PaymentInitiateRequest(BaseModel):
+    order_id: UUID
+    method: PaymentMethod
+    provider: Optional[str] = Field(default=None, max_length=100)
+    phone_number: Optional[str] = None
+
+    _clean_phone = field_validator("phone_number")(_normalise_phone)
+
+    @model_validator(mode="after")
+    def validate_method_details(self):
+        if self.method == PaymentMethod.mobile_money and not self.phone_number:
+            raise ValueError("Phone number is required for mobile-money payments")
+        if self.method == PaymentMethod.mobile_money and not self.provider:
+            raise ValueError("Provider is required for mobile-money payments")
+        return self
+
+
+class PaymentCallbackRequest(BaseModel):
+    payment_id: UUID
+    provider: str = Field(min_length=1, max_length=100)
+    transaction_id: str = Field(min_length=1, max_length=255)
+    status: PaymentStatus
+    payload: Optional[Dict[str, Any]] = None
+
+
+class PaymentTransactionResponse(BaseModel):
+    id: UUID
+    transaction_type: str
+    status: str
+    amount: Optional[Decimal]
+    provider_response: Optional[Dict[str, Any]]
+    created_at: datetime
+
+    model_config = ORM_CONFIG
+
+
+class PaymentResponse(BaseModel):
+    id: UUID
+    order_id: UUID
+    user_id: UUID
+    amount: Decimal
+    currency: str
+    method: PaymentMethod
+    provider: Optional[str]
+    status: PaymentStatus
+    provider_transaction_id: Optional[str]
+    paid_at: Optional[datetime]
+    transactions: list[PaymentTransactionResponse]
+    created_at: datetime
+    updated_at: Optional[datetime]
+
+    model_config = ORM_CONFIG
+
+
+# =========================================================
+# COUPON SCHEMAS
+# =========================================================
+
+class CouponCreate(BaseModel):
+    code: str
+    description: Optional[str] = None
+    discount_type: Literal["percentage", "fixed_amount"]
+    discount_value: Decimal = Field(gt=0, max_digits=18, decimal_places=2)
+    minimum_order_amount: Optional[Decimal] = Field(default=None, ge=0)
+    maximum_discount_amount: Optional[Decimal] = Field(default=None, ge=0)
+    usage_limit: Optional[int] = Field(default=None, ge=0)
+    valid_from: Optional[datetime] = None
+    valid_until: Optional[datetime] = None
+    is_active: bool = True
+
+    _code = field_validator("code")(_normalise_code)
+
+    @model_validator(mode="after")
+    def validate_coupon(self):
+        if self.discount_type == "percentage" and self.discount_value > 100:
+            raise ValueError("Percentage discount cannot exceed 100")
+        if self.valid_from and self.valid_until and self.valid_until <= self.valid_from:
+            raise ValueError("valid_until must be later than valid_from")
+        return self
+
+
+class CouponUpdate(BaseModel):
+    description: Optional[str] = None
+    discount_type: Optional[Literal["percentage", "fixed_amount"]] = None
+    discount_value: Optional[Decimal] = Field(default=None, gt=0)
+    minimum_order_amount: Optional[Decimal] = Field(default=None, ge=0)
+    maximum_discount_amount: Optional[Decimal] = Field(default=None, ge=0)
+    usage_limit: Optional[int] = Field(default=None, ge=0)
+    valid_from: Optional[datetime] = None
+    valid_until: Optional[datetime] = None
+    is_active: Optional[bool] = None
+
+    @model_validator(mode="after")
+    def validate_coupon(self):
+        if self.discount_type == "percentage" and self.discount_value is not None and self.discount_value > 100:
+            raise ValueError("Percentage discount cannot exceed 100")
+        if self.valid_from and self.valid_until and self.valid_until <= self.valid_from:
+            raise ValueError("valid_until must be later than valid_from")
+        return self
+
+
+class StoreGalleryImageUpdate(BaseModel):
+    caption: str | None = Field(
+        default=None,
+        max_length=500,
+    )
+    display_order: int | None = Field(
+        default=None,
+        ge=0,
+    )
+    is_active: bool | None = None
+
+
+class StoreGalleryImageResponse(BaseModel):
+    id: UUID
+    store_id: UUID
+    image_url: str
+    caption: str | None
+    display_order: int
+    is_active: bool
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class StoreOpeningHourCreate(BaseModel):
+    day_of_week: DayOfWeek
+    opening_time: Time | None = None
+    closing_time: Time | None = None
+    is_closed: bool = False
+
+    @model_validator(mode="after")
+    def validate_hours(self):
+        if self.is_closed:
+            self.opening_time = None
+            self.closing_time = None
+        elif self.opening_time is None or self.closing_time is None:
+            raise ValueError("Opening and closing times are required when the store is open")
+        elif self.closing_time <= self.opening_time:
+            raise ValueError("Closing time must be later than opening time")
+        return self
+
+
+class StoreOpeningHourUpdate(BaseModel):
+    opening_time: Time | None = None
+    closing_time: Time | None = None
+    is_closed: bool | None = None
+
+    @model_validator(mode="after")
+    def validate_hours(self):
+        if self.is_closed is True:
+            self.opening_time = None
+            self.closing_time = None
+        elif self.opening_time is not None and self.closing_time is not None and self.closing_time <= self.opening_time:
+            raise ValueError("Closing time must be later than opening time")
+        return self
+
+
+class StoreOpeningHourResponse(BaseModel):
+    id: UUID
+    store_id: UUID
+    day_of_week: DayOfWeek
+    day_position: int = Field(validation_alias=AliasChoices("day_position", "day_number"))
+    opening_time: Time | None = Field(validation_alias=AliasChoices("opening_time", "open_time"))
+    closing_time: Time | None = Field(validation_alias=AliasChoices("closing_time", "close_time"))
+    is_closed: bool
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class AdminStoreStatusUpdate(BaseModel):
+    status: StoreStatus
+    reason: str | None = Field(
+        default=None,
+        max_length=2000,
+    )
+
+
+class AdminStoreVerificationUpdate(BaseModel):
+    is_verified: bool
+
+
+class AdminStoreFeaturedUpdate(BaseModel):
+    is_featured: bool
+
+class CouponResponse(BaseModel):
+    id: UUID
+    code: str
+    description: Optional[str]
+    discount_type: str
+    discount_value: Decimal
+    minimum_order_amount: Optional[Decimal]
+    maximum_discount_amount: Optional[Decimal]
+    usage_limit: Optional[int]
+    usage_count: int
+    is_active: bool
+    valid_from: Optional[datetime]
+    valid_until: Optional[datetime]
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+# =========================================================
+# SHIPPING SCHEMAS
+# =========================================================
+
+class ShippingZoneCreate(BaseModel):
+    name: str = Field(min_length=2, max_length=120)
+    country: str = Field(default="Tanzania", min_length=2, max_length=100)
+    regions: list[str] = Field(default_factory=list)
+    cities: list[str] = Field(default_factory=list)
+    is_active: bool = True
+
+    @field_validator("regions", "cities")
+    @classmethod
+    def normalise_places(cls, values: list[str]) -> list[str]:
+        cleaned = []
+        seen = set()
+        for value in values:
+            item = value.strip()
+            key = item.lower()
+            if item and key not in seen:
+                seen.add(key)
+                cleaned.append(item)
+        return cleaned
+
+
+class ShippingZoneUpdate(BaseModel):
+    name: Optional[str] = Field(default=None, min_length=2, max_length=120)
+    country: Optional[str] = Field(default=None, min_length=2, max_length=100)
+    regions: Optional[list[str]] = None
+    cities: Optional[list[str]] = None
+    is_active: Optional[bool] = None
+
+
+class ShippingZoneResponse(ShippingZoneCreate):
+    id: UUID
+    created_at: datetime
+    updated_at: Optional[datetime] = None
+    model_config = ORM_CONFIG
+
+
+class ShippingMethodCreate(BaseModel):
+    name: str = Field(min_length=2, max_length=120)
+    description: Optional[str] = None
+    carrier_name: Optional[str] = Field(default=None, max_length=120)
+    min_delivery_days: int = Field(default=1, ge=0, le=365)
+    max_delivery_days: int = Field(default=7, ge=0, le=365)
+    is_active: bool = True
+
+    @model_validator(mode="after")
+    def validate_days(self):
+        if self.max_delivery_days < self.min_delivery_days:
+            raise ValueError("max_delivery_days must be greater than or equal to min_delivery_days")
+        return self
+
+
+class ShippingMethodUpdate(BaseModel):
+    name: Optional[str] = Field(default=None, min_length=2, max_length=120)
+    description: Optional[str] = None
+    carrier_name: Optional[str] = Field(default=None, max_length=120)
+    min_delivery_days: Optional[int] = Field(default=None, ge=0, le=365)
+    max_delivery_days: Optional[int] = Field(default=None, ge=0, le=365)
+    is_active: Optional[bool] = None
+
+
+class ShippingMethodResponse(ShippingMethodCreate):
+    id: UUID
+    created_at: datetime
+    updated_at: Optional[datetime] = None
+    model_config = ORM_CONFIG
+
+
+class ShippingRateCreate(BaseModel):
+    zone_id: UUID
+    method_id: UUID
+    rate_type: ShippingRateType = ShippingRateType.flat
+    base_amount: Decimal = Field(default=Decimal("0.00"), ge=0)
+    amount_per_kg: Decimal = Field(default=Decimal("0.00"), ge=0)
+    free_shipping_threshold: Optional[Decimal] = Field(default=None, ge=0)
+    min_weight_kg: Optional[Decimal] = Field(default=None, ge=0)
+    max_weight_kg: Optional[Decimal] = Field(default=None, ge=0)
+    is_active: bool = True
+
+    @model_validator(mode="after")
+    def validate_weight_range(self):
+        if self.min_weight_kg is not None and self.max_weight_kg is not None and self.max_weight_kg < self.min_weight_kg:
+            raise ValueError("max_weight_kg must be greater than or equal to min_weight_kg")
+        return self
+
+
+class ShippingRateResponse(ShippingRateCreate):
+    id: UUID
+    zone: ShippingZoneResponse
+    method: ShippingMethodResponse
+    created_at: datetime
+    updated_at: Optional[datetime] = None
+    model_config = ORM_CONFIG
+
+
+class ShippingQuoteRequest(BaseModel):
+    address_id: UUID
+    subtotal: Decimal = Field(ge=0)
+    weight_kg: Decimal = Field(default=Decimal("0.00"), ge=0)
+
+
+class ShippingQuoteOption(BaseModel):
+    rate_id: UUID
+    method_id: UUID
+    method_name: str
+    carrier_name: Optional[str]
+    amount: Decimal
+    currency: str = "TZS"
+    min_delivery_days: int
+    max_delivery_days: int
+
+
+# =========================================================
+# SHIPMENT SCHEMAS
+# =========================================================
+
+class ShipmentItemResponse(BaseModel):
+    id: UUID
+    order_item_id: UUID
+    quantity: int
+    model_config = ORM_CONFIG
+
+
+class ShipmentTrackingEventCreate(BaseModel):
+    status: ShipmentStatus
+    location: Optional[str] = Field(default=None, max_length=255)
+    notes: Optional[str] = None
+    tracking_number: Optional[str] = Field(default=None, max_length=150)
+    carrier_name: Optional[str] = Field(default=None, max_length=120)
+
+
+class ShipmentTrackingEventResponse(BaseModel):
+    id: UUID
+    shipment_id: UUID
+    status: ShipmentStatus
+    location: Optional[str]
+    notes: Optional[str]
+    created_by_id: Optional[UUID]
+    created_at: datetime
+    model_config = ORM_CONFIG
+
+
+class ShipmentResponse(BaseModel):
+    id: UUID
+    order_id: UUID
+    seller_id: UUID
+    shipping_method_id: Optional[UUID]
+    status: ShipmentStatus
+    carrier_name: Optional[str]
+    tracking_number: Optional[str]
+    estimated_delivery_from: Optional[datetime]
+    estimated_delivery_to: Optional[datetime]
+    dispatched_at: Optional[datetime]
+    delivered_at: Optional[datetime]
+    items: list[ShipmentItemResponse] = Field(default_factory=list)
+    tracking_events: list[ShipmentTrackingEventResponse] = Field(default_factory=list)
+    created_at: datetime
+    updated_at: Optional[datetime]
+    model_config = ORM_CONFIG
+
+
+# Phase 3 Task 2: commission engine schemas
+class CommissionRuleCreate(BaseModel):
+    name: str = Field(min_length=2, max_length=150)
+    scope: CommissionScope
+    rule_type: CommissionRuleType = CommissionRuleType.percentage
+    rate: Decimal = Field(ge=0)
+    seller_id: UUID | None = None
+    category_id: UUID | None = None
+    product_id: UUID | None = None
+    priority: int = 0
+    is_active: bool = True
+    starts_at: datetime | None = None
+    ends_at: datetime | None = None
+
+    @model_validator(mode="after")
+    def validate_scope_target(self):
+        targets = {"seller": self.seller_id, "category": self.category_id, "product": self.product_id}
+        if self.scope.value == "global" and any(targets.values()):
+            raise ValueError("Global commission cannot have a target")
+        if self.scope.value != "global" and targets[self.scope.value] is None:
+            raise ValueError(f"{self.scope.value}_id is required")
+        if self.rule_type == CommissionRuleType.percentage and self.rate > 100:
+            raise ValueError("Percentage commission cannot exceed 100")
+        if self.ends_at and self.starts_at and self.ends_at <= self.starts_at:
+            raise ValueError("ends_at must be later than starts_at")
+        return self
+
+class CommissionRuleUpdate(BaseModel):
+    name: str | None = Field(default=None, min_length=2, max_length=150)
+    rate: Decimal | None = Field(default=None, ge=0)
+    priority: int | None = None
+    is_active: bool | None = None
+    starts_at: datetime | None = None
+    ends_at: datetime | None = None
+
+class CommissionRuleResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: UUID
+    name: str
+    scope: CommissionScope
+    rule_type: CommissionRuleType
+    rate: Decimal
+    seller_id: UUID | None
+    category_id: UUID | None
+    product_id: UUID | None
+    priority: int
+    is_active: bool
+    starts_at: datetime | None
+    ends_at: datetime | None
+    created_at: datetime
+
+class OrderItemCommissionResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: UUID
+    order_id: UUID
+    order_item_id: UUID
+    seller_id: UUID
+    commission_rule_id: UUID | None
+    currency: str
+    gross_amount: Decimal
+    commission_rate: Decimal
+    commission_amount: Decimal
+    seller_net_amount: Decimal
+    processing_fee: Decimal
+    tax_amount: Decimal
+    created_at: datetime
+
+class SellerEarningsSummary(BaseModel):
+    currency: str
+    gross_sales: Decimal
+    commission_deducted: Decimal
+    net_earnings: Decimal
+    transaction_count: int
+
+
+class SellerWalletResponse(BaseModel):
+    model_config = ORM_CONFIG
+    id: UUID
+    seller_id: UUID
+    currency: str
+    pending_balance: Decimal
+    available_balance: Decimal
+    reserved_balance: Decimal
+    paid_out_balance: Decimal
+    refunded_balance: Decimal
+    debt_balance: Decimal
+    is_frozen: bool
+    created_at: datetime
+    updated_at: datetime | None = None
+
+class WalletTransactionResponse(BaseModel):
+    model_config = ORM_CONFIG
+    id: UUID
+    transaction_type: WalletTransactionType
+    amount: Decimal
+    currency: str
+    reference: str
+    order_id: UUID | None = None
+    eligible_at: datetime | None = None
+    released_at: datetime | None = None
+    description: str | None = None
+    created_at: datetime
+
+class PayoutRequestCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    payout_account_id: UUID
+    amount: Decimal = Field(gt=0, max_digits=18, decimal_places=2)
+    note: str | None = Field(default=None, max_length=1000)
+
+class PayoutRequestResponse(BaseModel):
+    model_config = ORM_CONFIG
+    id: UUID
+    seller_id: UUID
+    payout_account_id: UUID
+    amount: Decimal
+    currency: str
+    status: PayoutStatus
+    provider_reference: str | None = None
+    seller_note: str | None = None
+    admin_note: str | None = None
+    requested_at: datetime
+    processed_at: datetime | None = None
+    completed_at: datetime | None = None
+
+class PayoutAdminUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    status: PayoutStatus
+    provider_reference: str | None = Field(default=None, max_length=180)
+    note: str | None = Field(default=None, max_length=1000)
+
+class WalletAdjustmentCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    amount: Decimal = Field(max_digits=18, decimal_places=2)
+    reason: str = Field(min_length=3, max_length=500)
+
+
+# Phase 3 Task 4: refund and reversal schemas
+class RefundItemCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    order_item_id: UUID
+    quantity: int = Field(gt=0)
+    restock: bool = True
+
+class RefundCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    order_id: UUID
+    reason: RefundReason
+    reason_details: str | None = Field(default=None, max_length=2000)
+    items: list[RefundItemCreate] = Field(min_length=1)
+    refund_shipping: bool = False
+    refund_tax: bool = False
+    idempotency_key: str = Field(min_length=8, max_length=180)
+
+class RefundReview(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    note: str | None = Field(default=None, max_length=2000)
+
+class RefundProcess(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    provider_reference: str | None = Field(default=None, max_length=180)
+    note: str | None = Field(default=None, max_length=2000)
+
+class RefundItemResponse(BaseModel):
+    model_config = ORM_CONFIG
+    id: UUID
+    order_item_id: UUID
+    seller_id: UUID
+    quantity: int
+    unit_amount: Decimal
+    refund_amount: Decimal
+    commission_reversal: Decimal
+    seller_reversal: Decimal
+    seller_debt_amount: Decimal
+    restock: bool
+    processed_at: datetime | None = None
+
+class RefundEventResponse(BaseModel):
+    model_config = ORM_CONFIG
+    id: UUID
+    status: RefundStatus
+    note: str | None = None
+    created_by_id: UUID | None = None
+    created_at: datetime
+
+class RefundResponse(BaseModel):
+    model_config = ORM_CONFIG
+    id: UUID
+    order_id: UUID
+    requested_by_id: UUID
+    status: RefundStatus
+    reason: RefundReason
+    reason_details: str | None = None
+    currency: str
+    items_amount: Decimal
+    shipping_amount: Decimal
+    tax_amount: Decimal
+    total_amount: Decimal
+    provider_reference: str | None = None
+    idempotency_key: str
+    admin_note: str | None = None
+    requested_at: datetime
+    reviewed_at: datetime | None = None
+    processed_at: datetime | None = None
+    completed_at: datetime | None = None
+    items: list[RefundItemResponse] = Field(default_factory=list)
+    events: list[RefundEventResponse] = Field(default_factory=list)
+
+
+# Phase 3 Task 5: marketplace analytics schemas
+class AnalyticsMoneySummary(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    currency: str = "TZS"
+    gross_sales: Decimal = Decimal("0")
+    commission_revenue: Decimal = Decimal("0")
+    seller_net_earnings: Decimal = Decimal("0")
+    refunds_completed: Decimal = Decimal("0")
+    payouts_completed: Decimal = Decimal("0")
+
+class AnalyticsCountSummary(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    orders: int = 0
+    paid_orders: int = 0
+    refunded_orders: int = 0
+    active_sellers: int = 0
+    products: int = 0
+    units_sold: int = 0
+
+class AnalyticsOverviewResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    start_at: datetime
+    end_at: datetime
+    money: AnalyticsMoneySummary
+    counts: AnalyticsCountSummary
+    average_order_value: Decimal = Decimal("0")
+    refund_rate_percent: Decimal = Decimal("0")
+    pending_wallet_balance: Decimal = Decimal("0")
+    available_wallet_balance: Decimal = Decimal("0")
+    pending_payout_amount: Decimal = Decimal("0")
+
+class AnalyticsSeriesPoint(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    period: str
+    amount: Decimal = Decimal("0")
+    order_count: int = 0
+    units: int = 0
+
+class AnalyticsRankingRow(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    id: UUID
+    name: str
+    gross_sales: Decimal = Decimal("0")
+    net_earnings: Decimal = Decimal("0")
+    commission: Decimal = Decimal("0")
+    refunds: Decimal = Decimal("0")
+    order_count: int = 0
+    units: int = 0
+
+class ReconciliationResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    currency: str = "TZS"
+    completed_payments: Decimal = Decimal("0")
+    order_totals: Decimal = Decimal("0")
+    commission_gross: Decimal = Decimal("0")
+    commission_revenue: Decimal = Decimal("0")
+    seller_net_earnings: Decimal = Decimal("0")
+    completed_refunds: Decimal = Decimal("0")
+    wallet_sale_credits: Decimal = Decimal("0")
+    completed_payouts: Decimal = Decimal("0")
+    payment_order_difference: Decimal = Decimal("0")
+    commission_split_difference: Decimal = Decimal("0")
+    seller_credit_difference: Decimal = Decimal("0")
+    is_balanced: bool = False
+
+
+# Phase 4 Task 1: audit and security schemas
+from api.enums import AuditSeverity, SecurityEventType
+
+class AuditLogResponse(BaseModel):
+    model_config = ORM_CONFIG
+    id: UUID
+    actor_user_id: UUID | None = None
+    action: str
+    resource_type: str | None = None
+    resource_id: str | None = None
+    http_method: str | None = None
+    request_path: str | None = None
+    response_status: int | None = None
+    old_values: dict | None = None
+    new_values: dict | None = None
+    event_metadata: dict | None = None
+    ip_address: str | None = None
+    user_agent: str | None = None
+    request_id: str
+    severity: AuditSeverity
+    created_at: datetime
+
+class SecurityEventResponse(BaseModel):
+    model_config = ORM_CONFIG
+    id: UUID
+    actor_user_id: UUID | None = None
+    event_type: SecurityEventType
+    severity: AuditSeverity
+    description: str
+    request_path: str | None = None
+    http_method: str | None = None
+    response_status: int | None = None
+    ip_address: str | None = None
+    user_agent: str | None = None
+    request_id: str
+    event_metadata: dict | None = None
+    resolved: bool
+    resolved_by_id: UUID | None = None
+    resolved_at: datetime | None = None
+    created_at: datetime
+
+class SecurityEventResolve(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    note: str | None = Field(default=None, max_length=1000)
