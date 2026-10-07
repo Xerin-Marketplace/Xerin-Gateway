@@ -474,7 +474,9 @@ def get_customer_order_detail(
                 "status": p.status.value if p.status else None,
                 "provider_transaction_id": p.provider_transaction_id,
                 "paid_at": p.paid_at.isoformat() if p.paid_at else None,
-                "finalized_at": (p.finalized_at or p.updated_at).isoformat() if (getattr(p, "finalized_at", None) or getattr(p, "updated_at", None)) else None,
+                "finalized_at": (
+                    lambda dt: dt.isoformat() if dt else None
+                )(getattr(p, "finalized_at", None) or getattr(p, "updated_at", None)),
                 "created_at": p.created_at.isoformat() if p.created_at else None,
             }
             for p in payments
