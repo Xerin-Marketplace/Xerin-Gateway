@@ -396,6 +396,127 @@ def get_order_by_ref(
     return order
 
 
+@router.get("/{order_id}/customer-detail")
+def get_customer_order_detail(
+    order_id: UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Buyer-facing order detail: payments, shipping address, shipments and
+    per-seller slices — everything the customer order page needs."""
+    order = (
+        db.query(Order)
+        .options(
+            selectinload(Order.items),
+            selectinload(Order.payments),
+            selectinload(Order.shipping_address),
+            selectinload(Order.shipments).selectinload(Shipment.tracking_events),
+            selectinload(Order.shipments).selectinload(Shipment.items),
+            selectinload(Order.seller_orders),
+        )
+        .filter(Order.id == order_id)
+        .first()
+    )
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+    if order.user_id != current_user.id and not _is_order_seller(current_user, order) and not _is_privileged_order_operator(db, current_user):
+        raise HTTPException(status_code=403, detail="Not authorized to view this order")
+
+    base = OrderResponse.model_validate(order).model_dump(mode="json")
+
+    payments = sorted(order.payments, key=lambda p: p.created_at or datetime.min.replace(tzinfo=timezone.utc))
+    latest_payment = payments[-1] if payments else None
+
+    address = order.shipping_address
+    shipping_address = None
+    if address:
+        shipping_address = {
+            "label": address.label,
+            "recipient_name": address.recipient_name,
+            "recipient_phone": address.recipient_phone,
+            "country": address.country,
+            "region": address.region,
+            "district": address.district,
+            "ward": address.ward,
+            "city": address.city,
+            "street": address.street,
+            "landmark": address.landmark,
+            "postal_code": address.postal_code,
+        }
+
+    seller_order_rows = []
+    for so in sorted(order.seller_orders, key=lambda x: x.created_at or datetime.min.replace(tzinfo=timezone.utc)):
+        seller_order_rows.append({
+            "id": str(so.id),
+            "seller_id": str(so.seller_id),
+            "store_id": "",
+            "status": so.status.value if so.status else "new",
+            "seller_subtotal": float(so.seller_subtotal or 0),
+            "item_count": int(so.item_count or 0),
+            "accepted_at": so.accepted_at.isoformat() if so.accepted_at else None,
+            "processing_at": so.processing_at.isoformat() if so.processing_at else None,
+            "ready_to_ship_at": so.ready_to_ship_at.isoformat() if so.ready_to_ship_at else None,
+            "shipped_at": so.shipped_at.isoformat() if so.shipped_at else None,
+            "delivered_at": so.delivered_at.isoformat() if so.delivered_at else None,
+            "created_at": so.created_at.isoformat() if so.created_at else None,
+        })
+
+    return {
+        **base,
+        "payment_status": latest_payment.status.value if latest_payment and latest_payment.status else None,
+        "payments": [
+            {
+                "id": str(p.id),
+                "amount": float(p.amount or 0),
+                "currency": p.currency,
+                "method": p.method.value if p.method else None,
+                "provider": p.provider,
+                "status": p.status.value if p.status else None,
+                "provider_transaction_id": p.provider_transaction_id,
+                "paid_at": p.paid_at.isoformat() if p.paid_at else None,
+                "finalized_at": (p.finalized_at or p.updated_at).isoformat() if (getattr(p, "finalized_at", None) or getattr(p, "updated_at", None)) else None,
+                "created_at": p.created_at.isoformat() if p.created_at else None,
+            }
+            for p in payments
+        ],
+        "shipping_address": shipping_address,
+        "seller_orders": seller_order_rows,
+    }
+
+
+@router.get("/{order_id}/escrow")
+def get_order_escrow(
+    order_id: UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Escrow is not enabled yet — return an honest not_applicable summary so
+    the order page can render without a protection state."""
+    order = db.query(Order).filter(Order.id == order_id).first()
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+    if order.user_id != current_user.id and not _is_order_seller(current_user, order) and not _is_privileged_order_operator(db, current_user):
+        raise HTTPException(status_code=403, detail="Not authorized to view this order")
+    return {
+        "order_id": str(order.id),
+        "currency": order.currency or "TZS",
+        "status": "not_applicable",
+        "hold_count": 0,
+        "gross_amount": 0,
+        "seller_amount": 0,
+        "commission_amount": 0,
+        "released_amount": 0,
+        "remaining_amount": 0,
+        "release_after": None,
+        "delivery_verified_at": None,
+        "seller_release_grace_hours": None,
+        "allow_customer_early_acceptance": False,
+        "can_customer_approve": False,
+        "can_report_problem": False,
+        "items": [],
+    }
+
+
 @router.get("/{order_id}", response_model=OrderResponse)
 def get_order(
     order_id: UUID,
