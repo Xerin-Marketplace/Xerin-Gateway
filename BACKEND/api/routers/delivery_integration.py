@@ -162,6 +162,58 @@ def get_delivery(
     return job
 
 
+def dispatch_delivery(db: Session, seller: Seller, seller_order: SellerOrder, shipment: Shipment, user_id: UUID | None) -> DeliveryJob | None:
+    """Create a delivery request with the configured external provider.
+    Returns the DeliveryJob, the existing active job, or None when no
+    provider is configured. Raises HTTPException on provider errors."""
+    if not settings.DELIVERY_API_BASE_URL:
+        return None
+    existing = db.query(DeliveryJob).filter(DeliveryJob.shipment_id == shipment.id).first()
+    if existing and existing.status not in {DeliveryStatus.cancelled, DeliveryStatus.delivery_failed, DeliveryStatus.returned}:
+        return existing
+
+    items = [item for item in seller_order.order.items if item.seller_id == seller.id]
+    payload = {
+        "order_reference": str(seller_order.order_id),
+        "seller_order_reference": str(seller_order.id),
+        "pickup": _pickup_payload(seller),
+        "dropoff": _dropoff_payload(seller_order.order),
+        "package": {
+            "item_count": sum(item.quantity for item in items),
+            "description": ", ".join(item.product_name for item in items)[:500],
+            "declared_value": str(seller_order.seller_subtotal),
+            "currency": seller_order.order.currency,
+        },
+        "callback_url": f"{settings.PUBLIC_BASE_URL.rstrip('/')}{settings.API_PREFIX}/delivery/webhooks/{settings.DELIVERY_PROVIDER_NAME}" if settings.PUBLIC_BASE_URL else None,
+    }
+    response = _provider_post(settings.DELIVERY_CREATE_PATH, payload)
+    external_id = response.get("delivery_id") or response.get("id")
+    if not external_id:
+        raise HTTPException(502, "Delivery provider response did not include a delivery ID")
+
+    job = existing or DeliveryJob(shipment_id=shipment.id, seller_order_id=seller_order.id, provider=settings.DELIVERY_PROVIDER_NAME)
+    job.external_delivery_id = str(external_id)
+    job.status = DeliveryStatus.created
+    job.tracking_number = response.get("tracking_number")
+    job.tracking_url = response.get("tracking_url")
+    job.delivery_fee = Decimal(str(response["delivery_fee"])) if response.get("delivery_fee") is not None else None
+    job.currency = response.get("currency", seller_order.order.currency)
+    job.courier_name = response.get("courier_name")
+    job.courier_phone = response.get("courier_phone")
+    job.estimated_pickup_at = _as_datetime(response.get("estimated_pickup_at"))
+    job.estimated_delivery_at = _as_datetime(response.get("estimated_delivery_at"))
+    job.request_payload = payload
+    job.provider_response = response
+    job.last_synced_at = datetime.now(timezone.utc)
+    db.add(job)
+    shipment.carrier_name = settings.DELIVERY_PROVIDER_NAME
+    shipment.tracking_number = job.tracking_number or shipment.tracking_number
+    db.add(ShipmentTrackingEvent(shipment_id=shipment.id, status=ShipmentStatus.ready_for_dispatch, notes="Delivery request sent to external provider", created_by_id=user_id))
+    db.commit()
+    db.refresh(job)
+    return job
+
+
 @router.post("/seller-orders/{seller_order_id}/request", response_model=DeliveryRequestResponse)
 def request_delivery(
     seller_order_id: UUID,
@@ -187,45 +239,9 @@ def request_delivery(
     if existing and existing.status not in {DeliveryStatus.cancelled, DeliveryStatus.delivery_failed, DeliveryStatus.returned}:
         raise HTTPException(409, "An active delivery request already exists for this shipment")
 
-    items = [item for item in row.order.items if item.seller_id == seller.id]
-    payload = {
-        "order_reference": str(row.order_id),
-        "seller_order_reference": str(row.id),
-        "pickup": _pickup_payload(seller),
-        "dropoff": _dropoff_payload(row.order),
-        "package": {
-            "item_count": sum(item.quantity for item in items),
-            "description": ", ".join(item.product_name for item in items)[:500],
-            "declared_value": str(row.seller_subtotal),
-            "currency": row.order.currency,
-        },
-        "callback_url": f"{settings.PUBLIC_BASE_URL.rstrip('/')}{settings.API_PREFIX}/delivery/webhooks/{settings.DELIVERY_PROVIDER_NAME}" if settings.PUBLIC_BASE_URL else None,
-    }
-    response = _provider_post(settings.DELIVERY_CREATE_PATH, payload)
-    external_id = response.get("delivery_id") or response.get("id")
-    if not external_id:
-        raise HTTPException(502, "Delivery provider response did not include a delivery ID")
-
-    job = existing or DeliveryJob(shipment_id=shipment.id, seller_order_id=row.id, provider=settings.DELIVERY_PROVIDER_NAME)
-    job.external_delivery_id = str(external_id)
-    job.status = DeliveryStatus.created
-    job.tracking_number = response.get("tracking_number")
-    job.tracking_url = response.get("tracking_url")
-    job.delivery_fee = Decimal(str(response["delivery_fee"])) if response.get("delivery_fee") is not None else None
-    job.currency = response.get("currency", row.order.currency)
-    job.courier_name = response.get("courier_name")
-    job.courier_phone = response.get("courier_phone")
-    job.estimated_pickup_at = _as_datetime(response.get("estimated_pickup_at"))
-    job.estimated_delivery_at = _as_datetime(response.get("estimated_delivery_at"))
-    job.request_payload = payload
-    job.provider_response = response
-    job.last_synced_at = datetime.now(timezone.utc)
-    db.add(job)
-    shipment.carrier_name = settings.DELIVERY_PROVIDER_NAME
-    shipment.tracking_number = job.tracking_number or shipment.tracking_number
-    db.add(ShipmentTrackingEvent(shipment_id=shipment.id, status=ShipmentStatus.ready_for_dispatch, notes="Delivery request sent to external provider", created_by_id=user.id))
-    db.commit()
-    db.refresh(job)
+    job = dispatch_delivery(db, seller, row, shipment, user.id)
+    if job is None:
+        raise HTTPException(503, "External delivery provider is not configured")
     return job
 
 

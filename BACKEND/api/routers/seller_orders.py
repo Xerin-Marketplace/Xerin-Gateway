@@ -168,14 +168,23 @@ def start_processing(seller_order_id: UUID, data: SellerOrderActionRequest, db: 
 
 @router.post("/{seller_order_id}/ready-to-ship", response_model=SellerOrderView)
 def ready_to_ship(seller_order_id: UUID, data: SellerOrderActionRequest, db: Session = Depends(get_db), user: User = Depends(require_permission(PermissionCode.seller_orders_manage.value))):
-    row = _get(db, _seller(user).id, seller_order_id, True)
+    seller = _seller(user)
+    row = _get(db, seller.id, seller_order_id, True)
     shipment = _shipment(row)
     if not shipment:
         raise HTTPException(409, "Shipment has not been created")
     if shipment.status == ShipmentStatus.pending:
         shipment.status = ShipmentStatus.ready_for_dispatch
         db.add(ShipmentTrackingEvent(shipment_id=shipment.id, status=ShipmentStatus.ready_for_dispatch, notes=data.notes or "Seller marked order ready for dispatch", created_by_id=user.id))
-    return _transition(db, row, {SellerOrderStatus.accepted, SellerOrderStatus.processing}, SellerOrderStatus.ready_to_ship, user, data.notes)
+    result = _transition(db, row, {SellerOrderStatus.accepted, SellerOrderStatus.processing}, SellerOrderStatus.ready_to_ship, user, data.notes)
+    # Auto-dispatch to the configured delivery provider (Xerin Express).
+    # Provider failures never block the seller's ready-to-ship action.
+    try:
+        from api.routers.delivery_integration import dispatch_delivery
+        dispatch_delivery(db, seller, row, shipment, user.id)
+    except Exception:
+        db.rollback()
+    return result
 
 
 @router.post("/{seller_order_id}/dispatch", response_model=SellerOrderView)

@@ -164,7 +164,7 @@ class Settings(BaseSettings):
     AZAMPAY_TIMEOUT_SECONDS: int = Field(default=30, ge=1, le=120)
 
     # External delivery provider
-    DELIVERY_PROVIDER_NAME: str = "dependent-delivery"
+    DELIVERY_PROVIDER_NAME: str = "xerin-express"
     DELIVERY_API_BASE_URL: str | None = None
     DELIVERY_API_KEY: str | None = None
     DELIVERY_API_KEY_HEADER: str = "Authorization"

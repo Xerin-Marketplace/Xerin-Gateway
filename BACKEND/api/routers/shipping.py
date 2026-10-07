@@ -34,6 +34,7 @@ def _commit(db: Session):
 @router.get("/checkout-config")
 def checkout_config(db: Session = Depends(get_db)):
     """Public checkout capability flags — derived from real shipping setup."""
+    ensure_default_shipping(db)
     zones = db.query(ShippingZone).filter(ShippingZone.is_active.is_(True)).all()
     methods = db.query(ShippingMethod).filter(ShippingMethod.is_active.is_(True)).all()
     rates = db.query(ShippingRate).filter(ShippingRate.is_active.is_(True)).count()
@@ -314,9 +315,45 @@ def update_shipment(shipment_id: UUID, data: ShipmentTrackingEventCreate, db: Se
 # ---------------------------------------------------------------------------
 
 XERIN_LOGISTICS_ID = UUID("00000000-0000-4000-8000-000000000001")
-XERIN_LOGISTICS_NAME = "Xerin Logistics"
+XERIN_LOGISTICS_NAME = "Xerin Express"
 XERIN_LOGISTICS_CODE = "XERIN"
 QUOTE_EXPIRY_MINUTES = 30
+
+
+def ensure_default_shipping(db: Session) -> None:
+    """Provision the built-in Xerin Express delivery service (nationwide zone +
+    Standard/Express methods + flat rates) the first time checkout needs it,
+    so the marketplace always has a working default carrier."""
+    if db.query(ShippingZone.id).filter(ShippingZone.is_active.is_(True)).first():
+        return
+    zone = ShippingZone(
+        name="Tanzania — Nationwide",
+        country=settings.DEFAULT_COUNTRY or "Tanzania",
+        regions=[],
+        cities=[],
+        is_active=True,
+    )
+    standard = ShippingMethod(
+        name="Standard",
+        description="Xerin Express standard delivery",
+        carrier_name=XERIN_LOGISTICS_NAME,
+        min_delivery_days=1,
+        max_delivery_days=3,
+    )
+    express = ShippingMethod(
+        name="Express",
+        description="Xerin Express same-day delivery",
+        carrier_name=XERIN_LOGISTICS_NAME,
+        min_delivery_days=0,
+        max_delivery_days=1,
+    )
+    db.add_all([zone, standard, express])
+    db.flush()
+    db.add_all([
+        ShippingRate(zone_id=zone.id, method_id=standard.id, rate_type=ShippingRateType.flat, base_amount=Decimal("5000")),
+        ShippingRate(zone_id=zone.id, method_id=express.id, rate_type=ShippingRateType.flat, base_amount=Decimal("10000")),
+    ])
+    db.commit()
 
 
 def _norm_place(value: str | None) -> str:
@@ -423,6 +460,7 @@ def _zone_serves_address(zone: ShippingZone, address: Address) -> bool:
 
 
 def _serving_rates(db: Session, address: Address) -> list[ShippingRate]:
+    ensure_default_shipping(db)
     zones = db.query(ShippingZone).filter(ShippingZone.is_active.is_(True)).all()
     zone_ids = [zone.id for zone in zones if _zone_serves_address(zone, address)]
     if not zone_ids:
@@ -511,6 +549,7 @@ def detect_delivery_mode(
     route_types = sorted({o["route_type"] for o in origins}) or ["domestic"]
     delivery_mode = "international" if "cross_border" in route_types else "local"
 
+    ensure_default_shipping(db)
     zones = db.query(ShippingZone).filter(ShippingZone.is_active.is_(True)).all()
     countries = {z.country.lower() for z in zones if z.country}
     local_country = (settings.DEFAULT_COUNTRY or "Tanzania").lower()
