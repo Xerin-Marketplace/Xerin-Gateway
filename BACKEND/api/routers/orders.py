@@ -540,6 +540,57 @@ def get_order(
     return order
 
 
+def _load_order_for_documents(db: Session, order_id: UUID, current_user: User) -> Order:
+    order = (
+        db.query(Order)
+        .options(
+            selectinload(Order.items),
+            selectinload(Order.payments),
+            selectinload(Order.shipping_address),
+        )
+        .filter(Order.id == order_id)
+        .first()
+    )
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+    if order.user_id != current_user.id and not _is_order_seller(current_user, order) and not _is_privileged_order_operator(db, current_user):
+        raise HTTPException(status_code=403, detail="Not authorized to view this order")
+    return order
+
+
+@router.get("/{order_id}/invoice.pdf")
+def get_order_invoice(
+    order_id: UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    from fastapi.responses import Response
+    from api.services.order_documents import build_invoice_pdf
+
+    order = _load_order_for_documents(db, order_id, current_user)
+    pdf = build_invoice_pdf(order)
+    name = f"invoice-{order.order_number or str(order.id)[:8].upper()}.pdf"
+    return Response(content=pdf, media_type="application/pdf", headers={"Content-Disposition": f'inline; filename="{name}"'})
+
+
+@router.get("/{order_id}/receipt.pdf")
+def get_order_receipt(
+    order_id: UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    from fastapi.responses import Response
+    from api.services.order_documents import build_receipt_pdf
+
+    order = _load_order_for_documents(db, order_id, current_user)
+    paid = next((p for p in order.payments if p.status == PaymentStatus.completed), None)
+    if not paid:
+        raise HTTPException(status_code=409, detail="Receipt is available after a successful payment")
+    pdf = build_receipt_pdf(order, paid)
+    name = f"receipt-{order.order_number or str(order.id)[:8].upper()}.pdf"
+    return Response(content=pdf, media_type="application/pdf", headers={"Content-Disposition": f'inline; filename="{name}"'})
+
+
 @router.patch("/{order_id}/status", response_model=OrderResponse)
 def update_order_status(
     order_id: UUID,
