@@ -49,7 +49,7 @@ class Settings(BaseSettings):
     MAX_UPLOAD_SIZE_MB: int = Field(default=5, ge=1)
 
     # Inventory reservations
-    INVENTORY_RESERVATION_MINUTES: int = Field(default=30, ge=5, le=1440)
+    INVENTORY_RESERVATION_MINUTES: int = Field(default=1440, ge=5, le=1440)
     SELLER_SETTLEMENT_DAYS: int = Field(default=7, ge=0, le=90)
     MINIMUM_PAYOUT_AMOUNT: Decimal = Field(default=Decimal("1000.00"), ge=0)
 
@@ -101,7 +101,7 @@ class Settings(BaseSettings):
 
     # Payment webhook security
     PAYMENT_WEBHOOK_SECRET: str | None = None
-    PAYMENT_ORDER_TIMEOUT_MINUTES: int = 30
+    PAYMENT_ORDER_TIMEOUT_MINUTES: int = 1440
     PAYMENT_ATTEMPT_RETRY_AFTER_SECONDS: int = 90
 
     # AzamPay (MNO push + hosted card checkout)
