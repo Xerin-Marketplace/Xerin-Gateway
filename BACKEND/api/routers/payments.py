@@ -5,13 +5,14 @@ from uuid import UUID
 
 import logging
 
-from fastapi import APIRouter, Depends, Header, HTTPException, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from api.config import settings
 from api.deps import get_current_user, get_db
 from api.models import (
+    InventoryReservation,
     Order,
     OrderStatus,
     OrderStatusHistory,
@@ -28,16 +29,19 @@ from api.models import (
 )
 from api.permissions import require_permission
 from api.schemas import (
+    OrderPaymentStateResponse,
+    PaginatedPaymentResponse,
     PaymentCallbackRequest,
     PaymentInitiateRequest,
     PaymentResponse,
+    PaymentRetryRequest,
     NameLookupRequest,
     NameLookupResponse,
 )
 from api.enums import InventoryReservationStatus, SellerOrderStatus
 from api.services.azampay_service import AzamPayAPIError, AzamPayClient, AzamPayConfigurationError
 from api.services.selcom_service import SelcomAPIError, SelcomClient, SelcomConfigurationError
-from api.services.inventory_reservations import commit_order_reservations, ensure_order_reservations_active, release_order_reservations
+from api.services.inventory_reservations import commit_order_reservations, ensure_order_reservations_active
 from api.services.commission_engine import calculate_order_commissions
 
 router = APIRouter(prefix="/payments", tags=["Payments"])
@@ -473,20 +477,14 @@ def _apply_payment_callback(provider: str, data: PaymentCallbackRequest, db: Ses
         _payment_event(db, "payment.failed", "Payment failed",
                        severity="warning", payment=payment,
                        metadata={"reason": str(payment.failure_reason or "")[:200]})
-        order = db.query(Order).filter(Order.id == payment.order_id).with_for_update().first()
-        if order and order.status == OrderStatus.pending:
-            release_order_reservations(db, order, target_status=InventoryReservationStatus.released)
-            order.status = OrderStatus.cancelled
-            db.add(OrderStatusHistory(order_id=order.id, status=OrderStatus.cancelled.value, notes="Order cancelled after failed payment"))
+        # Keep the order pending so the buyer can retry payment against the
+        # same order. Reserved stock is released by the reservation-expiry /
+        # unpaid-order timeout jobs if the buyer abandons checkout.
     elif incoming_status in CANCELLED_STATUSES or incoming_status == PaymentStatus.cancelled.value:
         payment.status = PaymentStatus.cancelled
         payment.provider_transaction_id = data.transaction_id
         payment.provider_response = callback_payload
-        order = db.query(Order).filter(Order.id == payment.order_id).with_for_update().first()
-        if order and order.status == OrderStatus.pending:
-            release_order_reservations(db, order, target_status=InventoryReservationStatus.cancelled)
-            order.status = OrderStatus.cancelled
-            db.add(OrderStatusHistory(order_id=order.id, status=OrderStatus.cancelled.value, notes="Order cancelled by payment provider"))
+        # Same as failure: the order stays pending and retryable.
     else:
         payment.status = PaymentStatus.processing
         payment.provider_response = callback_payload
@@ -635,6 +633,212 @@ def selcom_callback(
     return _apply_payment_callback("selcom", callback_data, db)
 
 
+TERMINAL_PAYMENT_STATUSES = {
+    PaymentStatus.completed,
+    PaymentStatus.failed,
+    PaymentStatus.cancelled,
+    PaymentStatus.refunded,
+}
+
+PAYMENT_STATE_MESSAGES = {
+    "not_started": "Payment has not been started for this order.",
+    "pending": "Payment request created. Waiting for confirmation.",
+    "processing": "Waiting for the payment provider to confirm the payment.",
+    "completed": "Payment confirmed.",
+    "failed": "The payment attempt failed. You can retry the payment.",
+    "cancelled": "The payment attempt was cancelled.",
+    "refunded": "This payment was refunded.",
+}
+
+
+def _order_reservations_active(db: Session, order: Order) -> bool:
+    now = datetime.now(timezone.utc)
+    rows = db.query(InventoryReservation).filter(
+        InventoryReservation.order_id == order.id,
+    ).all()
+    return bool(rows) and all(
+        row.status == InventoryReservationStatus.active
+        and (row.expires_at is None or row.expires_at > now)
+        for row in rows
+    )
+
+
+@router.get("/orders/{order_id}/state", response_model=OrderPaymentStateResponse)
+def order_payment_state(
+    order_id: UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    order = db.query(Order).filter(Order.id == order_id).first()
+    if not order:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Order not found")
+    if order.user_id != current_user.id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized to view this order")
+
+    latest = (
+        db.query(Payment)
+        .filter(Payment.order_id == order.id)
+        .order_by(Payment.created_at.desc())
+        .first()
+    )
+
+    if latest is not None:
+        payment_status = latest.status.value
+    elif order.status == OrderStatus.paid:
+        payment_status = "completed"
+    elif order.status == OrderStatus.cancelled:
+        payment_status = "cancelled"
+    else:
+        payment_status = "not_started"
+
+    is_cod = bool(latest and latest.method == PaymentMethod.cash_on_delivery)
+    order_terminal = order.status in {
+        OrderStatus.cancelled,
+        OrderStatus.refunded,
+    }
+    terminal = (
+        payment_status in {s.value for s in TERMINAL_PAYMENT_STATUSES}
+        or order_terminal
+        or is_cod
+    )
+    retryable = bool(
+        latest
+        and latest.status in {PaymentStatus.failed, PaymentStatus.cancelled}
+        and latest.method != PaymentMethod.cash_on_delivery
+        and order.status == OrderStatus.pending
+        and _order_reservations_active(db, order)
+    )
+    poll_after = (
+        30 if is_cod else 5
+    ) if payment_status in {"pending", "processing"} else None
+
+    message = PAYMENT_STATE_MESSAGES.get(payment_status, "Payment state unavailable.")
+    if latest is not None:
+        provider_message = (latest.provider_response or {}).get("message")
+        if payment_status in {"pending", "processing"} and provider_message:
+            message = str(provider_message)
+        elif payment_status == "failed" and latest.failure_reason:
+            message = str(latest.failure_reason)
+    if order_terminal and payment_status == "cancelled":
+        message = "The payment window expired and this order was cancelled."
+
+    return {
+        "order_id": order.id,
+        "order_status": order.status.value,
+        "payment_status": payment_status,
+        "latest_payment": latest,
+        "retryable": retryable,
+        "terminal": terminal,
+        "poll_after_seconds": poll_after,
+        "message": message,
+    }
+
+
+@router.get("/my-payments", response_model=PaginatedPaymentResponse)
+def my_payments(
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=100),
+    payment_status: PaymentStatus | None = Query(None),
+    method: PaymentMethod | None = Query(None),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    query = db.query(Payment).filter(Payment.user_id == current_user.id)
+    if payment_status is not None:
+        query = query.filter(Payment.status == payment_status)
+    if method is not None:
+        query = query.filter(Payment.method == method)
+    query = query.order_by(Payment.created_at.desc())
+    return {
+        "total": query.count(),
+        "page": page,
+        "page_size": page_size,
+        "results": query.offset((page - 1) * page_size).limit(page_size).all(),
+    }
+
+
+@router.post("/{payment_id}/retry", response_model=PaymentResponse, status_code=status.HTTP_201_CREATED)
+def retry_payment(
+    payment_id: UUID,
+    data: PaymentRetryRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Start a new payment attempt against the same pending order."""
+    payment = db.query(Payment).filter(Payment.id == payment_id).with_for_update().first()
+    if not payment:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Payment not found")
+    if payment.user_id != current_user.id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized to retry this payment")
+    if payment.method == PaymentMethod.cash_on_delivery:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Cash on delivery payments cannot be retried")
+    if payment.status not in {PaymentStatus.failed, PaymentStatus.cancelled}:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Only failed or cancelled payments can be retried")
+
+    order = db.query(Order).filter(Order.id == payment.order_id).with_for_update().first()
+    if not order:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Order not found")
+    if order.status != OrderStatus.pending:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="This order can no longer be paid. Please place a new order.",
+        )
+
+    previous_mno = (payment.provider_response or {}).get("mno")
+    return initiate_payment(
+        PaymentInitiateRequest(
+            order_id=order.id,
+            method=payment.method,
+            provider=data.provider or previous_mno,
+            phone_number=data.phone_number,
+            success_url=data.success_url,
+            failure_url=data.failure_url,
+        ),
+        db=db,
+        current_user=current_user,
+    )
+
+
+def _refresh_selcom_status(db: Session, payment: Payment) -> Payment:
+    try:
+        status_data = SelcomClient().order_status(str(payment.id))
+        entry = (status_data.get("data") or [{}])[0]
+        mapped = _map_selcom_status(str(entry.get("payment_status") or ""), "")
+        if mapped != PaymentStatus.processing:
+            payment = _apply_payment_callback(
+                "selcom",
+                PaymentCallbackRequest(
+                    payment_id=payment.id,
+                    provider="selcom",
+                    transaction_id=str(entry.get("reference") or entry.get("transid") or payment.id),
+                    status=mapped,
+                    payload=entry,
+                ),
+                db,
+            )
+    except Exception:
+        logger.exception("selcom order-status refresh failed for payment %s", payment.id)
+    return payment
+
+
+@router.post("/{payment_id}/verify-status", response_model=PaymentResponse)
+def verify_payment_status(
+    payment_id: UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    payment = db.query(Payment).filter(Payment.id == payment_id).first()
+    if not payment:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Payment not found")
+    if payment.user_id != current_user.id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized to view this payment")
+
+    if payment.provider == "selcom" and payment.status in {PaymentStatus.pending, PaymentStatus.processing}:
+        payment = _refresh_selcom_status(db, payment)
+
+    return payment
+
+
 @router.get("/admin/all", response_model=list[PaymentResponse])
 def list_payments(
     order_id: UUID | None = None,
@@ -662,23 +866,6 @@ def get_payment(payment_id: UUID, db: Session = Depends(get_db), current_user: U
     # Selcom webhook only fires on success — poll order status so a
     # cancelled/failed USSD push doesn't leave the payment processing forever.
     if payment.provider == "selcom" and payment.status in {PaymentStatus.pending, PaymentStatus.processing}:
-        try:
-            status_data = SelcomClient().order_status(str(payment.id))
-            entry = (status_data.get("data") or [{}])[0]
-            mapped = _map_selcom_status(str(entry.get("payment_status") or ""), "")
-            if mapped != PaymentStatus.processing:
-                payment = _apply_payment_callback(
-                    "selcom",
-                    PaymentCallbackRequest(
-                        payment_id=payment.id,
-                        provider="selcom",
-                        transaction_id=str(entry.get("reference") or entry.get("transid") or payment.id),
-                        status=mapped,
-                        payload=entry,
-                    ),
-                    db,
-                )
-        except Exception:
-            logger.exception("selcom order-status refresh failed for payment %s", payment.id)
+        payment = _refresh_selcom_status(db, payment)
 
     return payment

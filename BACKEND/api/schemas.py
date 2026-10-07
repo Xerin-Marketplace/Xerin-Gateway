@@ -1536,6 +1536,33 @@ class PaymentResponse(BaseModel):
     model_config = ORM_CONFIG
 
 
+class PaymentRetryRequest(BaseModel):
+    provider: Optional[str] = Field(default=None, max_length=100)
+    phone_number: Optional[str] = None
+    success_url: Optional[str] = Field(default=None, max_length=2048)
+    failure_url: Optional[str] = Field(default=None, max_length=2048)
+
+    _clean_phone = field_validator("phone_number")(_normalise_phone)
+
+
+class OrderPaymentStateResponse(BaseModel):
+    order_id: UUID
+    order_status: str
+    payment_status: str
+    latest_payment: Optional[PaymentResponse] = None
+    retryable: bool
+    terminal: bool
+    poll_after_seconds: Optional[int] = None
+    message: str
+
+
+class PaginatedPaymentResponse(BaseModel):
+    total: int
+    page: int
+    page_size: int
+    results: list[PaymentResponse]
+
+
 # =========================================================
 # COUPON SCHEMAS
 # =========================================================
