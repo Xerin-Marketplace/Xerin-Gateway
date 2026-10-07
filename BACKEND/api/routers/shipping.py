@@ -320,44 +320,111 @@ XERIN_LOGISTICS_CODE = "XERIN"
 QUOTE_EXPIRY_MINUTES = 30
 
 
-def ensure_default_shipping(db: Session) -> None:
-    """Provision the built-in Xerin Express delivery service (nationwide zone +
-    Standard/Express methods + flat rates) the first time checkout needs it,
-    so the marketplace always has a working default carrier."""
-    if db.query(ShippingZone.id).filter(ShippingZone.is_active.is_(True)).first():
-        return
-    zone = ShippingZone(
-        name="Tanzania — Nationwide",
-        country=settings.DEFAULT_COUNTRY or "Tanzania",
-        regions=[],
-        cities=[],
-        is_active=True,
-    )
-    standard = ShippingMethod(
-        name="Standard",
-        description="Xerin Express standard delivery",
-        carrier_name=XERIN_LOGISTICS_NAME,
-        min_delivery_days=1,
-        max_delivery_days=3,
-    )
-    express = ShippingMethod(
-        name="Express",
-        description="Xerin Express same-day delivery",
-        carrier_name=XERIN_LOGISTICS_NAME,
-        min_delivery_days=0,
-        max_delivery_days=1,
-    )
-    db.add_all([zone, standard, express])
-    db.flush()
-    db.add_all([
-        ShippingRate(zone_id=zone.id, method_id=standard.id, rate_type=ShippingRateType.flat, base_amount=Decimal("5000")),
-        ShippingRate(zone_id=zone.id, method_id=express.id, rate_type=ShippingRateType.flat, base_amount=Decimal("10000")),
-    ])
-    db.commit()
-
-
 def _norm_place(value: str | None) -> str:
     return (value or "").strip().lower()
+
+
+_COUNTRY_ALIASES = {
+    "tz": "tanzania",
+    "tanzania": "tanzania",
+    "united republic of tanzania": "tanzania",
+    "tanzania, united republic of": "tanzania",
+    "the united republic of tanzania": "tanzania",
+    "ke": "kenya",
+    "kenya": "kenya",
+    "ug": "uganda",
+    "uganda": "uganda",
+    "rw": "rwanda",
+    "rwanda": "rwanda",
+    "cn": "china",
+    "china": "china",
+}
+
+
+def _norm_country(value: str | None) -> str:
+    """Canonical country comparison — tolerates ISO codes and the common
+    'Tanzania, United Republic of' spelling variants map providers return."""
+    raw = _norm_place(value)
+    return _COUNTRY_ALIASES.get(raw, raw)
+
+
+def _default_country_norm() -> str:
+    return _norm_country(settings.DEFAULT_COUNTRY or "Tanzania")
+
+
+def ensure_default_shipping(db: Session) -> None:
+    """Guarantee a nationwide Xerin Express fallback exists: an active zone
+    covering the whole default country plus Standard/Express methods + flat
+    rates. Runs on every quote request and only fills in what is missing, so
+    admin-created regional zones never block addresses they don't cover."""
+    zones = db.query(ShippingZone).filter(ShippingZone.is_active.is_(True)).all()
+    nationwide = next(
+        (
+            z
+            for z in zones
+            if _norm_country(z.country) == _default_country_norm()
+            and not z.regions
+            and not z.cities
+        ),
+        None,
+    )
+    if nationwide is None:
+        nationwide = ShippingZone(
+            name="Tanzania — Nationwide",
+            country=settings.DEFAULT_COUNTRY or "Tanzania",
+            regions=[],
+            cities=[],
+            is_active=True,
+        )
+        db.add(nationwide)
+        db.flush()
+
+    methods = {
+        _norm_place(m.name): m
+        for m in db.query(ShippingMethod).filter(
+            ShippingMethod.carrier_name == XERIN_LOGISTICS_NAME,
+            ShippingMethod.is_active.is_(True),
+        )
+    }
+    standard = methods.get("standard")
+    if standard is None:
+        standard = ShippingMethod(
+            name="Standard",
+            description="Xerin Express standard delivery",
+            carrier_name=XERIN_LOGISTICS_NAME,
+            min_delivery_days=1,
+            max_delivery_days=3,
+        )
+        db.add(standard)
+    express = methods.get("express")
+    if express is None:
+        express = ShippingMethod(
+            name="Express",
+            description="Xerin Express same-day delivery",
+            carrier_name=XERIN_LOGISTICS_NAME,
+            min_delivery_days=0,
+            max_delivery_days=1,
+        )
+        db.add(express)
+    db.flush()
+
+    def _ensure_rate(method: ShippingMethod, amount: Decimal) -> None:
+        exists = db.query(ShippingRate.id).filter(
+            ShippingRate.zone_id == nationwide.id,
+            ShippingRate.method_id == method.id,
+            ShippingRate.is_active.is_(True),
+        ).first()
+        if not exists:
+            db.add(ShippingRate(
+                zone_id=nationwide.id,
+                method_id=method.id,
+                rate_type=ShippingRateType.flat,
+                base_amount=amount,
+            ))
+
+    _ensure_rate(standard, Decimal("5000"))
+    _ensure_rate(express, Decimal("10000"))
+    db.commit()
 
 
 def _haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
@@ -384,14 +451,15 @@ def _route_distance_km(store: Store | None, address: Address) -> Decimal:
         return Decimal(str(round(_haversine_km(store.latitude, store.longitude, address.latitude, address.longitude), 2)))
     if store is not None and _norm_place(store.region) and _norm_place(store.region) == _norm_place(address.region):
         return Decimal("25")
-    if store is not None and _norm_place(store.country) == _norm_place(address.country):
+    if store is not None and _norm_country(store.country) == _norm_country(address.country):
         return Decimal("120")
     return Decimal("0")
 
 
 def _route_type(store: Store | None, address: Address) -> str:
-    origin = _norm_place(store.country if store else None) or _norm_place(settings.DEFAULT_COUNTRY or "Tanzania")
-    return "domestic" if origin == _norm_place(address.country) else "cross_border"
+    origin = _norm_country(store.country if store else None) or _default_country_norm()
+    dest = _norm_country(address.country) or _default_country_norm()
+    return "domestic" if origin == dest else "cross_border"
 
 
 def _checkout_context(db: Session, user: User, address_id: UUID):
@@ -448,7 +516,10 @@ def _route_snapshots(sellers: dict, stores: dict, address: Address, billable_sel
 
 
 def _zone_serves_address(zone: ShippingZone, address: Address) -> bool:
-    if _norm_place(zone.country) != _norm_place(address.country):
+    # A blank address country means "same as the marketplace default".
+    zone_country = _norm_country(zone.country)
+    address_country = _norm_country(address.country) or _default_country_norm()
+    if zone_country != address_country:
         return False
     regions = {_norm_place(x) for x in (zone.regions or [])}
     cities = {_norm_place(x) for x in (zone.cities or [])}
