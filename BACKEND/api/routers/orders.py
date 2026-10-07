@@ -424,7 +424,7 @@ def get_customer_order_detail(
 
     base = OrderResponse.model_validate(order).model_dump(mode="json")
 
-    payments = sorted(order.payments, key=lambda p: p.created_at or datetime.min.replace(tzinfo=timezone.utc))
+    payments = sorted(order.payments, key=lambda p: str(p.created_at or ""))
     latest_payment = payments[-1] if payments else None
 
     address = order.shipping_address
@@ -445,7 +445,7 @@ def get_customer_order_detail(
         }
 
     seller_order_rows = []
-    for so in sorted(order.seller_orders, key=lambda x: x.created_at or datetime.min.replace(tzinfo=timezone.utc)):
+    for so in sorted(order.seller_orders, key=lambda x: str(x.created_at or "")):
         seller_order_rows.append({
             "id": str(so.id),
             "seller_id": str(so.seller_id),
