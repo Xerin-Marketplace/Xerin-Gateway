@@ -938,6 +938,40 @@ def get_seller_documents(
     )
 
 
+@router.get("/sellers/{seller_id}/documents/{document_id}/view")
+def view_seller_document(
+    seller_id: UUID,
+    document_id: UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(
+        require_permission(PermissionCode.can_view_seller_documents.value)
+    ),
+):
+    import mimetypes
+    from fastapi.responses import FileResponse
+    from api.routers.sellers import _resolve_kyc_file_path
+
+    document = (
+        db.query(SellerKYCDocument)
+        .filter(
+            SellerKYCDocument.id == document_id,
+            SellerKYCDocument.seller_id == seller_id,
+        )
+        .first()
+    )
+    if document is None:
+        raise HTTPException(status_code=404, detail="KYC document not found")
+
+    file_path = _resolve_kyc_file_path(document)
+    media_type, _ = mimetypes.guess_type(str(file_path))
+    return FileResponse(
+        path=file_path,
+        media_type=media_type or "application/octet-stream",
+        filename=file_path.name,
+        content_disposition_type="inline",
+    )
+
+
 @router.post("/sellers/{seller_id}/approve", response_model=SellerResponse)
 def approve_seller(
     seller_id: UUID,
