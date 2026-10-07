@@ -697,6 +697,7 @@ class StorePublicResponse(BaseModel):
     rating: Decimal
     review_count: int
     followers_count: int
+    product_count: int = 0
     vacation_mode: bool
     accept_orders: bool
     processing_days: int
@@ -928,6 +929,11 @@ class ProductFeedItem(BaseModel):
     sold_count: int = 0
     rating: float = 0.0
     review_count: int = 0
+    store_name: Optional[str] = None
+    store_slug: Optional[str] = None
+    store_country: Optional[str] = None
+    store_region: Optional[str] = None
+    store_district: Optional[str] = None
 
     model_config = ORM_CONFIG
 
@@ -3871,6 +3877,17 @@ class RevokeSessionsRequest(BaseModel):
 class DeleteMyAccountRequest(BaseModel):
     current_password: str
     confirmation: str
+
+
+class MapPinConfirmRequest(BaseModel):
+    latitude: Decimal = Field(ge=Decimal("-90"), le=Decimal("90"))
+    longitude: Decimal = Field(ge=Decimal("-180"), le=Decimal("180"))
+
+
+class MapPinConfirmResponse(BaseModel):
+    address: AddressResponse
+    resolved_location: Optional[dict] = None
+    message: str
 
 
 # Resolve forward references declared before their targets are defined.

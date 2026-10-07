@@ -137,6 +137,14 @@ class Settings(BaseSettings):
     SELCOM_TIMEOUT_SECONDS: int = 30
     SELCOM_MAX_AMOUNT_TZS: float | None = None
 
+    # ── Map / geocoding (checkout address pin, seller pickup points) ──
+    # Google Places is used when a key is configured; otherwise the API
+    # falls back to Nominatim (OpenStreetMap) — free, no key required.
+    GOOGLE_MAPS_API_KEY: str | None = None
+    NOMINATIM_BASE_URL: str = "https://nominatim.openstreetmap.org"
+    NOMINATIM_USER_AGENT: str = "XerinMart/1.0 (+https://xerinmart.com)"
+    MAP_REQUEST_TIMEOUT: int = 12
+
     @property
     def payment_provider(self) -> str:
         return (

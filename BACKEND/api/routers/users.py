@@ -12,8 +12,12 @@ from api.models import Address, Seller, SellerStatus, User, UserRole, UserStatus
 from api.models import Session as UserSession
 from api.permissions import require_permission
 from api.security import hash_password, verify_password
+from api.services import map_service
+from api.services.map_service import MapServiceError
 from api.schemas import (
     DeleteMyAccountRequest,
+    MapPinConfirmRequest,
+    MapPinConfirmResponse,
     AddressCreate,
     AddressUpdate,
     AddressResponse,
@@ -295,6 +299,53 @@ def set_default_address(
     db.commit()
     db.refresh(address)
     return address
+
+
+@router.post(
+    "/addresses/{address_id}/confirm-map-pin",
+    response_model=MapPinConfirmResponse,
+)
+def confirm_address_map_pin(
+    address_id: UUID,
+    data: MapPinConfirmRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(
+        require_permission(PermissionCode.manage_addresses.value)
+    ),
+):
+    address = db.query(Address).filter(
+        Address.id == address_id,
+        Address.user_id == current_user.id,
+    ).first()
+    if not address:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Address not found")
+
+    resolved = None
+    try:
+        resolved = map_service.reverse_geocode(
+            latitude=float(data.latitude),
+            longitude=float(data.longitude),
+        )
+    except MapServiceError:
+        resolved = None
+
+    address.latitude = data.latitude
+    address.longitude = data.longitude
+
+    if resolved:
+        for field in ("country", "region", "district", "ward", "city", "postal_code"):
+            if not getattr(address, field) and resolved.get(field):
+                setattr(address, field, resolved[field])
+        if not address.street and resolved.get("street"):
+            address.street = resolved["street"]
+
+    db.commit()
+    db.refresh(address)
+    return {
+        "address": address,
+        "resolved_location": resolved,
+        "message": "Exact delivery point confirmed.",
+    }
 
 
 @router.delete("/addresses/{address_id}")
