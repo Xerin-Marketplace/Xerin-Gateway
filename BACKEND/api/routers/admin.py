@@ -1,7 +1,7 @@
 from uuid import UUID
 from datetime import datetime, timezone
 from fastapi import Query
-from sqlalchemy import or_
+from sqlalchemy import func, or_
 from api.security import hash_password
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status, Form
 from sqlalchemy.orm import Session
@@ -24,6 +24,10 @@ from api.models import (
     SellerKYCDocument,
     Product,
     ProductStatus,
+    Order,
+    OrderItem,
+    SellerOrder,
+    SellerOrderStatus,
 )
 from api.schemas import (
     BusinessCategoryCreate,
@@ -886,6 +890,117 @@ def get_all_sellers(
 ):
 
     return db.query(Seller).order_by(Seller.created_at.desc()).all()
+
+
+@router.get("/seller-products")
+def get_seller_products(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(
+        require_permission(PermissionCode.can_view_sellers.value)
+    ),
+):
+    """Flat listing of every seller's products for the admin Sellers → Products view."""
+    rows = (
+        db.query(Product, Seller.business_name)
+        .join(Seller, Product.seller_id == Seller.id)
+        .order_by(Product.created_at.desc())
+        .all()
+    )
+    return [
+        {
+            "id": str(product.id),
+            "seller_id": str(product.seller_id),
+            "seller_name": seller_name,
+            "name": product.name,
+            "sku": product.sku or "",
+            "price": float(product.price or 0),
+            "currency": getattr(product, "currency", None) or "TZS",
+            "status": product.status.value if product.status else "pending",
+            "is_active": bool(product.is_active),
+            "created_at": product.created_at.isoformat() if product.created_at else None,
+        }
+        for product, seller_name in rows
+    ]
+
+
+@router.get("/seller-orders")
+def get_seller_order_lines(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(
+        require_permission(PermissionCode.can_view_sellers.value)
+    ),
+):
+    """Per-item seller order lines for the admin Sellers → Orders view."""
+    rows = (
+        db.query(OrderItem, Order, Seller, SellerOrder.status)
+        .join(Order, OrderItem.order_id == Order.id)
+        .join(Seller, OrderItem.seller_id == Seller.id)
+        .outerjoin(
+            SellerOrder,
+            (SellerOrder.order_id == OrderItem.order_id)
+            & (SellerOrder.seller_id == OrderItem.seller_id),
+        )
+        .order_by(OrderItem.created_at.desc())
+        .limit(500)
+        .all()
+    )
+    return [
+        {
+            "id": str(item.id),
+            "order_id": str(item.order_id),
+            "order_number": order.order_number or str(order.id)[:8].upper(),
+            "seller_id": str(item.seller_id),
+            "seller_name": seller.business_name,
+            "product_name": item.product_name,
+            "quantity": item.quantity,
+            "amount": float(item.total_price or 0),
+            "currency": order.currency or "TZS",
+            "status": seller_order_status.value if seller_order_status else (order.status.value if order.status else "pending"),
+            "created_at": item.created_at.isoformat() if item.created_at else None,
+        }
+        for item, order, seller, seller_order_status in rows
+    ]
+
+
+@router.get("/seller-performance")
+def get_seller_performance(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(
+        require_permission(PermissionCode.can_view_sellers.value)
+    ),
+):
+    """Per-seller aggregate metrics for the admin Sellers → Performance view."""
+    sellers = db.query(Seller).order_by(Seller.business_name).all()
+    results = []
+    for seller in sellers:
+        products = db.query(Product).filter(Product.seller_id == seller.id)
+        product_count = products.count()
+        approved_count = products.filter(Product.status == ProductStatus.approved).count()
+        seller_orders = db.query(SellerOrder).filter(SellerOrder.seller_id == seller.id)
+        order_count = seller_orders.count()
+        delivered_count = seller_orders.filter(SellerOrder.status == SellerOrderStatus.delivered).count()
+        cancelled_count = seller_orders.filter(SellerOrder.status == SellerOrderStatus.cancelled).count()
+        revenue = float(
+            seller_orders.filter(SellerOrder.status == SellerOrderStatus.delivered)
+            .with_entities(func.coalesce(func.sum(SellerOrder.seller_subtotal), 0))
+            .scalar() or 0
+        )
+        results.append(
+            {
+                "seller_id": str(seller.id),
+                "seller_name": seller.business_name,
+                "status": seller.status.value if seller.status else "pending",
+                "products": product_count,
+                "approved_products": approved_count,
+                "orders": order_count,
+                "delivered_orders": delivered_count,
+                "cancelled_orders": cancelled_count,
+                "revenue": revenue,
+                "currency": "TZS",
+                "fulfillment_rate": round(delivered_count / order_count * 100, 1) if order_count else 0.0,
+            }
+        )
+    return results
 
 
 @router.get("/sellers/pending", response_model=list[SellerResponse])
