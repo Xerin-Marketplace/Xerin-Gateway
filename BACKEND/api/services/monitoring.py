@@ -39,9 +39,20 @@ def _min_severity() -> int:
     }.get(raw, 2)
 
 
+def alert_recipients() -> list[str]:
+    """Parse MONITORING_ALERT_EMAIL into a deduped list of addresses."""
+    raw = settings.MONITORING_ALERT_EMAIL or ""
+    seen: list[str] = []
+    for addr in raw.split(","):
+        addr = addr.strip()
+        if addr and addr not in seen:
+            seen.append(addr)
+    return seen
+
+
 def should_email(severity: AuditSeverity, action: str) -> bool:
     """Decide whether an event warrants an email alert."""
-    if not settings.MONITORING_ENABLED or not settings.MONITORING_ALERT_EMAIL:
+    if not settings.MONITORING_ENABLED or not alert_recipients():
         return False
     if _SEVERITY_ORDER.get(severity, 0) >= _min_severity():
         return True
@@ -66,50 +77,50 @@ def queue_email_alert(
     configured window, bump its aggregate count instead of spamming email.
     Returns the notification row (existing aggregated one or a new one).
     """
-    recipient = settings.MONITORING_ALERT_EMAIL
-    if not recipient:
+    recipients = alert_recipients()
+    if not recipients:
         return None
 
     sev = severity.value if isinstance(severity, AuditSeverity) else severity
     window_start = _now() - timedelta(minutes=settings.MONITORING_ALERT_WINDOW_MINUTES)
+    first: AlertNotification | None = None
 
-    existing = (
-        db.query(AlertNotification)
-        .filter(
-            AlertNotification.dedup_key == dedup_key,
-            AlertNotification.recipient == recipient,
-            AlertNotification.created_at >= window_start,
-            AlertNotification.status.in_(["pending", "sent", "failed"]),
+    for recipient in recipients:
+        existing = (
+            db.query(AlertNotification)
+            .filter(
+                AlertNotification.dedup_key == dedup_key,
+                AlertNotification.recipient == recipient,
+                AlertNotification.created_at >= window_start,
+                AlertNotification.status.in_(["pending", "sent", "failed"]),
+            )
+            .order_by(AlertNotification.created_at.desc())
+            .first()
         )
-        .order_by(AlertNotification.created_at.desc())
-        .first()
-    )
 
-    if existing is not None:
-        existing.aggregate_count = (existing.aggregate_count or 1) + 1
-        # If the alert already sent and we've exceeded the per-window cap,
-        # we only update the counter — the next report/email references it.
-        if (
-            existing.status == "sent"
-            and existing.attempts <= 0
-        ):
-            pass
+        if existing is not None:
+            existing.aggregate_count = (existing.aggregate_count or 1) + 1
+            db.flush()
+            if first is None:
+                first = existing
+            continue
+
+        notification = AlertNotification(
+            dedup_key=dedup_key[:200],
+            recipient=recipient,
+            subject=subject[:255],
+            body_text=body_text,
+            severity=sev,
+            event_type=(event_type or dedup_key.split(":", 1)[0])[:120],
+            status="pending",
+            next_retry_at=_now(),
+        )
+        db.add(notification)
         db.flush()
-        return existing
+        if first is None:
+            first = notification
 
-    notification = AlertNotification(
-        dedup_key=dedup_key[:200],
-        recipient=recipient,
-        subject=subject[:255],
-        body_text=body_text,
-        severity=sev,
-        event_type=(event_type or dedup_key.split(":", 1)[0])[:120],
-        status="pending",
-        next_retry_at=_now(),
-    )
-    db.add(notification)
-    db.flush()
-    return notification
+    return first
 
 
 def record_business_event(

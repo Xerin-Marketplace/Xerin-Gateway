@@ -14,6 +14,7 @@ from api.models import (
 )
 from api.permissions import require_permission
 from api.config import settings
+from api.services.monitoring import alert_recipients
 
 router = APIRouter(prefix="/monitoring", tags=["Monitoring"])
 
@@ -85,7 +86,7 @@ def monitoring_overview(
 
     return {
         "enabled": settings.MONITORING_ENABLED,
-        "alert_recipient": settings.MONITORING_ALERT_EMAIL,
+        "alert_recipients": alert_recipients(),
         "weekly_report": {
             "enabled": settings.MONITORING_WEEKLY_REPORT_ENABLED,
             "day": settings.MONITORING_WEEKLY_REPORT_DAY,

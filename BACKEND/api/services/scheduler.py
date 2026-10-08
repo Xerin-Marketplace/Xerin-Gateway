@@ -213,23 +213,28 @@ def _maybe_send_weekly_report() -> None:
         db.close()
 
 
-def build_weekly_report(db: Session, start: datetime, end: datetime) -> WeeklyReport:
+def build_weekly_report(db: Session, start: datetime, end: datetime) -> WeeklyReport | None:
     from api.services.email_alerts import send_weekly_report
+    from api.services.monitoring import alert_recipients
 
     stats = _collect_stats(db, start, end)
     subject = f"Xerin Mart — Weekly Report {start.date()} → {end.date()}"
     body = _render_weekly_report(stats, start, end)
 
-    report = WeeklyReport(
-        period_start=start, period_end=end, subject=subject,
-        body_text=body, stats=stats,
-        recipient=settings.MONITORING_ALERT_EMAIL,
-        status="pending",
-    )
-    db.add(report)
-    db.flush()
-    send_weekly_report(db, report)
-    return report
+    first: WeeklyReport | None = None
+    for recipient in alert_recipients():
+        report = WeeklyReport(
+            period_start=start, period_end=end, subject=subject,
+            body_text=body, stats=stats,
+            recipient=recipient,
+            status="pending",
+        )
+        db.add(report)
+        db.flush()
+        send_weekly_report(db, report)
+        if first is None:
+            first = report
+    return first
 
 
 def _collect_stats(db: Session, start: datetime, end: datetime) -> dict:
