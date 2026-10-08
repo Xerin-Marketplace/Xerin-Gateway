@@ -62,6 +62,8 @@ class Settings(BaseSettings):
     EMAIL_USER: str | None = None
     EMAIL_PASSWORD: str | None = None
     EMAIL_FROM: str | None = None
+    EMAIL_FROM_NAME: str = "Xerin Mart - Tanzania"
+    EMAIL_REPLY_TO: str | None = None
     EMAIL_USE_TLS: bool = True
     EMAIL_USE_SSL: bool = False
 
