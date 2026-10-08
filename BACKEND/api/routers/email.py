@@ -6,7 +6,13 @@ from typing import Optional
 from api.config import settings
 
 
-def send_email(to: str, subject: str, body: str, html: Optional[str] = None) -> None:
+def send_email(
+    to: str,
+    subject: str,
+    body: str,
+    html: Optional[str] = None,
+    attachments: Optional[list] = None,
+) -> None:
     """SMTP sender honoring EMAIL_USE_SSL (465) and EMAIL_USE_TLS (587).
 
     Required settings: EMAIL_HOST, EMAIL_PORT, EMAIL_USER, EMAIL_PASSWORD,
@@ -27,6 +33,13 @@ def send_email(to: str, subject: str, body: str, html: Optional[str] = None) -> 
         msg.add_alternative(html, subtype="html")
     else:
         msg.set_content(body)
+
+    for att in attachments or []:
+        filename, data, mimetype = att
+        maintype, _, subtype = (mimetype or "application/octet-stream").partition("/")
+        msg.add_attachment(
+            data, maintype=maintype, subtype=subtype, filename=filename
+        )
 
     host = settings.EMAIL_HOST
     port = int(getattr(settings, "EMAIL_PORT", 587))

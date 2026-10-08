@@ -822,6 +822,12 @@ def google_auth(request: Request, data: GoogleAuthRequest, db: Session = Depends
             db.commit()
             logger.info("New customer created via Google: %s", user.id)
             is_new_user = True
+            if identity.email_verified:
+                try:
+                    from api.services.monitoring import notify_user_registered
+                    notify_user_registered(db, user, "Google")
+                except Exception:
+                    pass
 
     if user.status == UserStatus.suspended:
         raise HTTPException(status_code=403, detail="Account suspended")
@@ -1165,8 +1171,12 @@ def verify_otp(data: VerifyOTPRequest, db: Session = Depends(get_db)):
 
     user = db.query(User).filter(User.phone == phone).first()
     if user:
+        was_pending = user.status == UserStatus.pending_verification
         user.is_verified = True
         user.status = UserStatus.active
+        if was_pending:
+            from api.services.monitoring import notify_user_registered
+            notify_user_registered(db, user, "phone OTP")
 
     db.commit()
     _clear_otp_failures(phone)
@@ -1278,8 +1288,12 @@ def verify_account_otp(
         raise HTTPException(status_code=400, detail="OTP expired")
 
     otp_request.verified = True
+    was_pending = user.status == UserStatus.pending_verification
     user.is_verified = True
     user.status = UserStatus.active
+    if was_pending:
+        from api.services.monitoring import notify_user_registered
+        notify_user_registered(db, user, "account OTP")
 
     db.commit()
     _clear_otp_failures(phone)

@@ -123,6 +123,32 @@ def queue_email_alert(
     return first
 
 
+def notify_user_registered(db: Session, user, source: str) -> None:
+    """Fire an alert when a new user account becomes active/verified."""
+    if not settings.MONITORING_ENABLED:
+        return
+    try:
+        name = " ".join(p for p in [user.first_name, user.last_name] if p) or "—"
+        record_business_event(
+            db,
+            action="auth.user_registered",
+            description=f"New customer registered via {source}: {name} ({user.email})",
+            severity=AuditSeverity.notice,
+            actor_user_id=user.id,
+            resource_type="user",
+            resource_id=str(user.id),
+            dedup_key=f"auth.user_registered:{user.id}",
+            event_metadata={
+                "name": name,
+                "email": user.email,
+                "phone": user.phone,
+                "source": source,
+            },
+        )
+    except Exception:
+        logger.exception("Failed to record registration alert for %s", getattr(user, "id", "?"))
+
+
 def record_business_event(
     db: Session,
     *,

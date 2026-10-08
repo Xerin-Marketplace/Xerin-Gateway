@@ -274,6 +274,7 @@ def _collect_stats(db: Session, start: datetime, end: datetime) -> dict:
     return {
         "users": {
             "new": count(User),
+            "total": db.query(User).count(),
             "total_audit_events": len(audits),
         },
         "sellers": {"new": count(Seller)},
@@ -325,7 +326,8 @@ def _render_weekly_report(stats: dict, start: datetime, end: datetime) -> str:
     parts.append(f"  Alert emails failed   : {stats['alerts']['failed']}")
 
     parts.append(section("USERS"))
-    parts.append(f"  New users             : {stats['users']['new']}")
+    parts.append(f"  New signups this week : {stats['users']['new']}")
+    parts.append(f"  Total registered      : {stats['users'].get('total', '-')}")
 
     parts.append(section("SELLERS"))
     parts.append(f"  New sellers           : {stats['sellers']['new']}")
