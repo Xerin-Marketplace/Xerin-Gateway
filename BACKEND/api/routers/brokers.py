@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Upload
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
+from sqlalchemy import func
 from typing import Optional
 
 from api.config import settings
@@ -24,12 +25,17 @@ from api.models import (
     BrokerStatus,
     BrokerWallet,
     BrokerWalletTransaction,
+    BrokerOffer,
+    BrokerOfferAcceptance,
+    BrokerReferralClick,
+    BrokerCommission,
     BrokerPayoutAccount,
     BrokerPayoutRequest,
     BrokerRiskEvent,
     Brand,
     Category,
     PayoutStatus,
+    Product,
     ProductStatus,
     User,
 )
@@ -1022,39 +1028,418 @@ def admin_reject_broker_product(
     return _serialize_broker_product(product)
 
 
+# ---------------------------------------------------------------------------
+# Earning engine — offers, referral links, click tracking, commissions.
+# ---------------------------------------------------------------------------
+
+REFERRAL_CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+
+
+def _referral_code(broker: Broker) -> str:
+    seed = uuid.uuid4().hex.upper()
+    return f"{broker.broker_code[:4]}{seed[:6]}".replace("O", "0").replace("I", "1")
+
+
+def _product_card(product: Product) -> dict:
+    images = sorted(product.images or [], key=lambda i: i.display_order)
+    return {
+        "id": str(product.id),
+        "seller_id": str(product.seller_id),
+        "category_id": str(product.category_id),
+        "brand_id": str(product.brand_id) if product.brand_id else None,
+        "sku": product.sku,
+        "name": product.name,
+        "slug": product.slug,
+        "description": product.description,
+        "price": str(product.price),
+        "sale_price": str(product.sale_price) if product.sale_price is not None else None,
+        "currency": product.currency,
+        "weight": str(product.weight) if product.weight is not None else None,
+        "status": product.status.value if isinstance(product.status, ProductStatus) else str(product.status),
+        "rejection_reason": product.rejection_reason,
+        "is_active": product.is_active,
+        "primary_image_url": images[0].image_url if images else None,
+        "images": [
+            {
+                "id": str(img.id),
+                "product_id": str(img.product_id),
+                "image_url": img.image_url,
+                "thumbnail_url": img.thumbnail_url,
+                "is_primary": img.is_primary,
+                "display_order": img.display_order,
+                "alt_text": img.alt_text,
+            }
+            for img in images
+        ],
+        "created_at": product.created_at.isoformat() if product.created_at else None,
+    }
+
+
+def _offer_reward_per_unit(offer: BrokerOffer, product: Product | None = None) -> Decimal:
+    if offer.commission_type == "percentage" and product is not None:
+        base = Decimal(product.sale_price if product.sale_price is not None else product.price)
+        return (base * Decimal(offer.commission_value) / Decimal("100")).quantize(Decimal("0.01"))
+    return Decimal(offer.commission_value).quantize(Decimal("0.01"))
+
+
+def _serialize_offer(offer: BrokerOffer) -> dict:
+    product = offer.product
+    reward = _offer_reward_per_unit(offer, product)
+    price = Decimal(product.sale_price if product.sale_price is not None else product.price) if product else Decimal("0")
+    return {
+        "id": str(offer.id),
+        "product_id": str(offer.product_id),
+        "seller_id": str(offer.seller_id),
+        "commission_type": offer.commission_type,
+        "commission_value": str(offer.commission_value),
+        "max_attributed_sales": offer.max_attributed_sales,
+        "attributed_sales_count": offer.attributed_sales_count,
+        "starts_at": offer.starts_at.isoformat() if offer.starts_at else None,
+        "ends_at": offer.ends_at.isoformat() if offer.ends_at else None,
+        "is_active": offer.is_active,
+        "created_at": offer.created_at.isoformat() if offer.created_at else None,
+        "accepted_brokers_count": sum(1 for a in (offer.acceptances or []) if a.is_active),
+        "estimated_reward_per_unit": str(reward),
+        "estimated_seller_net_per_unit": str((price - reward).quantize(Decimal("0.01"))) if product else "0",
+    }
+
+
+def _offer_available(offer: BrokerOffer) -> bool:
+    now = datetime.now(timezone.utc)
+    if not offer.is_active:
+        return False
+    if offer.starts_at and offer.starts_at > now:
+        return False
+    if offer.ends_at and offer.ends_at <= now:
+        return False
+    if offer.max_attributed_sales is not None and offer.attributed_sales_count >= offer.max_attributed_sales:
+        return False
+    return True
+
+
+def _opportunity_payload(db: Session, broker: Broker, offer: BrokerOffer) -> dict:
+    acceptance = (
+        db.query(BrokerOfferAcceptance)
+        .filter(
+            BrokerOfferAcceptance.offer_id == offer.id,
+            BrokerOfferAcceptance.broker_id == broker.id,
+            BrokerOfferAcceptance.is_active.is_(True),
+        )
+        .first()
+    )
+    product = offer.product
+    return {
+        "offer": _serialize_offer(offer),
+        "product": _product_card(product) if product else None,
+        "available_quantity": 0,
+        "already_accepted": acceptance is not None,
+    }
+
+
 @router.get("/opportunities")
-def broker_opportunities(current_user: User = Depends(get_current_user)):
-    _ = current_user
-    return []
+def broker_opportunities(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    broker = _get_my_broker(db, current_user)
+    offers = (
+        db.query(BrokerOffer)
+        .join(Product, Product.id == BrokerOffer.product_id)
+        .filter(BrokerOffer.is_active.is_(True), Product.status == ProductStatus.approved, Product.is_active.is_(True))
+        .order_by(BrokerOffer.created_at.desc())
+        .all()
+    )
+    return [_opportunity_payload(db, broker, offer) for offer in offers if _offer_available(offer)]
 
 
 @router.get("/accepted-opportunities")
-def broker_accepted_opportunities(current_user: User = Depends(get_current_user)):
-    _ = current_user
-    return []
+def broker_accepted_opportunities(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    broker = _get_my_broker(db, current_user)
+    acceptances = (
+        db.query(BrokerOfferAcceptance)
+        .filter(BrokerOfferAcceptance.broker_id == broker.id, BrokerOfferAcceptance.is_active.is_(True))
+        .all()
+    )
+    return [_opportunity_payload(db, broker, a.offer) for a in acceptances if a.offer]
+
+
+@router.post("/opportunities/{offer_id}/accept", status_code=201)
+def broker_accept_opportunity(
+    offer_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    broker = _get_approved_broker(db, current_user)
+    offer = db.query(BrokerOffer).filter(BrokerOffer.id == offer_id).first()
+    if not offer or not _offer_available(offer):
+        raise HTTPException(status_code=404, detail="Offer not available")
+
+    acceptance = (
+        db.query(BrokerOfferAcceptance)
+        .filter(BrokerOfferAcceptance.offer_id == offer.id, BrokerOfferAcceptance.broker_id == broker.id)
+        .first()
+    )
+    if acceptance:
+        if acceptance.is_active:
+            raise HTTPException(status_code=409, detail="Offer already accepted")
+        acceptance.is_active = True
+        acceptance.stopped_at = None
+    else:
+        acceptance = BrokerOfferAcceptance(
+            offer_id=offer.id,
+            broker_id=broker.id,
+            referral_code=_referral_code(broker),
+            is_active=True,
+        )
+        db.add(acceptance)
+    db.commit()
+    db.refresh(acceptance)
+    return {
+        "id": str(acceptance.id),
+        "offer_id": str(acceptance.offer_id),
+        "broker_id": str(acceptance.broker_id),
+        "is_active": acceptance.is_active,
+        "accepted_at": acceptance.accepted_at.isoformat() if acceptance.accepted_at else None,
+        "stopped_at": acceptance.stopped_at.isoformat() if acceptance.stopped_at else None,
+    }
+
+
+@router.delete("/opportunities/{offer_id}/accept")
+def broker_stop_opportunity(
+    offer_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    broker = _get_my_broker(db, current_user)
+    acceptance = (
+        db.query(BrokerOfferAcceptance)
+        .filter(BrokerOfferAcceptance.offer_id == offer_id, BrokerOfferAcceptance.broker_id == broker.id)
+        .first()
+    )
+    if not acceptance or not acceptance.is_active:
+        raise HTTPException(status_code=404, detail="Acceptance not found")
+    acceptance.is_active = False
+    acceptance.stopped_at = datetime.now(timezone.utc)
+    db.commit()
+    return {"stopped": True}
+
+
+@router.get("/opportunities/{offer_id}/referral")
+def broker_referral_link(
+    offer_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    broker = _get_approved_broker(db, current_user)
+    offer = db.query(BrokerOffer).filter(BrokerOffer.id == offer_id).first()
+    if not offer:
+        raise HTTPException(status_code=404, detail="Offer not found")
+    acceptance = (
+        db.query(BrokerOfferAcceptance)
+        .filter(BrokerOfferAcceptance.offer_id == offer.id, BrokerOfferAcceptance.broker_id == broker.id, BrokerOfferAcceptance.is_active.is_(True))
+        .first()
+    )
+    if not acceptance:
+        acceptance = BrokerOfferAcceptance(
+            offer_id=offer.id,
+            broker_id=broker.id,
+            referral_code=_referral_code(broker),
+            is_active=True,
+        )
+        db.add(acceptance)
+        db.commit()
+        db.refresh(acceptance)
+    product = offer.product
+    slug_or_id = product.slug if product and product.slug else str(offer.product_id)
+    return {
+        "id": str(acceptance.id),
+        "acceptance_id": str(acceptance.id),
+        "offer_id": str(offer.id),
+        "broker_id": str(broker.id),
+        "product_id": str(offer.product_id),
+        "referral_code": acceptance.referral_code,
+        "is_active": acceptance.is_active,
+        "created_at": acceptance.accepted_at.isoformat() if acceptance.accepted_at else None,
+        "share_path": f"/products/{slug_or_id}?ref={acceptance.referral_code}",
+    }
+
+
+class ReferralClickIn(BaseModel):
+    product_id: uuid.UUID
+    visitor_key: str = Field(min_length=4, max_length=80)
+    source: Optional[str] = Field(default=None, max_length=60)
+
+
+@router.post("/referrals/{referral_code}/click")
+def track_referral_click(
+    referral_code: str,
+    data: ReferralClickIn,
+    db: Session = Depends(get_db),
+):
+    acceptance = (
+        db.query(BrokerOfferAcceptance)
+        .filter(BrokerOfferAcceptance.referral_code == referral_code, BrokerOfferAcceptance.is_active.is_(True))
+        .first()
+    )
+    if not acceptance:
+        raise HTTPException(status_code=404, detail="Referral code not found")
+    click = BrokerReferralClick(
+        acceptance_id=acceptance.id,
+        offer_id=acceptance.offer_id,
+        broker_id=acceptance.broker_id,
+        product_id=data.product_id,
+        referral_code=referral_code,
+        visitor_key=data.visitor_key,
+        source=data.source,
+    )
+    db.add(click)
+    db.commit()
+    return {"tracked": True}
+
+
+def _serialize_commission(c: BrokerCommission) -> dict:
+    return {
+        "id": str(c.id),
+        "broker_id": str(c.broker_id),
+        "order_id": str(c.order_id),
+        "order_item_id": str(c.order_item_id),
+        "broker_offer_id": str(c.broker_offer_id) if c.broker_offer_id else None,
+        "broker_attribution_id": str(c.broker_attribution_id) if c.broker_attribution_id else None,
+        "escrow_hold_id": str(c.escrow_hold_id) if c.escrow_hold_id else None,
+        "currency": c.currency,
+        "amount": str(c.amount),
+        "reversed_amount": str(c.reversed_amount),
+        "net_amount": str(c.net_amount),
+        "status": c.status,
+        "available_at": c.available_at.isoformat() if c.available_at else None,
+        "reversed_at": c.reversed_at.isoformat() if c.reversed_at else None,
+        "reference": c.reference,
+        "created_at": c.created_at.isoformat() if c.created_at else None,
+    }
 
 
 @router.get("/commissions")
 def broker_commissions(
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=200),
+    db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    _ = current_user
-    return _empty_page(page, page_size)
+    broker = _get_my_broker(db, current_user)
+    query = db.query(BrokerCommission).filter(BrokerCommission.broker_id == broker.id)
+    total = query.count()
+    rows = query.order_by(BrokerCommission.created_at.desc()).offset((page - 1) * page_size).limit(page_size).all()
+    return {
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+        "total_pages": max(1, -(-total // page_size)),
+        "results": [_serialize_commission(c) for c in rows],
+    }
 
 
 @router.get("/commissions/summary")
-def broker_commission_summary(current_user: User = Depends(get_current_user)):
-    _ = current_user
+def broker_commission_summary(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    broker = _get_my_broker(db, current_user)
+    rows = db.query(BrokerCommission).filter(BrokerCommission.broker_id == broker.id).all()
+    pending = sum(Decimal(c.amount) - Decimal(c.reversed_amount) for c in rows if c.status == "pending")
+    available = sum(Decimal(c.amount) - Decimal(c.reversed_amount) for c in rows if c.status in ("available", "partially_reversed"))
+    reversed_total = sum(Decimal(c.reversed_amount) for c in rows)
+    lifetime = sum(Decimal(c.amount) for c in rows)
     return {
-        "currency": "TZS",
-        "pending_amount": "0",
-        "available_amount": "0",
-        "reversed_amount": "0",
-        "lifetime_commission": "0",
-        "total_records": 0,
+        "currency": rows[0].currency if rows else "TZS",
+        "pending_amount": str(pending),
+        "available_amount": str(available),
+        "reversed_amount": str(reversed_total),
+        "lifetime_commission": str(lifetime),
+        "total_records": len(rows),
     }
+
+
+# Admin — create and manage earnable offers on seller products.
+
+
+class AdminOfferCreateIn(BaseModel):
+    product_id: uuid.UUID
+    commission_type: str = Field(pattern="^(fixed|percentage)$")
+    commission_value: Decimal = Field(gt=0)
+    max_attributed_sales: int | None = Field(default=None, ge=1)
+    starts_at: datetime | None = None
+    ends_at: datetime | None = None
+
+
+class AdminOfferUpdateIn(BaseModel):
+    commission_value: Decimal | None = Field(default=None, gt=0)
+    max_attributed_sales: int | None = Field(default=None, ge=1)
+    ends_at: datetime | None = None
+    is_active: bool | None = None
+
+
+@router.get("/admin/offers")
+def admin_list_offers(
+    db: Session = Depends(get_db),
+    _: User = Depends(ADMIN_VIEW),
+):
+    offers = db.query(BrokerOffer).order_by(BrokerOffer.created_at.desc()).all()
+    return [_serialize_offer(o) for o in offers]
+
+
+@router.post("/admin/offers", status_code=201)
+def admin_create_offer(
+    data: AdminOfferCreateIn,
+    db: Session = Depends(get_db),
+    _: User = Depends(ADMIN_APPROVE),
+):
+    product = db.query(Product).filter(Product.id == data.product_id).first()
+    if not product:
+        raise HTTPException(status_code=404, detail="Product not found")
+    if product.status != ProductStatus.approved or not product.is_active:
+        raise HTTPException(status_code=409, detail="Offers can only be created on approved live products")
+    if data.commission_type == "percentage" and data.commission_value > 100:
+        raise HTTPException(status_code=422, detail="Percentage commission cannot exceed 100")
+
+    existing = db.query(BrokerOffer).filter(BrokerOffer.product_id == product.id, BrokerOffer.is_active.is_(True)).first()
+    if existing:
+        raise HTTPException(status_code=409, detail="An active offer already exists for this product")
+
+    offer = BrokerOffer(
+        product_id=product.id,
+        seller_id=product.seller_id,
+        commission_type=data.commission_type,
+        commission_value=data.commission_value,
+        max_attributed_sales=data.max_attributed_sales,
+        starts_at=data.starts_at or datetime.now(timezone.utc),
+        ends_at=data.ends_at,
+        is_active=True,
+    )
+    db.add(offer)
+    db.commit()
+    db.refresh(offer)
+    return _serialize_offer(offer)
+
+
+@router.patch("/admin/offers/{offer_id}")
+def admin_update_offer(
+    offer_id: uuid.UUID,
+    data: AdminOfferUpdateIn,
+    db: Session = Depends(get_db),
+    _: User = Depends(ADMIN_APPROVE),
+):
+    offer = db.query(BrokerOffer).filter(BrokerOffer.id == offer_id).first()
+    if not offer:
+        raise HTTPException(status_code=404, detail="Offer not found")
+    for key, value in data.model_dump(exclude_unset=True).items():
+        setattr(offer, key, value)
+    offer.updated_at = datetime.now(timezone.utc)
+    db.commit()
+    db.refresh(offer)
+    return _serialize_offer(offer)
 
 
 @router.get("/wallet")
@@ -1492,28 +1877,65 @@ def broker_analytics_overview(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    wallet = _wallet_for(db, _get_my_broker(db, current_user))
+    broker = _get_my_broker(db, current_user)
+    wallet = _wallet_for(db, broker)
+    since = datetime.now(timezone.utc) - timedelta(days=days)
+
+    clicks_q = db.query(BrokerReferralClick).filter(
+        BrokerReferralClick.broker_id == broker.id,
+        BrokerReferralClick.created_at >= since,
+    )
+    total_clicks = clicks_q.count()
+    unique_visitors = db.query(func.count(func.distinct(BrokerReferralClick.visitor_key))).filter(
+        BrokerReferralClick.broker_id == broker.id,
+        BrokerReferralClick.created_at >= since,
+    ).scalar() or 0
+
+    commissions = db.query(BrokerCommission).filter(
+        BrokerCommission.broker_id == broker.id,
+        BrokerCommission.created_at >= since,
+    ).all()
+    attributed_orders = len({str(c.order_id) for c in commissions})
+    successful_sales = sum(1 for c in commissions if c.status in ("available", "partially_reversed"))
+    refunded_sales = sum(1 for c in commissions if c.status == "reversed")
+    pending_earnings = sum(Decimal(c.amount) - Decimal(c.reversed_amount) for c in commissions if c.status == "pending")
+    available_earnings = sum(Decimal(c.amount) - Decimal(c.reversed_amount) for c in commissions if c.status in ("available", "partially_reversed"))
+    lifetime_earnings = sum(Decimal(c.amount) for c in commissions)
+    conversion = (Decimal(attributed_orders) / Decimal(total_clicks) * 100).quantize(Decimal("0.1")) if total_clicks else Decimal("0")
+
+    promoting = db.query(BrokerOfferAcceptance).filter(
+        BrokerOfferAcceptance.broker_id == broker.id,
+        BrokerOfferAcceptance.is_active.is_(True),
+    ).count()
+    opportunities = db.query(BrokerOffer).filter(BrokerOffer.is_active.is_(True)).count()
+
+    own = db.query(BrokerProduct).filter(BrokerProduct.broker_id == broker.id).all()
+    now = datetime.now(timezone.utc)
+    active = sum(1 for p in own if p.is_active and p.status == ProductStatus.approved)
+    expired = sum(1 for p in own if p.listing_expired_at or (p.listing_expires_at and p.listing_expires_at <= now))
+    drafts = sum(1 for p in own if p.status in (ProductStatus.draft, ProductStatus.rejected))
+
     return {
         "currency": wallet.currency,
         "period_days": days,
-        "total_clicks": 0,
-        "unique_visitors": 0,
-        "attributed_customers": 0,
-        "attributed_orders": 0,
-        "successful_sales": 0,
-        "refunded_sales": 0,
-        "conversion_rate": "0",
-        "pending_earnings": "0",
-        "available_earnings": "0",
-        "lifetime_earnings": "0",
+        "total_clicks": total_clicks,
+        "unique_visitors": unique_visitors,
+        "attributed_customers": attributed_orders,
+        "attributed_orders": attributed_orders,
+        "successful_sales": successful_sales,
+        "refunded_sales": refunded_sales,
+        "conversion_rate": str(conversion),
+        "pending_earnings": str(pending_earnings),
+        "available_earnings": str(available_earnings),
+        "lifetime_earnings": str(lifetime_earnings),
         "wallet_available": str(wallet.available_balance),
         "wallet_pending": str(wallet.pending_balance),
         "wallet_paid_out": str(wallet.paid_out_balance),
-        "currently_promoting": 0,
-        "available_opportunities": 0,
-        "own_products_active": 0,
-        "own_products_expired": 0,
-        "own_products_draft": 0,
+        "currently_promoting": promoting,
+        "available_opportunities": opportunities,
+        "own_products_active": active,
+        "own_products_expired": expired,
+        "own_products_draft": drafts,
     }
 
 
@@ -1521,10 +1943,58 @@ def broker_analytics_overview(
 def broker_campaign_analytics(
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=200),
+    db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    _ = current_user
-    return _empty_page(page, page_size)
+    broker = _get_my_broker(db, current_user)
+    acceptances = (
+        db.query(BrokerOfferAcceptance)
+        .filter(BrokerOfferAcceptance.broker_id == broker.id)
+        .order_by(BrokerOfferAcceptance.accepted_at.desc())
+        .all()
+    )
+    total = len(acceptances)
+    sliced = acceptances[(page - 1) * page_size: page * page_size]
+
+    results = []
+    for a in sliced:
+        offer = a.offer
+        product = offer.product if offer else None
+        clicks = db.query(BrokerReferralClick).filter(BrokerReferralClick.acceptance_id == a.id).count()
+        visitors = db.query(func.count(func.distinct(BrokerReferralClick.visitor_key))).filter(
+            BrokerReferralClick.acceptance_id == a.id
+        ).scalar() or 0
+        commissions = db.query(BrokerCommission).filter(BrokerCommission.broker_attribution_id == a.id).all()
+        orders = len({str(c.order_id) for c in commissions})
+        sales = sum(1 for c in commissions if c.status in ("available", "partially_reversed"))
+        gross = sum(Decimal(c.amount) for c in commissions)
+        reversed_total = sum(Decimal(c.reversed_amount) for c in commissions)
+        conversion = (Decimal(orders) / Decimal(clicks) * 100).quantize(Decimal("0.1")) if clicks else Decimal("0")
+        results.append({
+            "offer_id": str(a.offer_id),
+            "product_id": str(offer.product_id) if offer else None,
+            "product_name": product.name if product else "",
+            "referral_code": a.referral_code,
+            "is_active": a.is_active,
+            "accepted_at": a.accepted_at.isoformat() if a.accepted_at else None,
+            "clicks": clicks,
+            "unique_visitors": visitors,
+            "attributed_customers": orders,
+            "attributed_orders": orders,
+            "successful_sales": sales,
+            "conversion_rate": str(conversion),
+            "gross_commission": str(gross),
+            "reversed_commission": str(reversed_total),
+            "net_commission": str(gross - reversed_total),
+        })
+
+    return {
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+        "total_pages": max(1, -(-total // page_size)),
+        "results": results,
+    }
 
 
 @router.get("/admin/security/risk-events")

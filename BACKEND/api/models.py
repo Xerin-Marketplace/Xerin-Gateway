@@ -3138,3 +3138,95 @@ class BrokerRiskEvent(Base):
     broker = relationship("Broker")
     user = relationship("User", foreign_keys=[user_id])
     resolved_by = relationship("User", foreign_keys=[resolved_by_id])
+
+
+# ---------------------------------------------------------------------------
+# Broker earning engine — offers, acceptances, referral links, clicks,
+# commissions.
+# ---------------------------------------------------------------------------
+
+class BrokerOffer(Base):
+    """Admin-created earnable offer attached to a seller product."""
+
+    __tablename__ = "broker_offers"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    product_id = Column(UUID(as_uuid=True), ForeignKey("products.id", ondelete="CASCADE"), nullable=False, index=True)
+    seller_id = Column(UUID(as_uuid=True), ForeignKey("sellers.id", ondelete="CASCADE"), nullable=False, index=True)
+
+    commission_type = Column(String(16), nullable=False)  # fixed | percentage
+    commission_value = Column(Numeric(10, 2), nullable=False)
+    max_attributed_sales = Column(Integer, nullable=True)
+    attributed_sales_count = Column(Integer, nullable=False, default=0, server_default="0")
+
+    starts_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    ends_at = Column(DateTime(timezone=True), nullable=True)
+    is_active = Column(Boolean, nullable=False, default=True)
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+    product = relationship("Product")
+    seller = relationship("Seller")
+    acceptances = relationship("BrokerOfferAcceptance", cascade="all, delete-orphan")
+
+
+class BrokerOfferAcceptance(Base):
+    __tablename__ = "broker_offer_acceptances"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    offer_id = Column(UUID(as_uuid=True), ForeignKey("broker_offers.id", ondelete="CASCADE"), nullable=False, index=True)
+    broker_id = Column(UUID(as_uuid=True), ForeignKey("brokers.id", ondelete="CASCADE"), nullable=False, index=True)
+
+    referral_code = Column(String(20), unique=True, nullable=False, index=True)
+    is_active = Column(Boolean, nullable=False, default=True)
+    accepted_at = Column(DateTime(timezone=True), server_default=func.now())
+    stopped_at = Column(DateTime(timezone=True), nullable=True)
+
+    offer = relationship("BrokerOffer", back_populates="acceptances")
+    broker = relationship("Broker")
+
+    __table_args__ = (UniqueConstraint("offer_id", "broker_id", name="uq_broker_offer_acceptance"),)
+
+
+class BrokerReferralClick(Base):
+    __tablename__ = "broker_referral_clicks"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    acceptance_id = Column(UUID(as_uuid=True), ForeignKey("broker_offer_acceptances.id", ondelete="CASCADE"), nullable=False, index=True)
+    offer_id = Column(UUID(as_uuid=True), ForeignKey("broker_offers.id", ondelete="CASCADE"), nullable=False)
+    broker_id = Column(UUID(as_uuid=True), ForeignKey("brokers.id", ondelete="CASCADE"), nullable=False, index=True)
+    product_id = Column(UUID(as_uuid=True), ForeignKey("products.id", ondelete="CASCADE"), nullable=False)
+
+    referral_code = Column(String(20), nullable=False, index=True)
+    visitor_key = Column(String(80), nullable=False, index=True)
+    source = Column(String(60), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class BrokerCommission(Base):
+    __tablename__ = "broker_commissions"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    broker_id = Column(UUID(as_uuid=True), ForeignKey("brokers.id", ondelete="CASCADE"), nullable=False, index=True)
+    order_id = Column(UUID(as_uuid=True), ForeignKey("orders.id", ondelete="CASCADE"), nullable=False, index=True)
+    order_item_id = Column(UUID(as_uuid=True), ForeignKey("order_items.id", ondelete="CASCADE"), nullable=False, index=True)
+    broker_offer_id = Column(UUID(as_uuid=True), ForeignKey("broker_offers.id", ondelete="SET NULL"), nullable=True)
+    broker_attribution_id = Column(UUID(as_uuid=True), ForeignKey("broker_offer_acceptances.id", ondelete="SET NULL"), nullable=True)
+    escrow_hold_id = Column(UUID(as_uuid=True), nullable=True)
+
+    currency = Column(String(10), nullable=False, default="TZS")
+    amount = Column(Numeric(18, 2), nullable=False)
+    reversed_amount = Column(Numeric(18, 2), nullable=False, default=0, server_default="0")
+    net_amount = Column(Numeric(18, 2), nullable=False)
+
+    status = Column(String(20), nullable=False, default="pending", index=True)  # pending | available | partially_reversed | reversed | cancelled
+    available_at = Column(DateTime(timezone=True), nullable=True)
+    reversed_at = Column(DateTime(timezone=True), nullable=True)
+    reference = Column(String(60), unique=True, nullable=False)
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    broker = relationship("Broker")
+    order = relationship("Order")
+    offer = relationship("BrokerOffer")

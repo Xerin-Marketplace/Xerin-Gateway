@@ -13,6 +13,11 @@ from api.config import settings
 from api.deps import get_current_user, get_db
 from api.models import (
     Address,
+    BrokerCommission,
+    BrokerOffer,
+    BrokerOfferAcceptance,
+    BrokerWallet,
+    BrokerWalletTransaction,
     Cart,
     CartItem,
     Coupon,
@@ -276,6 +281,75 @@ def create_order(
             )
 
         order.order_number = _generate_order_number(db, order)
+
+        # Broker referral attribution — commissions for items promoted via a
+        # referral code stay pending until the order is delivered.
+        if data.referral_code:
+            acceptance = (
+                db.query(BrokerOfferAcceptance)
+                .filter(
+                    BrokerOfferAcceptance.referral_code == data.referral_code,
+                    BrokerOfferAcceptance.is_active.is_(True),
+                )
+                .first()
+            )
+            if acceptance:
+                offer = db.query(BrokerOffer).filter(BrokerOffer.id == acceptance.offer_id).first()
+                if offer and offer.is_active and (
+                    offer.max_attributed_sales is None
+                    or offer.attributed_sales_count < offer.max_attributed_sales
+                ):
+                    now = datetime.now(timezone.utc)
+                    if (offer.starts_at is None or offer.starts_at <= now) and (
+                        offer.ends_at is None or offer.ends_at > now
+                    ):
+                        wallet = db.query(BrokerWallet).filter(BrokerWallet.broker_id == acceptance.broker_id).first()
+                        if wallet is None:
+                            wallet = BrokerWallet(broker_id=acceptance.broker_id, currency=order.currency or "TZS")
+                            db.add(wallet)
+                            db.flush()
+                        matched = False
+                        order_items = db.query(OrderItem).filter(OrderItem.order_id == order.id).all()
+                        for item in order_items:
+                            if item.product_id != offer.product_id:
+                                continue
+                            unit_reward = (
+                                (Decimal(item.unit_price) * Decimal(offer.commission_value) / Decimal("100"))
+                                if offer.commission_type == "percentage"
+                                else Decimal(offer.commission_value)
+                            )
+                            amount = (unit_reward * Decimal(item.quantity)).quantize(Decimal("0.01"))
+                            if amount <= 0:
+                                continue
+                            commission = BrokerCommission(
+                                broker_id=acceptance.broker_id,
+                                order_id=order.id,
+                                order_item_id=item.id,
+                                broker_offer_id=offer.id,
+                                broker_attribution_id=acceptance.id,
+                                currency=order.currency or "TZS",
+                                amount=amount,
+                                net_amount=amount,
+                                status="pending",
+                                reference=f"BRC-{order.order_number}-{item.id}",
+                            )
+                            db.add(commission)
+                            db.flush()
+                            wallet.pending_balance = Decimal(wallet.pending_balance) + amount
+                            db.add(BrokerWalletTransaction(
+                                wallet_id=wallet.id,
+                                broker_id=acceptance.broker_id,
+                                commission_id=commission.id,
+                                transaction_type="commission_pending",
+                                amount=amount,
+                                currency=commission.currency,
+                                reference=commission.reference,
+                                description=f"Pending commission for order {order.order_number}",
+                            ))
+                            matched = True
+                        if matched:
+                            offer.attributed_sales_count += 1
+
         _create_status_history(db, order, OrderStatus.pending, "Order created", current_user.id)
         if coupon:
             coupon.usage_count += 1
@@ -635,6 +709,53 @@ def update_order_status(
                 _release_reserved_inventory(db, order)
 
         order.status = new_status
+
+        # Broker commission settlement — pending commissions become available
+        # on delivery; cancelled/refunded orders reverse them.
+        commissions = db.query(BrokerCommission).filter(BrokerCommission.order_id == order.id).all()
+        if commissions and new_status in (OrderStatus.delivered, OrderStatus.cancelled, OrderStatus.refunded):
+            wallets: dict[UUID, BrokerWallet] = {}
+            now = datetime.now(timezone.utc)
+            for commission in commissions:
+                if commission.status in ("reversed", "cancelled"):
+                    continue
+                wallet = wallets.get(commission.broker_id)
+                if wallet is None:
+                    wallet = db.query(BrokerWallet).filter(BrokerWallet.broker_id == commission.broker_id).first()
+                    wallets[commission.broker_id] = wallet
+                if wallet is None:
+                    continue
+                net = Decimal(commission.amount) - Decimal(commission.reversed_amount)
+                if new_status == OrderStatus.delivered and commission.status == "pending":
+                    commission.status = "available"
+                    commission.available_at = now
+                    wallet.pending_balance = Decimal(wallet.pending_balance) - net
+                    wallet.available_balance = Decimal(wallet.available_balance) + net
+                    db.add(BrokerWalletTransaction(
+                        wallet_id=wallet.id, broker_id=commission.broker_id,
+                        commission_id=commission.id, transaction_type="commission_available",
+                        amount=net, currency=commission.currency, reference=commission.reference,
+                        description=f"Commission released for order {order.order_number}",
+                    ))
+                elif new_status in (OrderStatus.cancelled, OrderStatus.refunded):
+                    was_pending = commission.status == "pending"
+                    commission.status = "reversed" if new_status == OrderStatus.refunded else "cancelled"
+                    commission.reversed_amount = Decimal(commission.amount)
+                    commission.net_amount = Decimal("0")
+                    commission.reversed_at = now
+                    if was_pending:
+                        wallet.pending_balance = Decimal(wallet.pending_balance) - net
+                    else:
+                        wallet.available_balance = Decimal(wallet.available_balance) - net
+                    wallet.reversed_balance = Decimal(wallet.reversed_balance) + net
+                    db.add(BrokerWalletTransaction(
+                        wallet_id=wallet.id, broker_id=commission.broker_id,
+                        commission_id=commission.id,
+                        transaction_type="commission_reversed" if new_status == OrderStatus.refunded else "commission_cancelled",
+                        amount=-net, currency=commission.currency, reference=commission.reference,
+                        description=f"Commission {commission.status} for order {order.order_number}",
+                    ))
+
         _create_status_history(db, order, new_status, data.notes, current_user.id)
         db.commit()
         db.refresh(order)
