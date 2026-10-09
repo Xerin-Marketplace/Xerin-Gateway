@@ -16,7 +16,19 @@ from sqlalchemy.orm import Session
 
 from api.deps import get_current_user, get_db
 from api.enums import PermissionCode
-from api.models import Currency, FxRate, SystemSetting
+from api.models import (
+    Currency,
+    FxRate,
+    Order,
+    Payment,
+    PaymentStatus,
+    PayoutRequest,
+    Refund,
+    Seller,
+    SellerPayoutAccount,
+    SystemSetting,
+    User,
+)
 from api.permissions import require_permission
 from api.services.fx import rate_to_tzs
 
@@ -171,31 +183,188 @@ def delete_fx_rate(rate_id: str, db: Session = Depends(get_db), _=Depends(_finan
     return {"message": "FX rate deleted"}
 
 
-# ---------- payment-admin modules absent from this branch ----------
+# ---------- payment-admin lists (real data) ----------
+
+
+def _provider_label(provider: str | None) -> str:
+    if not provider:
+        return "Other"
+    return provider.replace("_", " ").strip().title()
+
 
 @router.get("/payment-providers")
-def list_payment_providers(_=Depends(_finance)):
-    return []
+def list_payment_providers(db: Session = Depends(get_db), _=Depends(_finance)):
+    rows = (
+        db.query(Payment.provider, Payment.method, Payment.currency)
+        .filter(Payment.provider.isnot(None))
+        .distinct()
+        .all()
+    )
+    providers: dict[str, dict] = {}
+    for provider, method, currency in rows:
+        key = provider or "other"
+        entry = providers.setdefault(key, {
+            "id": key,
+            "name": _provider_label(provider),
+            "code": key,
+            "provider_type": method.value if hasattr(method, "value") else str(method),
+            "status": "active",
+            "supported_currencies": set(),
+            "supported_methods": set(),
+            "environment": "production",
+            "is_default": False,
+        })
+        if currency:
+            entry["supported_currencies"].add(currency)
+        if method:
+            entry["supported_methods"].add(method.value if hasattr(method, "value") else str(method))
+    return [
+        {**v, "supported_currencies": sorted(v["supported_currencies"]), "supported_methods": sorted(v["supported_methods"])}
+        for v in providers.values()
+    ]
 
 
 @router.get("/payouts")
-def list_payouts(_=Depends(_finance)):
-    return []
+def list_payouts(db: Session = Depends(get_db), _=Depends(_finance)):
+    rows = (
+        db.query(PayoutRequest, Seller, SellerPayoutAccount)
+        .join(Seller, Seller.id == PayoutRequest.seller_id)
+        .outerjoin(SellerPayoutAccount, SellerPayoutAccount.id == PayoutRequest.payout_account_id)
+        .order_by(PayoutRequest.requested_at.desc())
+        .limit(500)
+        .all()
+    )
+    return [
+        {
+            "id": str(payout.id),
+            "seller_id": str(payout.seller_id),
+            "seller_name": seller.business_name if seller else "",
+            "amount": float(payout.amount),
+            "currency": payout.currency,
+            "status": payout.status.value if hasattr(payout.status, "value") else str(payout.status),
+            "payout_method": account.account_type if account else None,
+            "provider": account.provider if account else None,
+            "reference": payout.provider_reference,
+            "failure_reason": None,
+            "requested_at": payout.requested_at.isoformat() if payout.requested_at else None,
+            "processed_at": payout.processed_at.isoformat() if payout.processed_at else None,
+            "created_at": payout.requested_at.isoformat() if payout.requested_at else None,
+        }
+        for payout, seller, account in rows
+    ]
 
 
 @router.get("/payment-disputes")
-def list_payment_disputes(_=Depends(_finance)):
-    return []
+def list_payment_disputes(db: Session = Depends(get_db), _=Depends(_finance)):
+    rows = (
+        db.query(Refund, Order, User)
+        .outerjoin(Order, Order.id == Refund.order_id)
+        .outerjoin(User, User.id == Refund.requested_by_id)
+        .order_by(Refund.created_at.desc())
+        .limit(500)
+        .all()
+    )
+    return [
+        {
+            "id": str(refund.id),
+            "payment_id": None,
+            "order_id": str(refund.order_id) if refund.order_id else None,
+            "order_number": order.order_number if order else None,
+            "customer_name": f"{user.first_name or ''} {user.last_name or ''}".strip() if user else None,
+            "seller_name": None,
+            "amount": float(refund.total_amount),
+            "currency": refund.currency,
+            "reason": refund.reason_details or (refund.reason.value if hasattr(refund.reason, "value") else str(refund.reason)),
+            "status": refund.status.value if hasattr(refund.status, "value") else str(refund.status),
+            "provider": refund.provider_reference,
+            "provider_reference": refund.provider_reference,
+            "created_at": refund.created_at.isoformat() if refund.created_at else None,
+        }
+        for refund, order, user in rows
+    ]
 
 
 @router.get("/payment-risk-events")
-def list_payment_risk_events(_=Depends(_finance)):
-    return []
+def list_payment_risk_events(db: Session = Depends(get_db), _=Depends(_finance)):
+    failed = (
+        db.query(Payment, Order, User)
+        .outerjoin(Order, Order.id == Payment.order_id)
+        .outerjoin(User, User.id == Payment.user_id)
+        .filter(Payment.status == PaymentStatus.failed)
+        .order_by(Payment.created_at.desc())
+        .limit(250)
+        .all()
+    )
+    events = [
+        {
+            "id": f"failed-{payment.id}",
+            "event_type": "failed_payment",
+            "severity": "warning",
+            "status": "open",
+            "payment_id": str(payment.id),
+            "order_id": str(payment.order_id) if payment.order_id else None,
+            "user_name": f"{user.first_name or ''} {user.last_name or ''}".strip() if user else None,
+            "score": None,
+            "reason": payment.failure_reason or f"Payment via {payment.provider or 'unknown provider'} failed",
+            "created_at": payment.created_at.isoformat() if payment.created_at else None,
+        }
+        for payment, order, user in failed
+    ]
+
+    refunded = (
+        db.query(Payment, Order, User)
+        .outerjoin(Order, Order.id == Payment.order_id)
+        .outerjoin(User, User.id == Payment.user_id)
+        .filter(Payment.status == PaymentStatus.refunded)
+        .order_by(Payment.created_at.desc())
+        .limit(250)
+        .all()
+    )
+    events += [
+        {
+            "id": f"refunded-{payment.id}",
+            "event_type": "refunded_payment",
+            "severity": "info",
+            "status": "resolved",
+            "payment_id": str(payment.id),
+            "order_id": str(payment.order_id) if payment.order_id else None,
+            "user_name": f"{user.first_name or ''} {user.last_name or ''}".strip() if user else None,
+            "score": None,
+            "reason": f"{payment.currency} {payment.amount} refunded to customer",
+            "created_at": payment.created_at.isoformat() if payment.created_at else None,
+        }
+        for payment, order, user in refunded
+    ]
+
+    events.sort(key=lambda e: e["created_at"] or "", reverse=True)
+    return events[:500]
 
 
 @router.get("/reconciliation")
-def list_reconciliation(_=Depends(_finance)):
-    return []
+def list_reconciliation(db: Session = Depends(get_db), _=Depends(_finance)):
+    rows = (
+        db.query(Payment, Order)
+        .outerjoin(Order, Order.id == Payment.order_id)
+        .order_by(Payment.created_at.desc())
+        .limit(500)
+        .all()
+    )
+    return [
+        {
+            "id": str(payment.id),
+            "order_number": order.order_number if order else None,
+            "provider": payment.provider,
+            "provider_reference": payment.provider_transaction_id,
+            "expected_amount": float(payment.amount),
+            "provider_amount": float(payment.amount) if payment.status in (PaymentStatus.completed, PaymentStatus.refunded) else 0.0,
+            "currency": payment.currency,
+            "difference": 0.0 if payment.status in (PaymentStatus.completed, PaymentStatus.refunded) else float(payment.amount),
+            "status": "matched" if payment.status in (PaymentStatus.completed, PaymentStatus.refunded) else (
+                "failed" if payment.status == PaymentStatus.failed else "pending"),
+            "created_at": payment.created_at.isoformat() if payment.created_at else None,
+        }
+        for payment, order in rows
+    ]
 
 
 @router.get("/payments/dashboard")

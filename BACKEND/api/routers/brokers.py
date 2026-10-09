@@ -26,6 +26,7 @@ from api.models import (
     BrokerWalletTransaction,
     BrokerPayoutAccount,
     BrokerPayoutRequest,
+    BrokerRiskEvent,
     Brand,
     Category,
     PayoutStatus,
@@ -89,6 +90,43 @@ def _serialize_doc(doc: BrokerKycDocument):
         "rejection_reason": doc.rejection_reason,
         "reviewed_at": doc.reviewed_at.isoformat() if doc.reviewed_at else None,
         "created_at": doc.created_at.isoformat() if doc.created_at else None,
+    }
+
+
+def _log_risk_event(
+    db: Session,
+    broker: Broker,
+    event_type: str,
+    severity: str = "warning",
+    resource_type: str | None = None,
+    resource_id=None,
+    details: dict | None = None,
+) -> None:
+    db.add(BrokerRiskEvent(
+        broker_id=broker.id,
+        user_id=broker.user_id,
+        event_type=event_type,
+        severity=severity,
+        resource_type=resource_type,
+        resource_id=resource_id,
+        details=details,
+    ))
+
+
+def _serialize_risk_event(event: BrokerRiskEvent) -> dict:
+    return {
+        "id": str(event.id),
+        "broker_id": str(event.broker_id),
+        "user_id": str(event.user_id) if event.user_id else None,
+        "event_type": event.event_type,
+        "severity": event.severity,
+        "status": event.status,
+        "resource_type": event.resource_type,
+        "resource_id": str(event.resource_id) if event.resource_id else None,
+        "details": event.details,
+        "resolved_by_id": str(event.resolved_by_id) if event.resolved_by_id else None,
+        "resolved_at": event.resolved_at.isoformat() if event.resolved_at else None,
+        "created_at": event.created_at.isoformat() if event.created_at else None,
     }
 
 
@@ -441,6 +479,7 @@ def admin_reject_broker(
     broker.status = BrokerStatus.rejected
     broker.status_reason = data.reason
     broker.rejected_at = datetime.now(timezone.utc)
+    _log_risk_event(db, broker, "kyc_rejected", "info", details={"reason": data.reason})
     db.commit()
     try:
         notification_service.notify(
@@ -474,6 +513,7 @@ def admin_suspend_broker(
     broker.status = BrokerStatus.suspended
     broker.status_reason = data.reason
     broker.suspended_at = datetime.now(timezone.utc)
+    _log_risk_event(db, broker, "broker_suspended", "critical", details={"reason": data.reason})
     db.commit()
     db.refresh(broker)
     return _serialize_broker(broker)
@@ -861,6 +901,18 @@ def broker_publish_product(
 ):
     broker = _get_approved_broker(db, current_user)
     product = _get_broker_product(db, broker, product_id)
+
+    # Re-list: an approved listing whose 24h window lapsed goes live again
+    # directly — it already passed review, so no second approval needed.
+    if product.status == ProductStatus.approved and product.listing_expired_at:
+        product.is_active = True
+        product.listing_expires_at = datetime.now(timezone.utc) + timedelta(hours=24)
+        product.listing_expired_at = None
+        product.updated_at = datetime.now(timezone.utc)
+        db.commit()
+        db.refresh(product)
+        return _serialize_broker_product(product)
+
     if product.status not in (ProductStatus.draft, ProductStatus.rejected):
         raise HTTPException(status_code=409, detail="Only draft or rejected products can be submitted")
     if not product.images:
@@ -1288,6 +1340,7 @@ def broker_cancel_payout(
     wallet = _wallet_for(db, broker)
     wallet.reserved_balance = Decimal(wallet.reserved_balance) - payout.amount
     wallet.available_balance = Decimal(wallet.available_balance) + payout.amount
+    _log_risk_event(db, broker, "payout_cancelled", "warning", resource_type="payout", resource_id=payout.id, details={"amount": str(payout.amount)})
     payout.status = PayoutStatus.cancelled
     _ledger(db, wallet, "payout_released", payout.amount, "Payout cancelled — funds released", payout.id)
     db.commit()
@@ -1389,6 +1442,9 @@ def admin_update_payout(
         wallet.reserved_balance = Decimal(wallet.reserved_balance) - payout.amount
         wallet.available_balance = Decimal(wallet.available_balance) + payout.amount
         _ledger(db, wallet, "payout_released", payout.amount, f"Payout {new_status.value} — funds released", payout.id)
+        broker = db.query(Broker).filter(Broker.id == payout.broker_id).first()
+        if broker:
+            _log_risk_event(db, broker, f"payout_{new_status.value}", "high", resource_type="payout", resource_id=payout.id, details={"amount": str(payout.amount), "note": data.note})
 
     payout.status = new_status
     payout.provider_reference = data.provider_reference or payout.provider_reference
@@ -1414,6 +1470,12 @@ def admin_freeze_wallet(
     broker = _admin_get_broker(db, broker_id)
     wallet = _wallet_for(db, broker)
     wallet.is_frozen = data.frozen
+    _log_risk_event(
+        db, broker,
+        "wallet_frozen" if data.frozen else "wallet_unfrozen",
+        "high" if data.frozen else "info",
+        details={"reason": data.reason},
+    )
     db.commit()
     db.refresh(wallet)
     return _serialize_wallet(wallet)
@@ -1469,6 +1531,44 @@ def broker_campaign_analytics(
 def admin_risk_events(
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=200),
+    status: str | None = Query(default=None),
+    db: Session = Depends(get_db),
     _: User = Depends(ADMIN_VIEW),
 ):
-    return _empty_page(page, page_size)
+    query = db.query(BrokerRiskEvent).order_by(BrokerRiskEvent.created_at.desc())
+    if status:
+        query = query.filter(BrokerRiskEvent.status == status)
+    total = query.count()
+    items = query.offset((page - 1) * page_size).limit(page_size).all()
+    return {
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+        "total_pages": max(1, -(-total // page_size)),
+        "results": [_serialize_risk_event(e) for e in items],
+    }
+
+
+class RiskEventResolveIn(BaseModel):
+    note: Optional[str] = None
+
+
+@router.patch("/admin/security/risk-events/{event_id}/resolve")
+def admin_resolve_risk_event(
+    event_id: str,
+    data: RiskEventResolveIn,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(ADMIN_APPROVE),
+):
+    event = db.query(BrokerRiskEvent).filter(BrokerRiskEvent.id == event_id).first()
+    if not event:
+        raise HTTPException(status_code=404, detail="Risk event not found")
+    if event.status == "resolved":
+        raise HTTPException(status_code=409, detail="Event already resolved")
+    event.status = "resolved"
+    event.resolution_note = data.note
+    event.resolved_by_id = current_user.id
+    event.resolved_at = datetime.now(timezone.utc)
+    db.commit()
+    db.refresh(event)
+    return _serialize_risk_event(event)

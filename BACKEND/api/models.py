@@ -3113,3 +3113,28 @@ class BrokerProductImage(Base):
 
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+
+class BrokerRiskEvent(Base):
+    __tablename__ = "broker_risk_events"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    broker_id = Column(UUID(as_uuid=True), ForeignKey("brokers.id", ondelete="CASCADE"), nullable=False, index=True)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
+
+    event_type = Column(String(60), nullable=False, index=True)
+    severity = Column(String(16), nullable=False, default="warning")  # info | warning | high | critical
+    status = Column(String(16), nullable=False, default="open", index=True)  # open | resolved
+    resource_type = Column(String(60), nullable=True)
+    resource_id = Column(UUID(as_uuid=True), nullable=True)
+    details = Column(JSONB, nullable=True)
+
+    resolution_note = Column(Text, nullable=True)
+    resolved_by_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    resolved_at = Column(DateTime(timezone=True), nullable=True)
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    broker = relationship("Broker")
+    user = relationship("User", foreign_keys=[user_id])
+    resolved_by = relationship("User", foreign_keys=[resolved_by_id])
