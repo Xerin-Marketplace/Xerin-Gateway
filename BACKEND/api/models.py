@@ -3054,3 +3054,62 @@ class SupportTicketMessage(Base):
 
     ticket = relationship("SupportTicket", back_populates="messages")
     sender = relationship("User", foreign_keys=[sender_id])
+
+
+class BrokerProduct(Base):
+    __tablename__ = "broker_products"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    broker_id = Column(UUID(as_uuid=True), ForeignKey("brokers.id", ondelete="CASCADE"), nullable=False, index=True)
+    seller_id = Column(UUID(as_uuid=True), ForeignKey("sellers.id", ondelete="SET NULL"), nullable=True)
+    store_id = Column(UUID(as_uuid=True), ForeignKey("stores.id", ondelete="SET NULL"), nullable=True)
+    category_id = Column(UUID(as_uuid=True), ForeignKey("categories.id"), nullable=False)
+    brand_id = Column(UUID(as_uuid=True), ForeignKey("brands.id"), nullable=True)
+
+    sku = Column(String(100), unique=True, index=True, nullable=False)
+    name = Column(String(255), nullable=False)
+    slug = Column(String(255), unique=True, index=True, nullable=False)
+    description = Column(Text)
+    price = Column(Numeric(18, 2), nullable=False)
+    sale_price = Column(Numeric(18, 2), nullable=True)
+    currency = Column(String(10), default="TZS")
+    weight = Column(Numeric(10, 2), nullable=True)
+
+    status = Column(Enum(ProductStatus), default=ProductStatus.draft, nullable=False, index=True)
+    rejection_reason = Column(Text, nullable=True)
+    is_active = Column(Boolean, default=True, nullable=False)
+    listing_expires_at = Column(DateTime(timezone=True), nullable=True)
+    listing_expired_at = Column(DateTime(timezone=True), nullable=True)
+    fulfillment_location = Column(String(255), nullable=True)
+
+    quantity = Column(Integer, default=0, nullable=False)
+    reserved_quantity = Column(Integer, default=0, nullable=False)
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+    broker = relationship("Broker")
+    images = relationship("BrokerProductImage", cascade="all, delete-orphan", order_by="BrokerProductImage.display_order")
+
+
+class BrokerProductImage(Base):
+    __tablename__ = "broker_product_images"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    product_id = Column(UUID(as_uuid=True), ForeignKey("broker_products.id", ondelete="CASCADE"), nullable=False, index=True)
+
+    image_url = Column(Text, nullable=False)
+    thumbnail_url = Column(Text, nullable=True)
+    storage_key = Column(Text, nullable=True, unique=True)
+    original_filename = Column(String(255), nullable=True)
+    mime_type = Column(String(100), nullable=True)
+    file_size = Column(Integer, nullable=True)
+    width = Column(Integer, nullable=True)
+    height = Column(Integer, nullable=True)
+    alt_text = Column(String(255), nullable=True)
+    display_order = Column(Integer, nullable=False, default=0)
+    is_primary = Column(Boolean, nullable=False, default=False)
+    uploaded_by_user_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())

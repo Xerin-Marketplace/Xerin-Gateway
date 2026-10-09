@@ -1,6 +1,7 @@
 import io
+import re
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
@@ -18,14 +19,20 @@ from fastapi import Header
 from api.models import (
     Broker,
     BrokerKycDocument,
+    BrokerProduct,
+    BrokerProductImage,
     BrokerStatus,
     BrokerWallet,
     BrokerWalletTransaction,
     BrokerPayoutAccount,
     BrokerPayoutRequest,
+    Brand,
+    Category,
     PayoutStatus,
+    ProductStatus,
     User,
 )
+from api.services.product_image_service import delete_product_image_files, store_product_image
 from api.permissions import require_permission
 from api.schemas import canonical_account_number
 from api.services.notification_service import notification_service
@@ -571,10 +578,396 @@ def _ledger(db: Session, wallet: BrokerWallet, tx_type: str, amount: Decimal,
     ))
 
 
+# ---------------------------------------------------------------------------
+# Broker products — brokers list products for admin approval + marketplace sale.
+# ---------------------------------------------------------------------------
+
+MAX_BROKER_PRODUCT_IMAGES = 10
+
+
+def _get_approved_broker(db: Session, user: User) -> Broker:
+    broker = _get_my_broker(db, user)
+    if broker.status != BrokerStatus.approved:
+        raise HTTPException(
+            status_code=403,
+            detail="Your broker account must be approved before managing products",
+        )
+    return broker
+
+
+def _get_broker_product(db: Session, broker: Broker, product_id: uuid.UUID) -> BrokerProduct:
+    product = (
+        db.query(BrokerProduct)
+        .filter(BrokerProduct.id == product_id, BrokerProduct.broker_id == broker.id)
+        .first()
+    )
+    if not product:
+        raise HTTPException(status_code=404, detail="Product not found")
+    return product
+
+
+def _serialize_broker_product_image(img: BrokerProductImage) -> dict:
+    return {
+        "id": str(img.id),
+        "product_id": str(img.product_id),
+        "image_url": img.image_url,
+        "thumbnail_url": img.thumbnail_url,
+        "is_primary": img.is_primary,
+        "display_order": img.display_order,
+        "created_at": img.created_at.isoformat() if img.created_at else None,
+    }
+
+
+def _serialize_broker_product(product: BrokerProduct) -> dict:
+    seconds_remaining = None
+    if product.listing_expires_at:
+        delta = (product.listing_expires_at - datetime.now(timezone.utc)).total_seconds()
+        seconds_remaining = max(0, int(delta))
+    return {
+        "id": str(product.id),
+        "seller_id": str(product.seller_id) if product.seller_id else None,
+        "store_id": str(product.store_id) if product.store_id else None,
+        "broker_id": str(product.broker_id),
+        "listing_owner_type": "broker",
+        "category_id": str(product.category_id),
+        "brand_id": str(product.brand_id) if product.brand_id else None,
+        "sku": product.sku,
+        "name": product.name,
+        "slug": product.slug,
+        "description": product.description,
+        "price": str(product.price),
+        "sale_price": str(product.sale_price) if product.sale_price is not None else None,
+        "currency": product.currency,
+        "weight": str(product.weight) if product.weight is not None else None,
+        "status": product.status.value if isinstance(product.status, ProductStatus) else str(product.status),
+        "rejection_reason": product.rejection_reason,
+        "is_active": product.is_active,
+        "listing_expires_at": product.listing_expires_at.isoformat() if product.listing_expires_at else None,
+        "listing_expired_at": product.listing_expired_at.isoformat() if product.listing_expired_at else None,
+        "fulfillment_location": product.fulfillment_location,
+        "images": [_serialize_broker_product_image(img) for img in product.images],
+        "quantity": product.quantity,
+        "reserved_quantity": product.reserved_quantity,
+        "available_quantity": max(0, (product.quantity or 0) - (product.reserved_quantity or 0)),
+        "seconds_remaining": seconds_remaining,
+        "created_at": product.created_at.isoformat() if product.created_at else None,
+    }
+
+
+def _product_slug(name: str) -> str:
+    base = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-") or "product"
+    return f"{base}-{uuid.uuid4().hex[:8]}"
+
+
+class BrokerProductCreateRequest(BaseModel):
+    category_id: uuid.UUID
+    brand_id: uuid.UUID | None = None
+    name: str = Field(min_length=2, max_length=255)
+    description: str | None = Field(default=None, max_length=5000)
+    price: Decimal = Field(gt=0)
+    sale_price: Decimal | None = Field(default=None, ge=0)
+    currency: str = Field(default="TZS", max_length=10)
+    weight: Decimal | None = Field(default=None, ge=0)
+    quantity: int = Field(default=0, ge=0)
+    fulfillment_location: str = Field(min_length=2, max_length=255)
+
+
+class BrokerProductUpdateRequest(BaseModel):
+    category_id: uuid.UUID | None = None
+    brand_id: uuid.UUID | None = None
+    name: str | None = Field(default=None, min_length=2, max_length=255)
+    description: str | None = Field(default=None, max_length=5000)
+    price: Decimal | None = Field(default=None, gt=0)
+    sale_price: Decimal | None = Field(default=None, ge=0)
+    currency: str | None = Field(default=None, max_length=10)
+    weight: Decimal | None = Field(default=None, ge=0)
+    quantity: int | None = Field(default=None, ge=0)
+    fulfillment_location: str | None = Field(default=None, min_length=2, max_length=255)
+
+
+def _validate_category_brand(db: Session, category_id, brand_id) -> None:
+    if not db.query(Category).filter(Category.id == category_id).first():
+        raise HTTPException(status_code=404, detail="Category not found")
+    if brand_id and not db.query(Brand).filter(Brand.id == brand_id).first():
+        raise HTTPException(status_code=404, detail="Brand not found")
+
+
 @router.get("/products")
-def broker_products(current_user: User = Depends(get_current_user)):
-    _ = current_user
-    return []
+def broker_products(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    broker = _get_my_broker(db, current_user)
+    products = (
+        db.query(BrokerProduct)
+        .filter(BrokerProduct.broker_id == broker.id)
+        .order_by(BrokerProduct.created_at.desc())
+        .all()
+    )
+    now = datetime.now(timezone.utc)
+    dirty = False
+    for product in products:
+        if product.listing_expires_at and product.listing_expires_at <= now and not product.listing_expired_at:
+            product.listing_expired_at = now
+            product.is_active = False
+            dirty = True
+    if dirty:
+        db.commit()
+    return [_serialize_broker_product(p) for p in products]
+
+
+@router.post("/products", status_code=201)
+def broker_create_product(
+    data: BrokerProductCreateRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    broker = _get_approved_broker(db, current_user)
+    _validate_category_brand(db, data.category_id, data.brand_id)
+
+    product = BrokerProduct(
+        broker_id=broker.id,
+        category_id=data.category_id,
+        brand_id=data.brand_id,
+        sku=f"BRK-{broker.broker_code}-{uuid.uuid4().hex[:6].upper()}",
+        name=data.name.strip(),
+        slug=_product_slug(data.name),
+        description=data.description,
+        price=data.price,
+        sale_price=data.sale_price,
+        currency=data.currency or "TZS",
+        weight=data.weight,
+        status=ProductStatus.draft,
+        is_active=True,
+        fulfillment_location=data.fulfillment_location.strip(),
+        quantity=data.quantity,
+        reserved_quantity=0,
+    )
+    db.add(product)
+    db.commit()
+    db.refresh(product)
+    return _serialize_broker_product(product)
+
+
+@router.patch("/products/{product_id}")
+def broker_update_product(
+    product_id: uuid.UUID,
+    data: BrokerProductUpdateRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    broker = _get_my_broker(db, current_user)
+    product = _get_broker_product(db, broker, product_id)
+    if product.status not in (ProductStatus.draft, ProductStatus.rejected):
+        raise HTTPException(status_code=409, detail="Only draft or rejected products can be edited")
+
+    updates = data.model_dump(exclude_unset=True)
+    category_id = updates.get("category_id", product.category_id)
+    brand_id = updates.get("brand_id", product.brand_id)
+    _validate_category_brand(db, category_id, brand_id)
+
+    for key, value in updates.items():
+        setattr(product, key, value)
+    product.updated_at = datetime.now(timezone.utc)
+    db.commit()
+    db.refresh(product)
+    return _serialize_broker_product(product)
+
+
+@router.post("/products/{product_id}/images", status_code=201)
+async def broker_upload_product_images(
+    product_id: uuid.UUID,
+    files: list[UploadFile] = File(...),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    broker = _get_approved_broker(db, current_user)
+    product = _get_broker_product(db, broker, product_id)
+
+    if not files:
+        raise HTTPException(status_code=400, detail="No files provided")
+    existing_count = (
+        db.query(BrokerProductImage)
+        .filter(BrokerProductImage.product_id == product.id)
+        .count()
+    )
+    if existing_count + len(files) > MAX_BROKER_PRODUCT_IMAGES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"A product can have at most {MAX_BROKER_PRODUCT_IMAGES} images",
+        )
+
+    saved_keys: list[tuple[str, str | None]] = []
+    created: list[BrokerProductImage] = []
+    try:
+        for index, file in enumerate(files):
+            stored = await store_product_image(file, seller_id=broker.id, product_id=product.id)
+            saved_keys.append((stored.storage_key, stored.thumbnail_url))
+            image = BrokerProductImage(
+                product_id=product.id,
+                image_url=stored.image_url,
+                thumbnail_url=stored.thumbnail_url,
+                storage_key=stored.storage_key,
+                original_filename=stored.original_filename,
+                mime_type=stored.mime_type,
+                file_size=stored.file_size,
+                width=stored.width,
+                height=stored.height,
+                display_order=existing_count + index,
+                is_primary=existing_count == 0 and index == 0,
+                uploaded_by_user_id=current_user.id,
+            )
+            db.add(image)
+            created.append(image)
+        db.commit()
+    except Exception:
+        db.rollback()
+        for storage_key, thumbnail_url in saved_keys:
+            delete_product_image_files(storage_key, thumbnail_url)
+        raise
+
+    for image in created:
+        db.refresh(image)
+    return [_serialize_broker_product_image(img) for img in created]
+
+
+@router.delete("/products/{product_id}/images/{image_id}")
+def broker_delete_product_image(
+    product_id: uuid.UUID,
+    image_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    broker = _get_my_broker(db, current_user)
+    product = _get_broker_product(db, broker, product_id)
+    image = (
+        db.query(BrokerProductImage)
+        .filter(BrokerProductImage.id == image_id, BrokerProductImage.product_id == product.id)
+        .first()
+    )
+    if not image:
+        raise HTTPException(status_code=404, detail="Image not found")
+    delete_product_image_files(image.storage_key, image.thumbnail_url)
+    db.delete(image)
+    db.commit()
+    return {"deleted": True}
+
+
+@router.post("/products/{product_id}/publish")
+def broker_publish_product(
+    product_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    broker = _get_approved_broker(db, current_user)
+    product = _get_broker_product(db, broker, product_id)
+    if product.status not in (ProductStatus.draft, ProductStatus.rejected):
+        raise HTTPException(status_code=409, detail="Only draft or rejected products can be submitted")
+    if not product.images:
+        raise HTTPException(status_code=400, detail="Add at least one image before publishing")
+
+    product.status = ProductStatus.pending_review
+    product.rejection_reason = None
+    product.is_active = True
+    product.updated_at = datetime.now(timezone.utc)
+    db.commit()
+    db.refresh(product)
+    return _serialize_broker_product(product)
+
+
+@router.delete("/products/{product_id}")
+def broker_archive_product(
+    product_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    broker = _get_my_broker(db, current_user)
+    product = _get_broker_product(db, broker, product_id)
+    product.is_active = False
+    product.status = ProductStatus.inactive
+    product.updated_at = datetime.now(timezone.utc)
+    db.commit()
+    return {"archived": True}
+
+
+# Admin review of broker products — list / approve / reject.
+
+
+@router.get("/admin/products")
+def admin_list_broker_products(
+    status: str | None = Query(default=None),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=200),
+    db: Session = Depends(get_db),
+    _: User = Depends(ADMIN_VIEW),
+):
+    query = db.query(BrokerProduct).order_by(BrokerProduct.created_at.desc())
+    if status:
+        try:
+            query = query.filter(BrokerProduct.status == ProductStatus(status))
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid status filter")
+    total = query.count()
+    items = query.offset((page - 1) * page_size).limit(page_size).all()
+    return {
+        "items": [_serialize_broker_product(p) for p in items],
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+    }
+
+
+def _admin_get_broker_product(db: Session, product_id: uuid.UUID) -> BrokerProduct:
+    product = db.query(BrokerProduct).filter(BrokerProduct.id == product_id).first()
+    if not product:
+        raise HTTPException(status_code=404, detail="Product not found")
+    return product
+
+
+@router.post("/admin/products/{product_id}/approve")
+def admin_approve_broker_product(
+    product_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    _: User = Depends(ADMIN_APPROVE),
+):
+    product = _admin_get_broker_product(db, product_id)
+    if product.status != ProductStatus.pending_review:
+        raise HTTPException(status_code=409, detail="Only products pending review can be approved")
+    if not product.images:
+        raise HTTPException(status_code=400, detail="A product must have at least one image before approval")
+
+    product.status = ProductStatus.approved
+    product.rejection_reason = None
+    product.is_active = True
+    product.listing_expires_at = datetime.now(timezone.utc) + timedelta(hours=24)
+    product.listing_expired_at = None
+    product.updated_at = datetime.now(timezone.utc)
+    db.commit()
+    db.refresh(product)
+    return _serialize_broker_product(product)
+
+
+class BrokerProductRejectRequest(BaseModel):
+    reason: str = Field(min_length=2, max_length=1000)
+
+
+@router.post("/admin/products/{product_id}/reject")
+def admin_reject_broker_product(
+    product_id: uuid.UUID,
+    data: BrokerProductRejectRequest,
+    db: Session = Depends(get_db),
+    _: User = Depends(ADMIN_APPROVE),
+):
+    product = _admin_get_broker_product(db, product_id)
+    if product.status != ProductStatus.pending_review:
+        raise HTTPException(status_code=409, detail="Only products pending review can be rejected")
+
+    product.status = ProductStatus.rejected
+    product.rejection_reason = data.reason.strip()
+    product.updated_at = datetime.now(timezone.utc)
+    db.commit()
+    db.refresh(product)
+    return _serialize_broker_product(product)
 
 
 @router.get("/opportunities")
