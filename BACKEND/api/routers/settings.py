@@ -24,7 +24,7 @@ router = APIRouter(prefix="/settings", tags=["System Settings"])
 
 DEFAULT_SETTINGS = [
     # Platform
-    ("platform_name", "Xerin Mart", "string", "platform", "Platform display name", True, False),
+    ("platform_name", "Xerin Marketplace", "string", "platform", "Platform display name", True, False),
     ("platform_currency", "TZS", "string", "platform", "Default platform currency", True, False),
     ("platform_country", "Tanzania", "string", "platform", "Default platform country", True, False),
     ("platform_timezone", "Africa/Dar_es_Salaam", "string", "platform", "Default platform timezone", True, False),
@@ -44,7 +44,7 @@ DEFAULT_SETTINGS = [
     ("sms_promotional_enabled", "false", "boolean", "sms", "Send promotional SMS", False, False),
     # Email
     ("email_enabled", "true", "boolean", "email", "Enable email notifications globally", False, False),
-    ("email_from_name", "Xerin Mart", "string", "email", "From name for outgoing emails", True, False),
+    ("email_from_name", "Xerin Marketplace", "string", "email", "From name for outgoing emails", True, False),
     ("email_order_notifications", "true", "boolean", "email", "Send email for order events", False, False),
     ("email_delivery_notifications", "true", "boolean", "email", "Send email for delivery events", False, False),
     ("email_admin_alerts", "true", "boolean", "email", "Send admin alert emails", False, False),

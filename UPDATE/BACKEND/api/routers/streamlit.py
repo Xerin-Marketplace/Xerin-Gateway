@@ -1,4 +1,4 @@
-"""Xerin Mart Backend — complete Streamlit API tester.
+"""Xerin Marketplace Backend — complete Streamlit API tester.
 
 Run:
     pip install streamlit requests
@@ -663,8 +663,8 @@ with st.sidebar:
 
 
 # ------------------------------- Main -----------------------------------
-st.title("Xerin Mart — Complete Backend Tester")
-st.caption("A schema-driven test client for every FastAPI endpoint in your Xerin Mart backend.")
+st.title("Xerin Marketplace — Complete Backend Tester")
+st.caption("A schema-driven test client for every FastAPI endpoint in your Xerin Marketplace backend.")
 
 if st.session_state.openapi is None and not st.session_state.openapi_error:
     fetch_openapi(show_message=False)

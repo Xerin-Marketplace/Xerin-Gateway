@@ -1,4 +1,4 @@
-# Xerin Mart — Beta Test Plan
+# Xerin Marketplace — Beta Test Plan
 
 End-to-end verification checklist for the beta launch. Run every flow on the
 staging/production environment with **real** Selcom test
@@ -13,7 +13,7 @@ Legend: ✅ pass · ❌ fail · ⚠️ pass with issues (record details)
 | Check | Command / Location | Expected |
 |---|---|---|
 | API healthy | `curl -s https://api.xerinmarketplace.com/health/live` | `200` |
-| Storefront loads | `https://xerinmarketplace.com` | `200`, shows "Xerin Mart" |
+| Storefront loads | `https://xerinmarketplace.com` | `200`, shows "Xerin Marketplace" |
 | SMTP works | send_email test via `.venv/bin/python` (see ops runbook) | Test mail arrives |
 | SMS works | send_sms test via `.venv/bin/python` | SMS arrives on test phone |
 | Selcom configured | `.env` has `SELCOM_*` + callback URL `https://api.xerinmarketplace.com/api/v1/payments/selcom/callback` | Keys present |
@@ -88,7 +88,7 @@ Create these test accounts and record credentials in the shared sheet:
 | 5.5 | Edge: cancel a pending payout | `cancelled`, balance returned | |
 | 5.6 | B-01 broker: add payout account → request payout → admin approve | Same flow works for broker wallet | |
 
-## 6. Xerin Mart platform withdrawals
+## 6. Xerin Marketplace platform withdrawals
 
 | # | Step | Expected | Result |
 |---|---|---|---|

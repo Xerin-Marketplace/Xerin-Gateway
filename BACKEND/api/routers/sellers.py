@@ -1066,7 +1066,7 @@ def admin_approve_seller(
             user_id=seller.user_id,
             event=NotificationEvent.kyc_approved,
             title="Your store is verified",
-            message="Congratulations! Your seller verification has been approved. Your store is now live on Xerin Mart.",
+            message="Congratulations! Your seller verification has been approved. Your store is now live on Xerin Marketplace.",
             data={"account_label": "store"},
             action_url="/seller/dashboard",
             channels=[

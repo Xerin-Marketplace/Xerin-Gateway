@@ -5,7 +5,7 @@ from api.main import api
 
 def test_openapi_schema_builds():
     schema = api.openapi()
-    assert schema["info"]["title"] == "Xerin Mart API"
+    assert schema["info"]["title"] == "Xerin Marketplace API"
     assert "/api/v1/auth/login" in schema["paths"]
 
 

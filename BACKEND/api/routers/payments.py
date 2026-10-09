@@ -274,7 +274,7 @@ def initiate_payment(data: PaymentInitiateRequest, db: Session = Depends(get_db)
                 buyer_name=buyer_name,
                 buyer_phone=data.phone_number or current_user.phone or "",
                 no_of_items=len(order.items),
-                merchant_remarks=f"Xerin Mart order {order.order_number or order.id}",
+                merchant_remarks=f"Xerin Marketplace order {order.order_number or order.id}",
             )
             provider_payload = {
                 "create_order": created.raw,

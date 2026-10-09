@@ -386,7 +386,7 @@ def register(data: RegisterRequest, db: Session = Depends(get_db)):
         "send_sms",
         send_sms,
         to=phone,
-        message=f"Use this OTP to verify your Xerin Mart account: {otp}",
+        message=f"Use this OTP to verify your Xerin Marketplace account: {otp}",
     )
 
     return RegistrationResponse(
@@ -561,7 +561,7 @@ async def register_seller(
         "send_sms",
         send_sms,
         to=phone,
-        message=f"Use this OTP to verify your Xerin Mart seller account: {otp}",
+        message=f"Use this OTP to verify your Xerin Marketplace seller account: {otp}",
     )
 
     return SellerRegistrationResponse(

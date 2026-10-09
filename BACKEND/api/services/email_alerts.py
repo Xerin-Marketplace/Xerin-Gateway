@@ -30,7 +30,7 @@ def _shell(*, title: str, subtitle: str, body: str) -> str:
 <html><body style="margin:0;padding:0;background:#f4f4f5;font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;">
   <div style="max-width:560px;margin:24px auto;padding:0 16px;">
     <div style="background:#111827;border-radius:14px 14px 0 0;padding:20px 24px;">
-      <div style="color:#fff;font-size:18px;font-weight:700;letter-spacing:.5px;">XERIN MART</div>
+      <div style="color:#fff;font-size:18px;font-weight:700;letter-spacing:.5px;">XERIN MARKETPLACE</div>
       <div style="color:#9ca3af;font-size:12px;margin-top:2px;">{_html.escape(subtitle)}</div>
     </div>
     <div style="background:#fff;padding:24px;border-radius:0 0 14px 14px;">
@@ -38,7 +38,7 @@ def _shell(*, title: str, subtitle: str, body: str) -> str:
       {body}
     </div>
     <div style="text-align:center;color:#9ca3af;font-size:11px;padding:16px 0;">
-      Automated message from Xerin Mart monitoring &middot; {_now().date()}
+      Automated message from Xerin Marketplace monitoring &middot; {_now().date()}
     </div>
   </div>
 </body></html>"""
@@ -89,7 +89,7 @@ def _weekly_pdf(report: WeeklyReport) -> bytes:
     c.rect(0, H - 34 * mm, W, 34 * mm, stroke=0, fill=1)
     c.setFillColor(white)
     c.setFont("Helvetica-Bold", 20)
-    c.drawString(margin, H - 15 * mm, "XERIN MART")
+    c.drawString(margin, H - 15 * mm, "XERIN MARKETPLACE")
     c.setFont("Helvetica", 11)
     c.setFillColor(HexColor("#9ca3af"))
     c.drawString(margin, H - 22 * mm, "Weekly Operations Report")
@@ -173,7 +173,7 @@ def _weekly_pdf(report: WeeklyReport) -> bytes:
     # Footer
     c.setFillColor(HexColor("#9ca3af"))
     c.setFont("Helvetica", 8)
-    c.drawCentredString(W / 2, 12 * mm, "Xerin Mart \u00b7 Automated weekly report \u00b7 Confidential")
+    c.drawCentredString(W / 2, 12 * mm, "Xerin Marketplace \u00b7 Automated weekly report \u00b7 Confidential")
     c.showPage()
     c.save()
     return buf.getvalue()

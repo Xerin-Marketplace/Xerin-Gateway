@@ -274,7 +274,7 @@ def record_security_alert(
 def _alert_body(severity: AuditSeverity | str, title: str, details: dict[str, str]) -> str:
     sev = severity.value if isinstance(severity, AuditSeverity) else severity
     lines = [
-        "XERIN MART",
+        "XERIN MARKETPLACE",
         "=" * 40,
         title,
         "",

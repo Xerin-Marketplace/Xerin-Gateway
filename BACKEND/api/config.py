@@ -10,7 +10,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class Settings(BaseSettings):
     # Application
-    APP_NAME: str = "Xerin Mart API"
+    APP_NAME: str = "Xerin Marketplace API"
     APP_ENV: Literal["development", "testing", "staging", "production"] = "development"
     DEBUG: bool = False
     API_PREFIX: str = "/api/v1"
@@ -62,7 +62,7 @@ class Settings(BaseSettings):
     EMAIL_USER: str | None = None
     EMAIL_PASSWORD: str | None = None
     EMAIL_FROM: str | None = None
-    EMAIL_FROM_NAME: str = "Xerin Mart - Tanzania"
+    EMAIL_FROM_NAME: str = "Xerin Marketplace - Tanzania"
     EMAIL_REPLY_TO: str | None = None
     EMAIL_USE_TLS: bool = True
     EMAIL_USE_SSL: bool = False
@@ -144,7 +144,7 @@ class Settings(BaseSettings):
     # falls back to Nominatim (OpenStreetMap) — free, no key required.
     GOOGLE_MAPS_API_KEY: str | None = None
     NOMINATIM_BASE_URL: str = "https://nominatim.openstreetmap.org"
-    NOMINATIM_USER_AGENT: str = "XerinMart/1.0 (+https://xerinmart.com)"
+    NOMINATIM_USER_AGENT: str = "XerinMarketplace/1.0 (+https://xerinmart.com)"
     MAP_REQUEST_TIMEOUT: int = 12
 
     @property

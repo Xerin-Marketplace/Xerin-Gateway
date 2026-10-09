@@ -276,7 +276,7 @@ def send_admin_notification_email(
         body = f"""
 Hello {user.first_name},
 
-You have been created as an Admin on Xerin Mart.
+You have been created as an Admin on Xerin Marketplace.
 
 Login Details:
 Email: {user.email}
@@ -285,25 +285,25 @@ Password: {password}
 Please login and change your password immediately.
 
 Regards,
-Xerin Mart Team
+Xerin Marketplace Team
 """
     else:
         body = f"""
 Hello {user.first_name},
 
-Your existing Xerin Mart account has been upgraded to Admin.
+Your existing Xerin Marketplace account has been upgraded to Admin.
 
 Login Details:
 Email: {user.email}
 Password: Use your existing password.
 
 Regards,
-Xerin Mart Team
+Xerin Marketplace Team
 """
 
     send_email(
         to=user.email,
-        subject="Xerin Mart Admin Access",
+        subject="Xerin Marketplace Admin Access",
         body=body,
     )
 

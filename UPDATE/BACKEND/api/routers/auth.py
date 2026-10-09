@@ -336,7 +336,7 @@ def register(data: RegisterRequest, db: Session = Depends(get_db)):
     try:
         send_sms(
             to=phone,
-            message=f"Use this OTP to verify your Xerin Mart account: {otp}",
+            message=f"Use this OTP to verify your Xerin Marketplace account: {otp}",
         )
     except Exception as exc:
         logger.exception("send_sms failed for %s: %s", phone, exc)
@@ -452,7 +452,7 @@ def register_seller(data: SellerRegisterRequest, db: Session = Depends(get_db)):
     try:
         send_sms(
             to=phone,
-            message=f"Use this OTP to verify your Xerin Mart seller account: {otp}",
+            message=f"Use this OTP to verify your Xerin Marketplace seller account: {otp}",
         )
     except Exception as e:
         logger.exception("send_sms failed for %s: %s", phone, e)

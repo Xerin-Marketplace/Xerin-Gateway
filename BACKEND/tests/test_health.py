@@ -2,7 +2,7 @@ def test_root(client):
     response = client.get("/")
     assert response.status_code == 200
     body = response.json()
-    assert "Xerin Mart API" in body["message"]
+    assert "Xerin Marketplace API" in body["message"]
     assert body["environment"] == "testing"
 
 

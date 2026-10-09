@@ -408,7 +408,7 @@ def admin_approve_broker(
             user_id=broker.user_id,
             event=NotificationEvent.kyc_approved,
             title="Your account is verified",
-            message="Congratulations! Your Winga verification has been approved. You can now use all Winga features on Xerin Mart.",
+            message="Congratulations! Your Winga verification has been approved. You can now use all Winga features on Xerin Marketplace.",
             data={"account_label": "Winga"},
             action_url="/broker",
             channels=[
