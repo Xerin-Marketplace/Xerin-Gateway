@@ -128,8 +128,14 @@ def canonical_account_number(value: str | None, account_type: str | None = None)
 def _validate_password(value: str) -> str:
     if len(value.encode("utf-8")) > 72:
         raise ValueError("Password must not exceed 72 bytes")
-    if len(value) < 6:
-        raise ValueError("Password must contain at least 6 characters")
+    if len(value) < 8:
+        raise ValueError("Password must contain at least 8 characters")
+    if not any(c.islower() for c in value):
+        raise ValueError("Password must contain a lowercase letter")
+    if not any(c.isupper() for c in value):
+        raise ValueError("Password must contain an uppercase letter")
+    if not any(c.isdigit() for c in value):
+        raise ValueError("Password must contain a digit")
     return value
 
 

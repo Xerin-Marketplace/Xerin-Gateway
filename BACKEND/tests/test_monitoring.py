@@ -13,9 +13,21 @@ os.environ.setdefault("MONITORING_ALERT_EMAIL", "ops@example.com")
 from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, patch
 
+import pytest
+
+from api.config import settings
 from api.enums import AuditSeverity, SecurityEventType
 from api.services.audit_service import redact_sensitive
 from api.services.monitoring import should_email, _alert_body
+
+
+@pytest.fixture(autouse=True)
+def _alerting_configured(monkeypatch):
+    """settings is a singleton built before this module's env vars apply —
+    patch it directly so severity-rule tests don't depend on import order."""
+    monkeypatch.setattr(settings, "MONITORING_ENABLED", True)
+    monkeypatch.setattr(settings, "MONITORING_ALERT_EMAIL", "ops@example.com")
+    monkeypatch.setattr(settings, "MONITORING_ALERT_MIN_SEVERITY", "warning")
 
 
 class TestRedaction:

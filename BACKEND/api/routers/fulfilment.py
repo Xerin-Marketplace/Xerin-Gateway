@@ -43,6 +43,7 @@ from api.schemas import (
     AdminFulfilmentDashboardResponse,
     InboundItemCreate,
     InboundItemResponse,
+    InboundItemUpdate,
     InboundShipmentCreate,
     InboundShipmentResponse,
     InboundShipmentUpdate,

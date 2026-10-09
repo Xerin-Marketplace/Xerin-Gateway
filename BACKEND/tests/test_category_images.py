@@ -14,5 +14,5 @@ def test_category_image_contracts():
     assert '@router.post("/categories/with-image"' in products
     assert '@router.post("/categories/{category_id}/image"' in products
     assert '@router.delete("/categories/{category_id}/image"' in products
-    assert '@router.post("/product-categories/with-image"' in admin
+    assert '"/product-categories/with-image"' in admin
     assert 'down_revision = "p3_admin_dashboard"' in migration

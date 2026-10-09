@@ -951,13 +951,18 @@ def broker_archive_product(
 # Admin review of broker products — list / approve / reject.
 
 
+CATALOG_VIEW = require_permission(PermissionCode.admin_catalog_read.value)
+CATALOG_APPROVE = require_permission(PermissionCode.can_approve_products.value)
+CATALOG_REJECT = require_permission(PermissionCode.can_reject_products.value)
+
+
 @router.get("/admin/products")
 def admin_list_broker_products(
     status: str | None = Query(default=None),
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=200),
     db: Session = Depends(get_db),
-    _: User = Depends(ADMIN_VIEW),
+    _: User = Depends(CATALOG_VIEW),
 ):
     query = db.query(BrokerProduct).order_by(BrokerProduct.created_at.desc())
     if status:
@@ -986,7 +991,7 @@ def _admin_get_broker_product(db: Session, product_id: uuid.UUID) -> BrokerProdu
 def admin_approve_broker_product(
     product_id: uuid.UUID,
     db: Session = Depends(get_db),
-    _: User = Depends(ADMIN_APPROVE),
+    _: User = Depends(CATALOG_APPROVE),
 ):
     product = _admin_get_broker_product(db, product_id)
     if product.status != ProductStatus.pending_review:
@@ -1014,7 +1019,7 @@ def admin_reject_broker_product(
     product_id: uuid.UUID,
     data: BrokerProductRejectRequest,
     db: Session = Depends(get_db),
-    _: User = Depends(ADMIN_APPROVE),
+    _: User = Depends(CATALOG_REJECT),
 ):
     product = _admin_get_broker_product(db, product_id)
     if product.status != ProductStatus.pending_review:
@@ -1031,9 +1036,6 @@ def admin_reject_broker_product(
 # ---------------------------------------------------------------------------
 # Earning engine — offers, referral links, click tracking, commissions.
 # ---------------------------------------------------------------------------
-
-REFERRAL_CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
-
 
 def _referral_code(broker: Broker) -> str:
     seed = uuid.uuid4().hex.upper()
