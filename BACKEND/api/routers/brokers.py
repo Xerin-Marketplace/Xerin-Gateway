@@ -34,11 +34,17 @@ from api.models import (
     BrokerRiskEvent,
     Brand,
     Category,
+    Inventory,
     PayoutStatus,
     Product,
+    ProductImage,
     ProductStatus,
+    Seller,
+    SellerStatus,
     User,
+    UserStatus,
 )
+from api.security import hash_password
 from api.services.product_image_service import delete_product_image_files, store_product_image
 from api.permissions import require_permission
 from api.schemas import canonical_account_number
@@ -705,6 +711,111 @@ def _product_slug(name: str) -> str:
     return f"{base}-{uuid.uuid4().hex[:8]}"
 
 
+# ---------------------------------------------------------------------------
+# Catalog mirror — approved broker products materialize into the public
+# products table (owned by a platform system seller) so the existing feed,
+# product detail, cart, checkout, and order pipeline works unchanged.
+# ---------------------------------------------------------------------------
+
+BROKER_SYSTEM_EMAIL = "broker-listings@xerin.internal"
+BROKER_SYSTEM_BUSINESS_NAME = "Xerin Broker Listings"
+
+
+def _broker_system_seller(db: Session) -> Seller:
+    """Platform-owned seller account that carries broker-listed products.
+
+    Products require a seller; broker products belong to the platform so
+    orders, seller dashboards, and payout flows stay coherent.
+    """
+    user = db.query(User).filter(User.email == BROKER_SYSTEM_EMAIL).first()
+    if user is None:
+        user = User(
+            email=BROKER_SYSTEM_EMAIL,
+            password_hash=hash_password(uuid.uuid4().hex + uuid.uuid4().hex),
+            first_name="Xerin",
+            last_name="Broker Listings",
+            status=UserStatus.active,
+            is_verified=True,
+        )
+        db.add(user)
+        db.flush()
+    seller = db.query(Seller).filter(Seller.user_id == user.id).first()
+    if seller is None:
+        seller = Seller(
+            user_id=user.id,
+            business_name=BROKER_SYSTEM_BUSINESS_NAME,
+            status=SellerStatus.approved,
+            agreement_accepted=True,
+            approved_at=datetime.now(timezone.utc),
+        )
+        db.add(seller)
+        db.flush()
+    return seller
+
+
+def _sync_broker_product_to_catalog(db: Session, bp: BrokerProduct, approver_id=None) -> Product:
+    """Create/update the public catalog mirror of an approved broker product."""
+    seller = _broker_system_seller(db)
+    now = datetime.now(timezone.utc)
+
+    product = db.query(Product).filter(Product.broker_product_id == bp.id).first()
+    if product is None:
+        product = Product(seller_id=seller.id, broker_product_id=bp.id)
+        db.add(product)
+
+    product.seller_id = seller.id
+    product.category_id = bp.category_id
+    product.brand_id = bp.brand_id
+    product.sku = f"BRKP-{bp.sku}" if not str(bp.sku).startswith("BRKP-") else bp.sku
+    product.name = bp.name
+    product.slug = f"brkp-{bp.slug}" if not str(bp.slug).startswith("brkp-") else bp.slug
+    product.description = bp.description
+    product.price = bp.price
+    product.sale_price = bp.sale_price
+    product.currency = bp.currency
+    product.weight = bp.weight
+    product.status = ProductStatus.approved
+    product.rejection_reason = None
+    product.is_active = True
+    product.submitted_at = product.submitted_at or now
+    product.approved_at = now
+    product.approved_by_user_id = approver_id
+    db.flush()
+
+    # Mirror images (same stored files — no file copy needed).
+    for existing in list(product.images):
+        db.delete(existing)
+    db.flush()
+    for img in bp.images:
+        db.add(ProductImage(
+            product_id=product.id,
+            image_url=img.image_url,
+            thumbnail_url=img.thumbnail_url,
+            alt_text=img.alt_text,
+            display_order=img.display_order or 0,
+            is_primary=bool(img.is_primary),
+        ))
+
+    # Inventory mirrors broker quantity.
+    inventory = db.query(Inventory).filter(Inventory.product_id == product.id, Inventory.variant_id.is_(None)).first()
+    if inventory is None:
+        inventory = Inventory(product_id=product.id, variant_id=None)
+        db.add(inventory)
+    inventory.quantity = bp.quantity or 0
+    inventory.reserved_quantity = bp.reserved_quantity or 0
+    inventory.available_quantity = max(0, (bp.quantity or 0) - (bp.reserved_quantity or 0))
+    inventory.warehouse_location = bp.fulfillment_location
+
+    bp.seller_id = seller.id
+    return product
+
+
+def _deactivate_catalog_mirror(db: Session, bp: BrokerProduct) -> None:
+    product = db.query(Product).filter(Product.broker_product_id == bp.id).first()
+    if product and product.is_active:
+        product.is_active = False
+
+
 class BrokerProductCreateRequest(BaseModel):
     category_id: uuid.UUID
     brand_id: uuid.UUID | None = None
@@ -756,6 +867,7 @@ def broker_products(
         if product.listing_expires_at and product.listing_expires_at <= now and not product.listing_expired_at:
             product.listing_expired_at = now
             product.is_active = False
+            _deactivate_catalog_mirror(db, product)
             dirty = True
     if dirty:
         db.commit()
@@ -915,6 +1027,7 @@ def broker_publish_product(
         product.listing_expires_at = datetime.now(timezone.utc) + timedelta(hours=24)
         product.listing_expired_at = None
         product.updated_at = datetime.now(timezone.utc)
+        _sync_broker_product_to_catalog(db, product)
         db.commit()
         db.refresh(product)
         return _serialize_broker_product(product)
@@ -944,6 +1057,7 @@ def broker_archive_product(
     product.is_active = False
     product.status = ProductStatus.inactive
     product.updated_at = datetime.now(timezone.utc)
+    _deactivate_catalog_mirror(db, product)
     db.commit()
     return {"archived": True}
 
@@ -991,7 +1105,7 @@ def _admin_get_broker_product(db: Session, product_id: uuid.UUID) -> BrokerProdu
 def admin_approve_broker_product(
     product_id: uuid.UUID,
     db: Session = Depends(get_db),
-    _: User = Depends(CATALOG_APPROVE),
+    approver: User = Depends(CATALOG_APPROVE),
 ):
     product = _admin_get_broker_product(db, product_id)
     if product.status != ProductStatus.pending_review:
@@ -1005,6 +1119,7 @@ def admin_approve_broker_product(
     product.listing_expires_at = datetime.now(timezone.utc) + timedelta(hours=24)
     product.listing_expired_at = None
     product.updated_at = datetime.now(timezone.utc)
+    _sync_broker_product_to_catalog(db, product, approver_id=approver.id)
     db.commit()
     db.refresh(product)
     return _serialize_broker_product(product)
@@ -1028,6 +1143,7 @@ def admin_reject_broker_product(
     product.status = ProductStatus.rejected
     product.rejection_reason = data.reason.strip()
     product.updated_at = datetime.now(timezone.utc)
+    _deactivate_catalog_mirror(db, product)
     db.commit()
     db.refresh(product)
     return _serialize_broker_product(product)

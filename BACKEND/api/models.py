@@ -427,6 +427,13 @@ class Product(Base):
     submitted_at = Column(DateTime(timezone=True), nullable=True)
     approved_at = Column(DateTime(timezone=True), nullable=True)
     approved_by_user_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
+    broker_product_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("broker_products.id", ondelete="SET NULL"),
+        nullable=True,
+        unique=True,
+        index=True,
+    )
 
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
