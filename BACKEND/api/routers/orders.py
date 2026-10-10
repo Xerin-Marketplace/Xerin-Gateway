@@ -13,6 +13,7 @@ from api.config import settings
 from api.deps import get_current_user, get_db
 from api.models import (
     Address,
+    Broker,
     BrokerCommission,
     BrokerOffer,
     BrokerOfferAcceptance,
@@ -361,6 +362,12 @@ def create_order(
                 )
                 .first()
             )
+            if acceptance:
+                # Self-referral fraud guard — a broker earns nothing on their
+                # own purchase through their own referral link.
+                broker = db.query(Broker).filter(Broker.id == acceptance.broker_id).first()
+                if broker is not None and broker.user_id == current_user.id:
+                    acceptance = None
             if acceptance:
                 offer = db.query(BrokerOffer).filter(BrokerOffer.id == acceptance.offer_id).first()
                 if offer and offer.is_active and (

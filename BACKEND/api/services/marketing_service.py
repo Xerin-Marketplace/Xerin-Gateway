@@ -292,6 +292,104 @@ def process_queued_messages(db: Session, limit: int = 50) -> int:
     return len(msgs)
 
 
+# --------------------------------------------------------- retention workflows
+WORKFLOW_ABANDONED_CART = "wf:abandoned_cart"
+WORKFLOW_WELCOME = "wf:welcome"
+
+ABANDONED_CART_BODY = (
+    "Hi {{name}}, you left items in your Xerin cart. "
+    "They're still available while stock lasts — complete your order at xerinmarketplace.com/cart"
+)
+WELCOME_BODY = (
+    "Karibu {{name}}! Welcome to Xerin Marketplace. "
+    "Browse thousands of products from trusted sellers — start shopping at xerinmarketplace.com"
+)
+
+
+def _workflow_campaign(db: Session, key: str, channel: str, body: str, subject: str | None) -> MarketingCampaign:
+    campaign = db.query(MarketingCampaign).filter(MarketingCampaign.name == key).first()
+    if campaign is None:
+        campaign = MarketingCampaign(
+            name=key,
+            description="Automated retention workflow — system-managed, do not edit.",
+            channel=channel,
+            status="sending",
+            segment_key="workflow",
+            subject=subject,
+            body=body,
+        )
+        db.add(campaign)
+        db.flush()
+    return campaign
+
+
+def _already_messaged(db: Session, campaign_id, user_id, within: timedelta) -> bool:
+    return (
+        db.query(MarketingMessage)
+        .filter(
+            MarketingMessage.campaign_id == campaign_id,
+            MarketingMessage.user_id == user_id,
+            MarketingMessage.created_at >= datetime.now(timezone.utc) - within,
+        )
+        .first()
+        is not None
+    )
+
+
+def run_retention_workflows(db: Session) -> int:
+    """Queue welcome + abandoned-cart messages. Returns messages queued."""
+    now = datetime.now(timezone.utc)
+    queued = 0
+    prefs = {p.user_id: p for p in db.query(MarketingPreference).all()}
+
+    # Welcome — users registered in the last 24h with marketing email on.
+    welcome = _workflow_campaign(db, WORKFLOW_WELCOME, "email", WELCOME_BODY, "Welcome to Xerin Marketplace")
+    recent_users = (
+        db.query(User)
+        .filter(User.status == UserStatus.active, User.created_at >= now - timedelta(hours=24), User.email.isnot(None))
+        .all()
+    )
+    for user in recent_users:
+        if not _opted_in(prefs, user.id, "email") or _already_messaged(db, welcome.id, user.id, timedelta(days=3650)):
+            continue
+        db.add(MarketingMessage(
+            campaign_id=welcome.id, user_id=user.id, channel="email",
+            recipient=user.email, subject=welcome.subject,
+            body=render(welcome.body, user),
+        ))
+        queued += 1
+
+    # Abandoned cart — items idle >24h, no order in 24h, no reminder in 72h.
+    abandoned = _workflow_campaign(db, WORKFLOW_ABANDONED_CART, "email", ABANDONED_CART_BODY, "You left items in your cart")
+    cart_rows = (
+        db.query(Cart)
+        .join(CartItem, CartItem.cart_id == Cart.id)
+        .filter(Cart.updated_at.isnot(None), Cart.updated_at <= now - timedelta(hours=24))
+        .all()
+    )
+    ordered_recently = {
+        row[0]
+        for row in db.query(Order.user_id).filter(Order.created_at >= now - timedelta(hours=24)).all()
+    }
+    for cart in cart_rows:
+        user = db.query(User).filter(User.id == cart.user_id, User.status == UserStatus.active, User.email.isnot(None)).first()
+        if user is None or user.id in ordered_recently:
+            continue
+        if not _opted_in(prefs, user.id, "email"):
+            continue
+        if _already_messaged(db, abandoned.id, user.id, timedelta(hours=72)):
+            continue
+        db.add(MarketingMessage(
+            campaign_id=abandoned.id, user_id=user.id, channel="email",
+            recipient=user.email, subject=abandoned.subject,
+            body=render(abandoned.body, user),
+        ))
+        queued += 1
+
+    db.commit()
+    return queued
+
+
 def tick(db: Session) -> dict:
     """Scheduler entry — promote due campaigns, drain queue, run monthly auto."""
     now = datetime.now(timezone.utc)
@@ -311,5 +409,6 @@ def tick(db: Session) -> dict:
     if due:
         db.commit()
 
+    queued = run_retention_workflows(db)
     attempted = process_queued_messages(db)
-    return {"promoted": len(due), "attempted": attempted}
+    return {"promoted": len(due), "workflow_queued": queued, "attempted": attempted}

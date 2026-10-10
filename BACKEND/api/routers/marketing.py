@@ -123,6 +123,16 @@ def marketing_overview(
         key=lambda x: x["date"] or datetime.max.date(),
     )[:6]
 
+    # Attribution — orders carrying a promotion code + broker-attributed sales.
+    promo_orders = db.query(func.count(Order.id), func.coalesce(func.sum(Order.total), 0)).filter(
+        Order.promotion_code.isnot(None)
+    ).first()
+    from api.models import BrokerCommission, PromotionUsage
+    broker_attributed = db.query(func.count(BrokerCommission.id), func.coalesce(func.sum(BrokerCommission.amount), 0)).filter(
+        BrokerCommission.status.in_(["pending", "available"])
+    ).first()
+    redemptions = db.query(func.count(PromotionUsage.id)).first()
+
     return {
         "contacts": {
             "total_customers": total_users,
@@ -132,6 +142,14 @@ def marketing_overview(
         },
         "campaigns": status_counts,
         "delivery": delivery,
+        "attribution": {
+            "promotion_orders": promo_orders[0] or 0,
+            "promotion_revenue": str(promo_orders[1] or 0),
+            "promotion_redemptions": redemptions[0] or 0,
+            "broker_attributed_sales": broker_attributed[0] or 0,
+            "broker_commission_value": str(broker_attributed[1] or 0),
+            "definition": "promotion_orders = orders where a promotion code was applied; broker_attributed_sales = commissions earned on referral-attributed order items",
+        },
         "upcoming_events": [{"name": e["name"], "date": e["date"].isoformat() if e["date"] else None,
                               "estimated": e["estimated"]} for e in upcoming],
     }
