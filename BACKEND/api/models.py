@@ -3237,3 +3237,128 @@ class BrokerCommission(Base):
     broker = relationship("Broker")
     order = relationship("Order")
     offer = relationship("BrokerOffer")
+
+
+# ---------------------------------------------------------------------------
+# Marketing & customer engagement
+# ---------------------------------------------------------------------------
+
+class MarketingTemplate(Base):
+    __tablename__ = "marketing_templates"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    key = Column(String(80), unique=True, nullable=False, index=True)
+    name = Column(String(180), nullable=False)
+    purpose = Column(String(60), nullable=True)  # welcome, newsletter, holiday, winback...
+    channel = Column(String(10), nullable=False)  # email | sms
+    language = Column(String(5), nullable=False, default="en")
+    subject = Column(String(255), nullable=True)  # email only
+    body = Column(Text, nullable=False)
+    variables = Column(JSONB, nullable=True)  # list of supported {{vars}}
+    is_approved = Column(Boolean, nullable=False, default=False)
+    version = Column(Integer, nullable=False, default=1)
+    updated_by_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+
+class MarketingPreference(Base):
+    __tablename__ = "marketing_preferences"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), unique=True, nullable=False, index=True)
+    email_marketing = Column(Boolean, nullable=False, default=True)
+    sms_marketing = Column(Boolean, nullable=False, default=True)
+    unsubscribe_token = Column(String(80), unique=True, nullable=False, default=lambda: uuid.uuid4().hex + uuid.uuid4().hex[:8])
+    source = Column(String(40), nullable=True)  # signup | admin | unsubscribe_link
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now(), server_default=func.now())
+
+    user = relationship("User")
+
+
+class MarketingCampaign(Base):
+    __tablename__ = "marketing_campaigns"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    name = Column(String(180), nullable=False)
+    description = Column(Text, nullable=True)
+    channel = Column(String(10), nullable=False)  # email | sms
+    status = Column(String(20), nullable=False, default="draft", index=True)  # draft|scheduled|approved|sending|sent|paused|cancelled|failed
+    template_id = Column(UUID(as_uuid=True), ForeignKey("marketing_templates.id", ondelete="SET NULL"), nullable=True)
+    segment_key = Column(String(60), nullable=False, default="all_customers")
+    subject = Column(String(255), nullable=True)
+    body = Column(Text, nullable=False)
+    promotion_id = Column(UUID(as_uuid=True), ForeignKey("promotions.id", ondelete="SET NULL"), nullable=True)
+    event_id = Column(UUID(as_uuid=True), ForeignKey("marketing_events.id", ondelete="SET NULL"), nullable=True)
+    scheduled_at = Column(DateTime(timezone=True), nullable=True)
+    approved_by_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    approved_at = Column(DateTime(timezone=True), nullable=True)
+    created_by_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    started_at = Column(DateTime(timezone=True), nullable=True)
+    sent_at = Column(DateTime(timezone=True), nullable=True)
+    stats = Column(JSONB, nullable=True)  # {queued, sent, failed, skipped, recipients}
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+    template = relationship("MarketingTemplate")
+
+
+class MarketingMessage(Base):
+    __tablename__ = "marketing_messages"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    campaign_id = Column(UUID(as_uuid=True), ForeignKey("marketing_campaigns.id", ondelete="CASCADE"), nullable=False, index=True)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    channel = Column(String(10), nullable=False)
+    recipient = Column(String(255), nullable=False)
+    subject = Column(String(255), nullable=True)
+    body = Column(Text, nullable=False)
+    status = Column(String(15), nullable=False, default="queued", index=True)  # queued|sent|failed|skipped
+    error = Column(Text, nullable=True)
+    attempts = Column(Integer, nullable=False, default=0)
+    sent_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    campaign = relationship("MarketingCampaign")
+
+
+class MarketingEvent(Base):
+    """Holiday / seasonal marketing calendar entry."""
+
+    __tablename__ = "marketing_events"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    name = Column(String(180), nullable=False)
+    rule_type = Column(String(20), nullable=False, default="fixed")  # fixed | easter_offset | eid_estimate
+    month = Column(Integer, nullable=True)   # fixed rules
+    day = Column(Integer, nullable=True)     # fixed rules
+    easter_offset = Column(Integer, nullable=True)  # days relative to Easter Sunday (Good Friday=-2, Easter Monday=+1)
+    jurisdiction = Column(String(30), nullable=False, default="tanzania")  # tanzania | zanzibar | intl | commercial
+    category = Column(String(40), nullable=True)  # public_holiday | observance | shopping_event
+    is_estimated = Column(Boolean, nullable=False, default=False)
+    source_url = Column(Text, nullable=True)
+    lead_days = Column(Integer, nullable=False, default=7)
+    suggested_email = Column(Text, nullable=True)
+    suggested_sms = Column(Text, nullable=True)
+    is_enabled = Column(Boolean, nullable=False, default=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class MarketingAutomation(Base):
+    """Singleton row — recurring monthly engagement campaign config."""
+
+    __tablename__ = "marketing_automation"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    key = Column(String(40), unique=True, nullable=False, default="monthly_engagement")
+    is_enabled = Column(Boolean, nullable=False, default=False)
+    auto_send = Column(Boolean, nullable=False, default=False)  # else creates awaiting-approval draft
+    day_of_month = Column(Integer, nullable=False, default=5)
+    send_time = Column(String(5), nullable=False, default="10:00")  # Africa/Dar_es_Salaam
+    channels = Column(JSONB, nullable=False, default=list)
+    segment_key = Column(String(60), nullable=False, default="all_customers")
+    last_run_at = Column(DateTime(timezone=True), nullable=True)
+    next_run_at = Column(DateTime(timezone=True), nullable=True)
+    last_campaign_id = Column(UUID(as_uuid=True), ForeignKey("marketing_campaigns.id", ondelete="SET NULL"), nullable=True)
+    updated_by_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())

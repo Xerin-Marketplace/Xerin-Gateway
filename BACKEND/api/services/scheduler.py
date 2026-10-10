@@ -39,6 +39,7 @@ _JOB_INTERVALS: dict[str, int] = {
     "monitoring.tick": 30,
     "monitoring.weekly_report": 3600,
     "monitoring.housekeeping": 21600,
+    "marketing.tick": 60,
 }
 _job_state: dict[str, dict] = {}
 _paused_jobs: set[str] = set()
@@ -101,6 +102,7 @@ def trigger_job(name: str) -> dict | None:
         "monitoring.tick": _tick,
         "monitoring.weekly_report": _maybe_send_weekly_report,
         "monitoring.housekeeping": _housekeeping,
+        "marketing.tick": _marketing_tick,
     }
     fn = fns.get(name)
     if fn is None:
@@ -173,6 +175,58 @@ def _tick() -> None:
         process_pending_alerts(db)
         from api.scripts.cancel_unpaid_orders import cancel_unpaid_orders
         cancel_unpaid_orders(db)
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        db.close()
+
+
+def _marketing_tick() -> None:
+    """Promote due marketing campaigns, drain the send queue, and run the
+    recurring monthly engagement automation."""
+    from api.services import marketing_service as svc
+    from api.models import MarketingAutomation, MarketingCampaign
+
+    db = SessionLocal()
+    try:
+        result = svc.tick(db)
+
+        auto = (
+            db.query(MarketingAutomation)
+            .filter(MarketingAutomation.key == "monthly_engagement")
+            .first()
+        )
+        if auto and auto.is_enabled and auto.next_run_at and auto.next_run_at <= _now():
+            now_eat = _now().astimezone(svc.EAT)
+            theme_name, theme_body = svc.MONTHLY_THEMES.get(
+                now_eat.month, ("Monthly Update", "See what's new on Xerin this month.")
+            )
+            channels = auto.channels or ["sms"]
+            last_id = None
+            for channel in channels:
+                campaign = MarketingCampaign(
+                    name=f"{theme_name} ({now_eat.strftime('%B %Y')}) — {channel.upper()}",
+                    description="Recurring monthly customer engagement (auto-generated)",
+                    channel=channel,
+                    segment_key=auto.segment_key or "all_customers",
+                    subject=theme_name if channel == "email" else None,
+                    body=theme_body,
+                    status="approved" if auto.auto_send else "draft",
+                    scheduled_at=_now() if auto.auto_send else None,
+                )
+                db.add(campaign)
+                db.flush()
+                last_id = campaign.id
+            auto.last_campaign_id = last_id
+            auto.last_run_at = _now()
+            # Next month, same configured day/time (EAT).
+            month = now_eat.month + 1 if now_eat.month < 12 else 1
+            year = now_eat.year + (1 if now_eat.month == 12 else 0)
+            hh, mm = (auto.send_time or "10:00").split(":")
+            next_run = datetime(year, month, auto.day_of_month, int(hh), int(mm), tzinfo=svc.EAT)
+            auto.next_run_at = next_run.astimezone(timezone.utc)
         db.commit()
     except Exception:
         db.rollback()

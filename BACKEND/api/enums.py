@@ -136,6 +136,9 @@ class PermissionCode(str, enum.Enum):
     inventory_manage = "inventory:manage"
     coupons_write = "coupons:write"
     coupons_read = "coupons:read"
+    marketing_read = "marketing:read"
+    marketing_manage = "marketing:manage"
+    marketing_approve = "marketing:approve"
 
     # Marketplace finance and commissions
     commissions_read = "commissions:read"
