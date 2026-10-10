@@ -29,6 +29,8 @@ from api.models import (
     Payment,
     PaymentStatus,
     ProductStatus,
+    Promotion,
+    PromotionUsage,
     Shipment,
     ShippingMethod,
     ShippingRate,
@@ -139,6 +141,46 @@ def _validate_coupon(coupon: Coupon, subtotal: Decimal) -> Decimal:
     return min(discount, subtotal)
 
 
+def _validate_promotion(db: Session, promotion: Promotion, subtotal: Decimal, user_id: UUID) -> Decimal:
+    """Validate a promotion for an order and return its discount.
+
+    Mirrors the cart preview rules plus the per-customer and global usage
+    limits that only the server can enforce.
+    """
+    now = datetime.now(timezone.utc)
+    if not promotion.is_active:
+        raise HTTPException(status_code=400, detail="Promotion is not available")
+    if promotion.starts_at and now < promotion.starts_at:
+        raise HTTPException(status_code=400, detail="Promotion has not started yet")
+    if promotion.ends_at and now > promotion.ends_at:
+        raise HTTPException(status_code=400, detail="Promotion has ended")
+    if promotion.usage_limit is not None and promotion.usage_count >= promotion.usage_limit:
+        raise HTTPException(status_code=400, detail="Promotion usage limit has been reached")
+    if promotion.usage_per_customer is not None:
+        used = (
+            db.query(PromotionUsage)
+            .filter(
+                PromotionUsage.promotion_id == promotion.id,
+                PromotionUsage.user_id == user_id,
+            )
+            .count()
+        )
+        if used >= promotion.usage_per_customer:
+            raise HTTPException(status_code=400, detail="You have already used this promotion")
+    if promotion.minimum_order_amount is not None and subtotal < Decimal(promotion.minimum_order_amount):
+        raise HTTPException(status_code=400, detail=f"Minimum order amount is {promotion.minimum_order_amount}")
+
+    if promotion.promotion_type == "percentage":
+        discount = subtotal * (Decimal(promotion.discount_value) / Decimal("100"))
+    elif promotion.promotion_type == "free_shipping":
+        discount = Decimal("0.00")
+    else:
+        discount = Decimal(promotion.discount_value)
+    if promotion.maximum_discount_amount is not None:
+        discount = min(discount, Decimal(promotion.maximum_discount_amount))
+    return max(Decimal("0"), min(discount, subtotal))
+
+
 def _generate_order_number(db: Session, order: Order) -> str:
     """Generate a commercial order reference: XM-YYMMDD-NNNNN.
 
@@ -233,6 +275,22 @@ def create_order(
                 raise HTTPException(status_code=404, detail="Coupon not found")
             discount_amount = _validate_coupon(coupon, subtotal)
 
+        promotion = None
+        promotion_discount = Decimal("0.00")
+        requested_promotion = data.promotion_code or cart.promotion_code
+        if requested_promotion:
+            promotion = (
+                db.query(Promotion)
+                .filter(Promotion.code == requested_promotion)
+                .with_for_update()
+                .first()
+            )
+            if not promotion:
+                raise HTTPException(status_code=404, detail="Promotion not found")
+            promotion_discount = _validate_promotion(db, promotion, subtotal, current_user.id)
+
+        discount_amount = min(discount_amount + promotion_discount, subtotal)
+
         shipping_rate, shipping_amount, delivery_from, delivery_to = _calculate_shipping(db, address, data.shipping_rate_id, subtotal, total_weight_kg)
         tax_amount = Decimal("0.00")
         total = subtotal - discount_amount + shipping_amount + tax_amount
@@ -254,10 +312,20 @@ def create_order(
             tax_amount=tax_amount,
             total=total,
             coupon_code=coupon.code if coupon else None,
+            promotion_code=promotion.code if promotion else None,
             notes=data.notes,
         )
         db.add(order)
         db.flush()
+
+        if promotion is not None:
+            promotion.usage_count = (promotion.usage_count or 0) + 1
+            db.add(PromotionUsage(
+                promotion_id=promotion.id,
+                user_id=current_user.id,
+                order_id=order.id,
+                discount_amount=promotion_discount,
+            ))
 
         reservation_expires_at = datetime.now(timezone.utc) + timedelta(minutes=settings.INVENTORY_RESERVATION_MINUTES)
         for prepared in prepared_items:
@@ -356,6 +424,7 @@ def create_order(
         for cart_item in list(cart.items):
             db.delete(cart_item)
         cart.coupon_code = None
+        cart.promotion_code = None
 
         if settings.MONITORING_ENABLED:
             try:
